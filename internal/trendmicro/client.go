@@ -1,0 +1,136 @@
+package trendmicro
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"terraform-provider-visionone/pkg/dto"
+)
+
+// HostURL - Default Hashicups URL
+
+// Client -
+type Client struct {
+	HostURL         string
+	HTTPClient      *http.Client
+	BearerToken     string
+	TMUserAgent     string
+	ProviderVersion string
+}
+
+// AuthResponse -
+type AuthResponse struct {
+	Status int
+}
+
+const (
+	StatusVisionOneInnerError = 491
+
+	TMUserAgent = "TMXDRContainerTerraform"
+)
+
+// NewClient -
+func NewClient(host, token *string, version string) (*Client, error) {
+	c := Client{
+		HTTPClient:      &http.Client{Timeout: 10 * time.Second},
+		HostURL:         *host,
+		BearerToken:     *token,
+		TMUserAgent:     TMUserAgent,
+		ProviderVersion: version,
+	}
+
+	_, err := c.Auth()
+	if err != nil {
+		return nil, err
+	}
+
+	return &c, nil
+}
+
+func (c *Client) DoRequest(req *http.Request) (body []byte, err error) {
+	req.Header.Set("Authorization", "Bearer "+c.BearerToken)
+	req.Header.Set("HOST", c.HostURL)
+	req.Header.Set("x-tm-user-agent", c.TMUserAgent+"/"+c.ProviderVersion)
+
+	fmt.Printf("Sending HTTP Request %v", req)
+
+	res, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Printf("HTTP Response %v", res)
+	defer res.Body.Close()
+
+	body, err = io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	switch res.StatusCode {
+	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
+		return body, nil
+	case http.StatusBadRequest:
+		return nil, fmt.Errorf("%w trace id: %s", dto.ErrorBadRequest, res.Header.Get("x-trace-id"))
+	case http.StatusUnauthorized:
+		return nil, fmt.Errorf("%w trace id: %s", dto.Unauthorized, res.Header.Get("x-trace-id"))
+	case http.StatusForbidden:
+		return nil, fmt.Errorf("%w trace id: %s", dto.ErrorForbidden, res.Header.Get("x-trace-id"))
+	case http.StatusNotFound:
+		return nil, fmt.Errorf("%w trace id: %s", dto.ErrorNotFound, res.Header.Get("x-trace-id"))
+	case StatusVisionOneInnerError:
+		return nil, fmt.Errorf("%w trace id: %s", errors.New(string(body)), res.Header.Get("x-trace-id"))
+	default:
+		return nil, fmt.Errorf("%w trace id: %s", dto.ErrorInternal, res.Header.Get("x-trace-id"))
+	}
+}
+
+func (c *Client) DoRequestWithFullResponse(req *http.Request) (*http.Response, error) {
+	req.Header.Set("Authorization", "Bearer "+c.BearerToken)
+	req.Header.Set("HOST", c.HostURL)
+	req.Header.Set("x-tm-user-agent", c.TMUserAgent+"/"+c.ProviderVersion)
+
+	res, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	switch res.StatusCode {
+	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
+		return res, nil
+	case http.StatusBadRequest:
+		return nil, fmt.Errorf("%w trace id: %s", dto.ErrorBadRequest, res.Header.Get("x-trace-id"))
+	case http.StatusUnauthorized:
+		return nil, fmt.Errorf("%w trace id: %s", dto.Unauthorized, res.Header.Get("x-trace-id"))
+	case http.StatusForbidden:
+		return nil, fmt.Errorf("%w trace id: %s", dto.ErrorForbidden, res.Header.Get("x-trace-id"))
+	case http.StatusNotFound:
+		return nil, fmt.Errorf("%w trace id: %s", dto.ErrorNotFound, res.Header.Get("x-trace-id"))
+	case StatusVisionOneInnerError:
+		body, err := io.ReadAll(res.Body)
+		defer res.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w trace id: %s", errors.New(string(body)), res.Header.Get("x-trace-id"))
+	default:
+		return nil, fmt.Errorf("%w trace id: %s", dto.ErrorInternal, res.Header.Get("x-trace-id"))
+	}
+}
+
+func (c *Client) Auth() (*AuthResponse, error) {
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/v3.0/iam/apiKeys", c.HostURL), strings.NewReader(string("")))
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = c.DoRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	return nil, nil
+}
