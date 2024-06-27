@@ -47,7 +47,7 @@ Either find sample code under example folder or make your own
 terraform {
   required_providers {
     visionone = {
-      source = "trendmicro/visionone"
+      source = "trendmicro/vision-one"
     }
   }
 }
