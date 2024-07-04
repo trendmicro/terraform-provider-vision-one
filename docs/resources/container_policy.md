@@ -344,6 +344,20 @@ resource "visionone_container_policy" "example_policy" {
           ]
         }
         enabled = false
+      },
+      {
+        action     = "log"
+        mitigation = "log"
+        type       = "unscannedImageMalware"
+        statement = {
+          properties = [
+            {
+              key   = "days"
+              value = "30"
+            }
+          ]
+        }
+        enabled = false
       }
     ]
 
@@ -757,6 +771,20 @@ resource "visionone_container_policy" "example_policy" {
               {
                 key   = "equals"
                 value = "pathValue"
+              }
+            ]
+          }
+          enabled = false
+        },
+        {
+          action     = "log"
+          mitigation = "log"
+          type       = "unscannedImageMalware"
+          statement = {
+            properties = [
+              {
+                key   = "days"
+                value = "30"
               }
             ]
           }
