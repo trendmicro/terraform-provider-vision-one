@@ -1,4 +1,4 @@
-# VisionOne Terraform Provider
+# Trend Micro Vision One Terraform Provider
 
 Framework: https://developer.hashicorp.com/terraform/plugin/framework
 
