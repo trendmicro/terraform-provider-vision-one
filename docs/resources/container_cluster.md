@@ -1,20 +1,20 @@
 ---
-page_title: "visionone_containersecurity_cluster Resource - cluster"
+page_title: "visionone_container_cluster Resource - cluster"
 subcategory: ""
 description: |-
-  The containersecurity_cluster resource allows you to manage Kubernetes cluster.
+  The container_cluster resource allows you to manage Kubernetes cluster.
 ---
 
-# visionone_containersecurity_cluster (Resource)
+# visionone_container_cluster (Resource)
 
-The `containersecurity_cluster` resource allows you to manage Kubernetes cluster.
+The `container_cluster` resource allows you to manage Kubernetes cluster.
 
 It's **strongly recommended** to use [Helm](https://registry.terraform.io/providers/hashicorp/helm/latest) to associate with the cluster resource.
 
 ## Example Usage of Cluster
 
 ```terraform
-resource "visionone_containersecurity_cluster" "example_cluster" {
+resource "visionone_container_cluster" "example_cluster" {
   name                       = "example_cluster"
   description                = "This is a sample cluster"
   resource_id                = "arn:aws:eks:xxx:xxx:cluster/xxx"
@@ -22,13 +22,6 @@ resource "visionone_containersecurity_cluster" "example_cluster" {
   runtime_security_enabled   = true
   vulnerability_scan_enabled = true
   namespaces                 = ["kube-system"]
-  proxy = {
-    type          = "http"
-    proxy_address = "192.168.0.1"
-    port          = 8080
-    username      = "user"
-    password      = "password"
-  }
 }
 ```
 
@@ -43,39 +36,59 @@ resource "helm_release" "trendmicro" {
 
   set {
     name  = "cloudOne.apiKey"
-    value = visionone_containersecurity_cluster.example_cluster.api_key
+    value = visionone_container_cluster.example_cluster.api_key
   }
   set {
     name  = "cloudOne.endpoint"
-    value = visionone_containersecurity_cluster.example_cluster.endpoint
+    value = visionone_container_cluster.example_cluster.endpoint
   }
   set_list {
     name  = "cloudOne.exclusion.namespaces"
-    value = visionone_containersecurity_cluster.example_cluster.namespaces
+    value = visionone_container_cluster.example_cluster.namespaces
   }
   set {
     name  = "cloudOne.runtimeSecurity.enabled"
-    value = visionone_containersecurity_cluster.example_cluster.runtime_security_enabled
+    value = visionone_container_cluster.example_cluster.runtime_security_enabled
   }
   set {
     name  = "cloudOne.vulnerabilityScanning.enabled"
-    value = visionone_containersecurity_cluster.example_cluster.vulnerability_scan_enabled
+    value = visionone_container_cluster.example_cluster.vulnerability_scan_enabled
   }
   set {
     name  = "cloudOne.inventoryCollection.enabled"
-    value = visionone_containersecurity_cluster.example_cluster.inventory_collection
+    value = visionone_container_cluster.example_cluster.inventory_collection
   }
+}
+```
+
+## Example Usage of proxy
+add the block if you need proxy.
+```terraform
+resource "visionone_container_cluster" "example_cluster" {
+  #...
+  proxy = {
+    type          = "http"
+    proxy_address = "192.168.0.1"
+    port          = 8080
+    username      = "user"
+    password      = "password"
+  }
+}
+
+
+resource "helm_release" "trendmicro" {
+  #...
   set {
     name  = "proxy.httpsProxy"
-    value = visionone_containersecurity_cluster.example_cluster.proxy.https_proxy
+    value = visionone_container_cluster.example_cluster.proxy.https_proxy
   }
   set {
     name  = "proxy.username"
-    value = visionone_containersecurity_cluster.example_cluster.proxy.username
+    value = visionone_container_cluster.example_cluster.proxy.username
   }
   set {
     name  = "proxy.password"
-    value = visionone_containersecurity_cluster.example_cluster.proxy.password
+    value = visionone_container_cluster.example_cluster.proxy.password
   }
 }
 ```
@@ -132,7 +145,7 @@ Read-Only:
 Import is supported using the following syntax:
 
 ```shell
-terraform import visionone_containersecurity_cluster.example_cluster ${cluster_id}
+terraform import visionone_container_cluster.example_cluster ${cluster_id}
 ```
 
 ### Limitations of Import API key

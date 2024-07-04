@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"terraform-provider-visionone/pkg/dto"
+	"terraform-provider-vision-one/pkg/dto"
 )
 
 // HostURL - Default Hashicups URL

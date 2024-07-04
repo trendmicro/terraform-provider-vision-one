@@ -1,4 +1,4 @@
-# terraform-provider-vision-one
+# VisionOne Terraform Provider
 
 Framework: https://developer.hashicorp.com/terraform/plugin/framework
 
@@ -57,7 +57,7 @@ provider "visionone" {
   regional_fqdn   = "xxx"
 }
 
-resource "visionone_containersecurity_cluster" "this" {
+resource "visionone_container_cluster" "this" {
   name = "example"
 
 }

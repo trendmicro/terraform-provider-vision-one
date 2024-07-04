@@ -1,18 +1,18 @@
 ---
-page_title: "visionone_containersecurity_policy Resource - policy"
+page_title: "visionone_container_policy Resource - policy"
 subcategory: ""
 description: |-
-  The containersecurity_policy resource allows you to manage policies which define the rules that are used to control what is allowed to run in your Kubernetes cluster.
+  The container_policy resource allows you to manage policies which define the rules that are used to control what is allowed to run in your Kubernetes cluster.
 ---
 
-# visionone_containersecurity_policy (Resource)
+# visionone_container_policy (Resource)
 
-The `containersecurity_policy` resource allows you to manage policies which define the rules that are used to control what is allowed to run in your Kubernetes cluster.
+The `container_policy` resource allows you to manage policies which define the rules that are used to control what is allowed to run in your Kubernetes cluster.
 
 ## Example Usage
 
 ```terraform
-resource "visionone_containersecurity_policy" "example_policy" {
+resource "visionone_container_policy" "example_policy" {
   name        = "LogOnlyPolicy"
   description = "A policy with several example logging rules. If linked to a cluster, it will generate events for enabled rule violations."
   default = {
@@ -50,7 +50,7 @@ resource "visionone_containersecurity_policy" "example_policy" {
 <details>
 
 ```terraform
-resource "visionone_containersecurity_policy" "example_policy" {
+resource "visionone_container_policy" "example_policy" {
   name        = "LogOnlyPolicy"
   description = "A policy with several example logging rules. If linked to a cluster, it will generate events for enabled rule violations."
 
@@ -975,5 +975,5 @@ Required:
 Import is supported using the following syntax:
 
 ```shell
-terraform import visionone_containersecurity_policy.example_policy ${policy_id}
+terraform import visionone_container_policy.example_policy ${policy_id}
 ```

@@ -3,8 +3,8 @@ package provider
 import (
 	"context"
 	"os"
-	"terraform-provider-visionone/internal/trendmicro"
-	"terraform-provider-visionone/internal/trendmicro/container_security/resources"
+	"terraform-provider-vision-one/internal/trendmicro"
+	"terraform-provider-vision-one/internal/trendmicro/container_security/resources"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/function"
