@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"terraform-provider-visionone/pkg/dto"
+	"terraform-provider-vision-one/pkg/dto"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )

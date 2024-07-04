@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"terraform-provider-visionone/internal/trendmicro/container_security/resources/config"
+	"terraform-provider-vision-one/internal/trendmicro/container_security/resources/config"
 
-	"terraform-provider-visionone/internal/trendmicro"
-	"terraform-provider-visionone/internal/trendmicro/container_security/api"
-	"terraform-provider-visionone/pkg/dto"
+	"terraform-provider-vision-one/internal/trendmicro"
+	"terraform-provider-vision-one/internal/trendmicro/container_security/api"
+	"terraform-provider-vision-one/pkg/dto"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"

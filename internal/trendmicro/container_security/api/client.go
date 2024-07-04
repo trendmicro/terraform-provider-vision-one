@@ -1,6 +1,6 @@
 package api
 
-import "terraform-provider-visionone/internal/trendmicro"
+import "terraform-provider-vision-one/internal/trendmicro"
 
 type CsClient struct {
 	Client *trendmicro.Client

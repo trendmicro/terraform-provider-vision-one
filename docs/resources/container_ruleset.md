@@ -1,18 +1,18 @@
 ---
-page_title: "visionone_containersecurity_ruleset Resource - ruleset"
+page_title: "visionone_container_ruleset Resource - ruleset"
 subcategory: ""
 description: |-
-  The containersecurity_ruleset resource allows you to manage several managed rules provided by Trend Micro to define a set of rules that you want to enforce for runtime security.
+  The container_ruleset resource allows you to manage several managed rules provided by Trend Micro to define a set of rules that you want to enforce for runtime security.
 ---
 
-# visionone_containersecurity_ruleset (Resource)
+# visionone_container_ruleset (Resource)
 
-The `containersecurity_ruleset` resource allows you to manage several managed rules provided by Trend Micro to define a set of rules that you want to enforce for runtime security.
+The `container_ruleset` resource allows you to manage several managed rules provided by Trend Micro to define a set of rules that you want to enforce for runtime security.
 
 ## Example Usage
 
 ```terraform
-resource "visionone_containersecurity_ruleset" "example_ruleset" {
+resource "visionone_container_ruleset" "example_ruleset" {
   name        = "LogOnlyRuleset"
   description = "A policy with several example logging rules. If linked to a cluster, it will generate events for enabled rule violations."
   labels = [{
@@ -89,5 +89,5 @@ Optional:
 Import is supported using the following syntax:
 
 ```shell
-terraform import visionone_containersecurity_ruleset.example_ruleset ${ruleset_id}
+terraform import visionone_container_ruleset.example_ruleset ${ruleset_id}
 ```

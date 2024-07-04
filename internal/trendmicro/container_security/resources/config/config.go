@@ -1,9 +1,9 @@
 package config
 
 const (
-	RESOURCE_TYPE_CLUSTER = "containersecurity_cluster"
-	RESOURCE_TYPE_POLICY  = "containersecurity_policy"
-	RESOURCE_TYPE_RULESET = "containersecurity_ruleset"
+	RESOURCE_TYPE_CLUSTER = "container_cluster"
+	RESOURCE_TYPE_POLICY  = "container_policy"
+	RESOURCE_TYPE_RULESET = "container_ruleset"
 
 	RESOURCE_TYPE_CLUSTER_DESCRIPTION = "The `" + RESOURCE_TYPE_CLUSTER + "` resource allows you to manage Kubernetes cluster."
 	RESOURCE_TYPE_POLICY_DESCRIPTION  = "The `" + RESOURCE_TYPE_POLICY + "` resource allows you to manage policies which define the rules that are used to control what is allowed to run in your Kubernetes cluster."

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"terraform-provider-visionone/pkg/dto"
+	"terraform-provider-vision-one/pkg/dto"
 )
 
 func (c *CsClient) CreatePolicy(data *dto.CreatePolicyRequest) (*dto.PolicyResponse, error) {

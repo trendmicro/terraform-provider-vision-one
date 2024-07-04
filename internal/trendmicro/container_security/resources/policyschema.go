@@ -8,7 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"terraform-provider-visionone/internal/trendmicro/container_security/resources/config"
+	"terraform-provider-vision-one/internal/trendmicro/container_security/resources/config"
 )
 
 const (

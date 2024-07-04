@@ -1,4 +1,4 @@
-resource "visionone_containersecurity_policy" "example_policy" {
+resource "visionone_container_policy" "example_policy" {
   name        = "LogOnlyPolicy"
   description = "A policy with several example logging rules. If linked to a cluster, it will generate events for enabled rule violations."
 
