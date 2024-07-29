@@ -2,6 +2,8 @@
 
 Framework: https://developer.hashicorp.com/terraform/plugin/framework
 
+Our Terraform Provider: https://registry.terraform.io/providers/trendmicro/vision-one/latest
+
 ## Local Development Setup
 
 ### For Mac User
@@ -62,3 +64,28 @@ resource "visionone_container_cluster" "this" {
 
 }
 ```
+
+## Use Example
+
+### 1. Navigate to example folder. Use ruleset for example.
+
+```
+cd examples/resources/visionone_container_ruleset
+```
+
+### 2. Copy provider settings.
+
+Copy the provider settings from `examples/provider/provider.tf`, fill in your API key and regional fully qualified domain name (FQDN), then paste in `examples/resources/visionone_container_ruleset/resource.tf`.
+
+For the API key, add in the Vision One console.
+
+For the regional FQDN, refer to the [Regional domains table](https://automation.trendmicro.com/xdr/Guides/Regional-domains).
+
+### 3. Good to go!
+
+Use the terraform command to fetch the latest terraform provider and build your resource.
+```
+terraform init
+terraform apply
+```
+

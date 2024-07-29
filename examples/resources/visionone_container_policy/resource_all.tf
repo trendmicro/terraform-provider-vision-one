@@ -306,6 +306,34 @@ resource "visionone_container_policy" "example_policy" {
           ]
         }
         enabled = false
+      },
+      {
+        action     = "block"
+        mitigation = "log"
+        type       = "unscannedImageSecret"
+        statement = {
+          properties = [
+            {
+              key   = "days"
+              value = "7"
+            }
+          ]
+        }
+        enabled = false
+      },
+      {
+        action     = "block"
+        mitigation = "log"
+        type       = "secrets"
+        statement = {
+          properties = [
+            {
+              key   = "count"
+              value = "0"
+            }
+          ]
+        }
+        enabled = false
       }
     ]
 
