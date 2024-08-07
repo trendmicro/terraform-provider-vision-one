@@ -2,6 +2,7 @@ package dto
 
 import (
 	"errors"
+
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -25,6 +26,7 @@ type ClusterResourceModel struct {
 	CreatedDateTime          types.String     `tfsdk:"created_date_time"`
 	UpdatedDateTime          types.String     `tfsdk:"updated_date_time"`
 	LastEvaluatedDateTime    types.String     `tfsdk:"last_evaluated_date_time"`
+	GroupId                  types.String     `tfsdk:"group_id"`
 	Namespaces               types.Set        `tfsdk:"namespaces"`
 	RuntimeSecurityEnabled   types.Bool       `tfsdk:"runtime_security_enabled"`
 	VulnerabilityScanEnabled types.Bool       `tfsdk:"vulnerability_scan_enabled"`

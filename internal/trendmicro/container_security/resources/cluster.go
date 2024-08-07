@@ -116,6 +116,13 @@ func (r *clusterResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				MarkdownDescription: "Last time of the cluster was evaluated against the policy rules.",
 				Computed:            true,
 			},
+			"group_id": schema.StringAttribute{
+				MarkdownDescription: "The ID of the group associated with the cluster. To get the group ID, go to Container Security > Container Inventory on the Trend Vision One console.",
+				Required:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
 			"namespaces": schema.SetAttribute{
 				ElementType:         types.StringType,
 				MarkdownDescription: "The namespaces of kubernetes you want to exclude from scanning. \nAccepted values: `calico-system`, `istio-system`, `kube-system`, `openshift*` Default value: `kube-system`",
@@ -214,7 +221,8 @@ func (r *clusterResource) Create(ctx context.Context, req resource.CreateRequest
 	tflog.Debug(ctx, fmt.Sprintf("Create new Cluster plan: %+v", plan))
 
 	data := dto.CreateClusterRequest{
-		Name: plan.Name.ValueString(),
+		Name:    plan.Name.ValueString(),
+		GroupId: plan.GroupId.ValueString(),
 	}
 	if !plan.Description.IsNull() {
 		data.Description = plan.Description.ValueString()

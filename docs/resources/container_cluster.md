@@ -19,6 +19,7 @@ resource "visionone_container_cluster" "example_cluster" {
   description                = "This is a sample cluster"
   resource_id                = "arn:aws:eks:xxx:xxx:cluster/xxx"
   policy_id                  = "LogOnlyPolicy-xxx"
+  group_id                   = "00000000-0000-0000-0000-000000000000"
   runtime_security_enabled   = true
   vulnerability_scan_enabled = true
   namespaces                 = ["kube-system"]
@@ -98,6 +99,7 @@ resource "helm_release" "trendmicro" {
 
 ### Required
 
+- `group_id` (String) The ID of the group associated with the cluster. To get the group ID, go to Container Security > Container Inventory on the Trend Vision One console.
 - `name` (String) The name of the cluster.
 
 ### Optional
