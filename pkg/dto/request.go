@@ -5,6 +5,7 @@ type CreateClusterRequest struct {
 	Description string `json:"description"`
 	PolicyId    string `json:"policyId"`
 	ResourceId  string `json:"resourceId"`
+	GroupId     string `json:"groupId"`
 }
 
 type CreateRulesetRequest struct {
