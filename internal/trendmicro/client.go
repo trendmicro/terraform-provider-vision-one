@@ -1,6 +1,8 @@
 package trendmicro
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -73,16 +75,13 @@ func (c *Client) DoRequest(req *http.Request) (body []byte, err error) {
 	switch res.StatusCode {
 	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
 		return body, nil
-	case http.StatusBadRequest:
-		return nil, fmt.Errorf("%w trace id: %s", dto.ErrorBadRequest, res.Header.Get("x-trace-id"))
-	case http.StatusUnauthorized:
-		return nil, fmt.Errorf("%w trace id: %s", dto.Unauthorized, res.Header.Get("x-trace-id"))
-	case http.StatusForbidden:
-		return nil, fmt.Errorf("%w trace id: %s", dto.ErrorForbidden, res.Header.Get("x-trace-id"))
-	case http.StatusNotFound:
-		return nil, fmt.Errorf("%w trace id: %s", dto.ErrorNotFound, res.Header.Get("x-trace-id"))
-	case StatusVisionOneInnerError:
-		return nil, fmt.Errorf("%w trace id: %s", errors.New(string(body)), res.Header.Get("x-trace-id"))
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, StatusVisionOneInnerError:
+		var out bytes.Buffer
+		err = json.Indent(&out, body, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("\n%w \nTrace id: %s", errors.New(out.String()), res.Header.Get("x-trace-id"))
 	default:
 		return nil, fmt.Errorf("%w trace id: %s", dto.ErrorInternal, res.Header.Get("x-trace-id"))
 	}
@@ -101,23 +100,21 @@ func (c *Client) DoRequestWithFullResponse(req *http.Request) (*http.Response, e
 	switch res.StatusCode {
 	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
 		return res, nil
-	case http.StatusBadRequest:
-		return nil, fmt.Errorf("%w trace id: %s", dto.ErrorBadRequest, res.Header.Get("x-trace-id"))
-	case http.StatusUnauthorized:
-		return nil, fmt.Errorf("%w trace id: %s", dto.Unauthorized, res.Header.Get("x-trace-id"))
-	case http.StatusForbidden:
-		return nil, fmt.Errorf("%w trace id: %s", dto.ErrorForbidden, res.Header.Get("x-trace-id"))
-	case http.StatusNotFound:
-		return nil, fmt.Errorf("%w trace id: %s", dto.ErrorNotFound, res.Header.Get("x-trace-id"))
-	case StatusVisionOneInnerError:
-		body, err := io.ReadAll(res.Body)
+	case http.StatusNotFound, http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, StatusVisionOneInnerError:
 		defer res.Body.Close()
+		body, err := io.ReadAll(res.Body)
 		if err != nil {
 			return nil, err
 		}
-		return nil, fmt.Errorf("%w trace id: %s", errors.New(string(body)), res.Header.Get("x-trace-id"))
+
+		var out bytes.Buffer
+		err = json.Indent(&out, body, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("\n%w \nTrace id: %s", errors.New(out.String()), res.Header.Get("x-trace-id"))
 	default:
-		return nil, fmt.Errorf("%w trace id: %s", dto.ErrorInternal, res.Header.Get("x-trace-id"))
+		return nil, fmt.Errorf("%w \nTrace id: %s", dto.ErrorInternal, res.Header.Get("x-trace-id"))
 	}
 }
 

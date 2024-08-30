@@ -117,11 +117,8 @@ func (r *clusterResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Computed:            true,
 			},
 			"group_id": schema.StringAttribute{
-				MarkdownDescription: "The ID of the group associated with the cluster. To get the group ID, go to Container Security > Container Inventory on the Trend Vision One console.",
+				MarkdownDescription: "The ID of the group associated with the cluster. To get IDs of the groups within the user's management scope, use the Kubernetes cluster groups API to list these IDs.",
 				Required:            true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
 			},
 			"namespaces": schema.SetAttribute{
 				ElementType:         types.StringType,
@@ -347,7 +344,9 @@ func (r *clusterResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	updateRequest := dto.UpdateClusterRequest{}
+	updateRequest := dto.UpdateClusterRequest{
+		GroupId: plan.GroupId.ValueString(),
+	}
 	if !plan.Description.IsNull() {
 		updateRequest.Description = plan.Description.ValueString()
 	}
