@@ -1,6 +1,8 @@
 package resources
 
 import (
+	"terraform-provider-vision-one/internal/trendmicro/container_security/resources/config"
+
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
@@ -8,7 +10,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"terraform-provider-vision-one/internal/trendmicro/container_security/resources/config"
 )
 
 const (
@@ -36,11 +37,16 @@ const (
 	CreatedDateTimeSchemaName            = "created_date_time"
 	UpdateDateTimeSchemaName             = "updated_date_time"
 	RulesetsUpdatedDateTimeSchemaName    = "rulesets_updated_date_time"
+	MalwareScanEnabledSchemaName         = "malware_scan_enabled"
+	CronSchemaName                       = "malware_scan_schedule"
+	MalwareScanMitigationSchemaName      = "malware_scan_mitigation"
 
-	RuleEnabledDefault    = true
-	RuleActionDefault     = "none"
-	RuleMitigationDefault = "none"
-	XdrEnabledDefault     = true
+	RuleEnabledDefault           = true
+	RuleActionDefault            = "none"
+	RuleMitigationDefault        = "none"
+	XdrEnabledDefault            = true
+	MalwareScanEnabledDefault    = false
+	MalwareScanMitigationDefault = "log"
 
 	IDSchemaMarkdownDescription          = "The unique ID assigned to this policy."
 	NameSchemaMarkdownDescription        = "A descriptive name for the policy."
@@ -66,6 +72,9 @@ const (
 	XdrEnabledSchemaMarkdownDescription               = "If true, enables XDR telemetry. " +
 		"Default is \"true\"." +
 		"Important: To use XDR telemetry, enable runtime security."
+	MalwareScanEnabledSchemaMarkdownDescription    = "If true, enables scheduled scan. If the schedule has been configured and the new schedule is not provided, it will apply the configured schedule. An error will be returned if the schedule is not configured." + " Default is \"false\"."
+	CronSchemaMarkdownDescription                  = "The schedule for the malware scan in cron expression. If the schedule is not configured, the scheduled scan will be disabled, and the cron configuration will be empty. The cron expression for the schedule currently supports only daily and weekly schedules. An error will be returned if a monthly schedule is configured. The schedule will be set in the UTC timezone."
+	MalwareScanMitigationSchemaMarkdownDescription = "The mitigation action for malware. Only the log action is currently supported."
 )
 
 func generatePolicySchema() schema.Schema {
@@ -125,6 +134,22 @@ func generatePolicySchema() schema.Schema {
 			},
 			RulesetsUpdatedDateTimeSchemaName: schema.StringAttribute{
 				Computed: true,
+			},
+			MalwareScanEnabledSchemaName: schema.BoolAttribute{
+				Optional:            true,
+				Computed:            true,
+				MarkdownDescription: MalwareScanEnabledSchemaMarkdownDescription,
+				Default:             booldefault.StaticBool(MalwareScanEnabledDefault),
+			},
+			CronSchemaName: schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: CronSchemaMarkdownDescription,
+			},
+			MalwareScanMitigationSchemaName: schema.StringAttribute{
+				Optional:            true,
+				Computed:            true,
+				MarkdownDescription: MalwareScanMitigationSchemaMarkdownDescription,
+				Default:             stringdefault.StaticString(MalwareScanMitigationDefault),
 			},
 		},
 	}

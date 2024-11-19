@@ -38,6 +38,25 @@ func (c *CsClient) CreatePolicy(data *dto.CreatePolicyRequest) (*dto.PolicyRespo
 	// Use the path.Base function to get the last element of the path
 	policyID := path.Base(parsedURL.Path)
 
+	// workaround for setting malwareScanEnable = false but give schedule in the request
+	if data.MalwareScan != nil {
+		if data.MalwareScan.Schedule != nil {
+			if !*data.MalwareScan.Schedule.Enabled {
+				_, err = c.UpdatePolicy(policyID, &dto.UpdatePolicyRequest{
+					MalwareScan: &dto.MalwareScan{
+						Schedule: &dto.Schedule{
+							Enabled: data.MalwareScan.Schedule.Enabled,
+						},
+					},
+					XdrEnabled: data.XdrEnabled,
+				})
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
 	createdPolicy, err := c.GetPolicy(policyID)
 	if err != nil {
 		return nil, err

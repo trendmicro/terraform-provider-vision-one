@@ -3,6 +3,7 @@ resource "helm_release" "trendmicro" {
   chart            = "https://github.com/trendmicro/cloudone-container-security-helm/archive/master.tar.gz"
   namespace        = "trendmicro-system"
   create_namespace = true
+  wait             = false
 
   set {
     name  = "cloudOne.apiKey"
@@ -23,6 +24,10 @@ resource "helm_release" "trendmicro" {
   set {
     name  = "cloudOne.vulnerabilityScanning.enabled"
     value = visionone_container_cluster.example_cluster.vulnerability_scan_enabled
+  }
+  set {
+    name  = "cloudOne.malwareScanning.enabled"
+    value = visionone_container_cluster.example_cluster.malware_scan_enabled
   }
   set {
     name  = "cloudOne.inventoryCollection.enabled"

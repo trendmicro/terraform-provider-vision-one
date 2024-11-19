@@ -30,6 +30,7 @@ type ClusterResourceModel struct {
 	Namespaces               types.Set        `tfsdk:"namespaces"`
 	RuntimeSecurityEnabled   types.Bool       `tfsdk:"runtime_security_enabled"`
 	VulnerabilityScanEnabled types.Bool       `tfsdk:"vulnerability_scan_enabled"`
+	MalwareScanEnabled       types.Bool       `tfsdk:"malware_scan_enabled"`
 	InventoryCollection      types.Bool       `tfsdk:"inventory_collection"`
 	Proxy                    ProxyDetailModel `tfsdk:"proxy"`
 }
@@ -55,6 +56,10 @@ type PolicyResourceModel struct {
 	CreatedDateTime         types.String `tfsdk:"created_date_time"`
 	UpdatedDateTime         types.String `tfsdk:"updated_date_time"`
 	RulesetsUpdatedDateTime types.String `tfsdk:"rulesets_updated_date_time"`
+
+	MalwareScanEnabled    types.Bool   `tfsdk:"malware_scan_enabled"`
+	MalwareScanSchedule   types.String `tfsdk:"malware_scan_schedule"`
+	MalwareScanMitigation types.String `tfsdk:"malware_scan_mitigation"`
 }
 
 type PolicyDefaultResourceModel struct {

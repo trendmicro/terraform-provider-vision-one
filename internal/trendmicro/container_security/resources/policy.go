@@ -8,17 +8,22 @@ import (
 	"terraform-provider-vision-one/internal/trendmicro/container_security/api"
 	"terraform-provider-vision-one/pkg/dto"
 
+	"terraform-provider-vision-one/internal/trendmicro/container_security/resources/config"
+
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
-	"terraform-provider-vision-one/internal/trendmicro/container_security/resources/config"
 )
 
 var (
 	_ resource.Resource                = &PolicyResource{}
 	_ resource.ResourceWithConfigure   = &PolicyResource{}
 	_ resource.ResourceWithImportState = &PolicyResource{}
+)
+
+var (
+	ErrMalwareScanScheduleRequired = errors.New("MalwareScanSchedule is required when MalwareScanEnabled is true")
 )
 
 func NewPolicyResource() resource.Resource {
@@ -71,7 +76,14 @@ func (p *PolicyResource) Create(ctx context.Context, request resource.CreateRequ
 	}
 
 	// Generate the API request from the model
-	apiRequest := generateCreatePolicyRequest(&data)
+	apiRequest, err := generateCreatePolicyRequest(&data)
+	if err != nil {
+		tflog.Debug(ctx, err.Error())
+		response.Diagnostics.AddError(
+			"Unable to Create a policy",
+			"Warning: "+err.Error())
+		return
+	}
 
 	apiResponse, err := p.client.CreatePolicy(&apiRequest)
 	if err != nil {
@@ -88,6 +100,7 @@ func (p *PolicyResource) Create(ctx context.Context, request resource.CreateRequ
 	data.CreatedDateTime = types.StringValue(apiResponse.CreatedDateTime)
 	data.UpdatedDateTime = types.StringValue(apiResponse.UpdatedDateTime)
 	data.RulesetsUpdatedDateTime = types.StringValue(apiResponse.RulesetsUpdatedDateTime)
+	data.MalwareScanEnabled = types.BoolValue(*apiResponse.MalwareScan.Schedule.Enabled)
 
 	tflog.Trace(ctx, "created a policy resource")
 
@@ -98,7 +111,7 @@ func (p *PolicyResource) Create(ctx context.Context, request resource.CreateRequ
 	}
 }
 
-func generateCreatePolicyRequest(data *dto.PolicyResourceModel) dto.CreatePolicyRequest {
+func generateCreatePolicyRequest(data *dto.PolicyResourceModel) (dto.CreatePolicyRequest, error) {
 	result := dto.CreatePolicyRequest{}
 
 	if !data.Name.IsNull() {
@@ -147,7 +160,17 @@ func generateCreatePolicyRequest(data *dto.PolicyResourceModel) dto.CreatePolicy
 
 	result.XdrEnabled = data.XdrEnabled.ValueBool()
 
-	return result
+	result.MalwareScan = &dto.MalwareScan{}
+	result.MalwareScan.Mitigation = data.MalwareScanMitigation.ValueStringPointer()
+	if !data.MalwareScanSchedule.IsNull() {
+		result.MalwareScan.Schedule = &dto.Schedule{}
+		result.MalwareScan.Schedule.Cron = data.MalwareScanSchedule.ValueStringPointer()
+		result.MalwareScan.Schedule.Enabled = data.MalwareScanEnabled.ValueBoolPointer()
+	} else if data.MalwareScanEnabled.ValueBool() {
+		return dto.CreatePolicyRequest{}, ErrMalwareScanScheduleRequired
+	}
+
+	return result, nil
 }
 
 func generateRequestForPolicyRulesetList(data []dto.PolicyRulesetResourceModel) []dto.PolicyRuleset {
@@ -299,6 +322,9 @@ func (p *PolicyResource) Read(ctx context.Context, request resource.ReadRequest,
 	data.CreatedDateTime = types.StringValue(apiResponse.CreatedDateTime)
 	data.UpdatedDateTime = types.StringValue(apiResponse.UpdatedDateTime)
 	data.RulesetsUpdatedDateTime = types.StringValue(apiResponse.RulesetsUpdatedDateTime)
+	data.MalwareScanEnabled = types.BoolValue(*apiResponse.MalwareScan.Schedule.Enabled)
+	data.MalwareScanSchedule = types.StringValue(*apiResponse.MalwareScan.Schedule.Cron)
+	data.MalwareScanMitigation = types.StringValue(*apiResponse.MalwareScan.Mitigation)
 
 	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
 	if response.Diagnostics.HasError() {
@@ -397,7 +423,14 @@ func (p *PolicyResource) Update(ctx context.Context, request resource.UpdateRequ
 	}
 
 	// Generate the API request from the model
-	apiRequest := generateUpdatePolicyRequest(&data)
+	apiRequest, err := generateUpdatePolicyRequest(&data)
+	if err != nil {
+		tflog.Debug(ctx, err.Error())
+		response.Diagnostics.AddError(
+			"Unable to update the policy id "+data.ID.ValueString(),
+			"Warning: "+err.Error())
+		return
+	}
 
 	apiResponse, err := p.client.UpdatePolicy(data.ID.ValueString(), &apiRequest)
 	if err != nil {
@@ -429,7 +462,7 @@ func (p *PolicyResource) Update(ctx context.Context, request resource.UpdateRequ
 	}
 }
 
-func generateUpdatePolicyRequest(data *dto.PolicyResourceModel) dto.UpdatePolicyRequest {
+func generateUpdatePolicyRequest(data *dto.PolicyResourceModel) (dto.UpdatePolicyRequest, error) {
 	result := dto.UpdatePolicyRequest{}
 
 	if !data.Description.IsNull() {
@@ -474,7 +507,17 @@ func generateUpdatePolicyRequest(data *dto.PolicyResourceModel) dto.UpdatePolicy
 
 	result.XdrEnabled = data.XdrEnabled.ValueBool()
 
-	return result
+	result.MalwareScan = &dto.MalwareScan{}
+	result.MalwareScan.Mitigation = data.MalwareScanMitigation.ValueStringPointer()
+	if !data.MalwareScanSchedule.IsNull() {
+		result.MalwareScan.Schedule = &dto.Schedule{}
+		result.MalwareScan.Schedule.Cron = data.MalwareScanSchedule.ValueStringPointer()
+		result.MalwareScan.Schedule.Enabled = data.MalwareScanEnabled.ValueBoolPointer()
+	} else if data.MalwareScanEnabled.ValueBool() {
+		return dto.UpdatePolicyRequest{}, ErrMalwareScanScheduleRequired
+	}
+
+	return result, nil
 }
 
 func (p *PolicyResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
