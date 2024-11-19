@@ -141,6 +141,12 @@ func (r *clusterResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Computed:            true,
 				Default:             booldefault.StaticBool(false),
 			},
+			"malware_scan_enabled": schema.BoolAttribute{
+				MarkdownDescription: "Whether malware scan is enabled for the cluster.",
+				Optional:            true,
+				Computed:            true,
+				Default:             booldefault.StaticBool(false),
+			},
 			"inventory_collection": schema.BoolAttribute{
 				Computed: true,
 				Default:  booldefault.StaticBool(true),

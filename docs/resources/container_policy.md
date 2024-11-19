@@ -42,6 +42,10 @@ resource "visionone_container_policy" "example_policy" {
     ]
   }
   xdr_enabled = true
+
+  malware_scan_mitigation = "log"
+  malware_scan_enabled    = true
+  malware_scan_schedule   = "0 0 * * *"
 }
 ```
 
@@ -831,6 +835,10 @@ resource "visionone_container_policy" "example_policy" {
   }
 
   xdr_enabled = true
+
+  malware_scan_mitigation = "log"
+  malware_scan_enabled    = true
+  malware_scan_schedule   = "0 0 * * *"
 }
 ```
 
@@ -847,6 +855,9 @@ resource "visionone_container_policy" "example_policy" {
 ### Optional
 
 - `description` (String) A description of the policy.
+- `malware_scan_enabled` (Boolean) If true, enables scheduled scan. If the schedule has been configured and the new schedule is not provided, it will apply the configured schedule. An error will be returned if the schedule is not configured. Default is "false".
+- `malware_scan_mitigation` (String) The mitigation action for malware. Only the log action is currently supported.
+- `malware_scan_schedule` (String) The schedule for the malware scan in cron expression. If the schedule is not configured, the scheduled scan will be disabled, and the cron configuration will be empty. The cron expression for the schedule currently supports only daily and weekly schedules. An error will be returned if a monthly schedule is configured. The schedule will be set in the UTC timezone.
 - `namespaced` (Attributes List) The definition of all the policies. (see [below for nested schema](#nestedatt--namespaced))
 - `runtime` (Attributes) The runtime properties of this policy. (see [below for nested schema](#nestedatt--runtime))
 - `xdr_enabled` (Boolean) If true, enables XDR telemetry. Default is "true".Important: To use XDR telemetry, enable runtime security.

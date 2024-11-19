@@ -50,6 +50,18 @@ type CreatePolicyRequest struct {
 	PolicyNamespacedList []PolicyNamespaced `json:"namespaced,omitempty"`
 	PolicyRuntime        *PolicyRuntime     `json:"runtime,omitempty"`
 	XdrEnabled           bool               `json:"xdrEnabled"`
+
+	MalwareScan *MalwareScan `json:"malwareScan,omitempty"`
+}
+
+type MalwareScan struct {
+	Mitigation *string   `json:"mitigation,omitempty"`
+	Schedule   *Schedule `json:"schedule,omitempty"`
+}
+
+type Schedule struct {
+	Enabled *bool   `json:"enabled,omitempty"`
+	Cron    *string `json:"cron,omitempty"`
 }
 
 type PolicyRuntime struct {
@@ -96,4 +108,6 @@ type UpdatePolicyRequest struct {
 	PolicyNamespacedList []PolicyNamespaced `json:"namespaced,omitempty"`
 	PolicyRuntime        *PolicyRuntime     `json:"runtime,omitempty"`
 	XdrEnabled           bool               `json:"xdrEnabled"`
+
+	MalwareScan *MalwareScan `json:"malwareScan,omitempty"`
 }

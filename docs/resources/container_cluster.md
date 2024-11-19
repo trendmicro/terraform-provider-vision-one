@@ -22,6 +22,7 @@ resource "visionone_container_cluster" "example_cluster" {
   group_id                   = "00000000-0000-0000-0000-000000000001"
   runtime_security_enabled   = true
   vulnerability_scan_enabled = true
+  malware_scan_enabled       = true
   namespaces                 = ["kube-system"]
 }
 ```
@@ -34,6 +35,7 @@ resource "helm_release" "trendmicro" {
   chart            = "https://github.com/trendmicro/cloudone-container-security-helm/archive/master.tar.gz"
   namespace        = "trendmicro-system"
   create_namespace = true
+  wait             = false
 
   set {
     name  = "cloudOne.apiKey"
@@ -54,6 +56,10 @@ resource "helm_release" "trendmicro" {
   set {
     name  = "cloudOne.vulnerabilityScanning.enabled"
     value = visionone_container_cluster.example_cluster.vulnerability_scan_enabled
+  }
+  set {
+    name  = "cloudOne.malwareScanning.enabled"
+    value = visionone_container_cluster.example_cluster.malware_scan_enabled
   }
   set {
     name  = "cloudOne.inventoryCollection.enabled"
@@ -105,6 +111,7 @@ resource "helm_release" "trendmicro" {
 ### Optional
 
 - `description` (String) The description of the cluster.
+- `malware_scan_enabled` (Boolean) Whether malware scan is enabled for the cluster.
 - `namespaces` (Set of String) The namespaces of kubernetes you want to exclude from scanning. 
 Accepted values: `calico-system`, `istio-system`, `kube-system`, `openshift*` Default value: `kube-system`
 - `policy_id` (String) The ID of the policy associated with the cluster.

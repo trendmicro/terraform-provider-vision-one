@@ -34,6 +34,7 @@ type ClusterItem struct {
 	Description              string `json:"description"`
 	RuntimeSecurityEnabled   bool   `json:"runtimeSecurityEnabled"`
 	VulnerabilityScanEnabled bool   `json:"vulnerabilityScanEnabled"`
+	MalwareScanEnabled       bool   `json:"malwareScanEnabled"`
 	PolicyId                 string `json:"policyId"`
 	Orchestrator             string `json:"orchestrator"`
 	Nodes                    []Node `json:"nodes"`
@@ -82,6 +83,8 @@ type PolicyResponse struct {
 	CreatedDateTime         string `json:"createdDateTime"`
 	UpdatedDateTime         string `json:"updatedDateTime,omitempty"`
 	RulesetsUpdatedDateTime string `json:"rulesetsUpdatedDateTime,omitempty"`
+
+	MalwareScan *MalwareScan `json:"malwareScan,omitempty"`
 }
 
 type ListPolicyResponse struct {

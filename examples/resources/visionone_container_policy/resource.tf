@@ -28,4 +28,8 @@ resource "visionone_container_policy" "example_policy" {
     ]
   }
   xdr_enabled = true
+
+  malware_scan_mitigation = "log"
+  malware_scan_enabled    = true
+  malware_scan_schedule   = "0 0 * * *"
 }
