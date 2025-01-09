@@ -74,7 +74,7 @@ const (
 		"Important: To use XDR telemetry, enable runtime security."
 	MalwareScanEnabledSchemaMarkdownDescription    = "If true, enables scheduled scan. If the schedule has been configured and the new schedule is not provided, it will apply the configured schedule. An error will be returned if the schedule is not configured." + " Default is \"false\"."
 	CronSchemaMarkdownDescription                  = "The schedule for the malware scan in cron expression. If the schedule is not configured, the scheduled scan will be disabled, and the cron configuration will be empty. The cron expression for the schedule currently supports only daily and weekly schedules. An error will be returned if a monthly schedule is configured. The schedule will be set in the UTC timezone."
-	MalwareScanMitigationSchemaMarkdownDescription = "The mitigation action for malware. Only the log action is currently supported."
+	MalwareScanMitigationSchemaMarkdownDescription = "The mitigation action for malware."
 )
 
 func generatePolicySchema() schema.Schema {
