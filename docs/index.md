@@ -34,7 +34,7 @@ provider "visionone" {
 
 - `api_key` (String) This is the API key for your Vision One account. The API key is a unique identifier for authenticating your account. Keep this key confidential to protect your account from unauthorized access, so tread this key as sensitive information. Generate the API key in your Vision One account settings or using the `VISIONONE_API_KEY` environment variable. For more information on the API key, see the [API Key Guide](https://docs.trendmicro.com/en-us/documentation/article/trend-vision-one-__api-keys-2#GUID-E88BBD1F-EA82-4490-9C7F-E141E3BEE8F4-4).
 
-- `regional_fqdn` (String) This is the regional Fully Qualified Domain Name (FQDN) to call the API in the backend. Get this FQDN using the `VISIONONE_REGIONAL_FQDN` environment variable. For a full list of FQDNs, see the [Regional Domains Guide](Trend Vision One Automation Center ).
+- `regional_fqdn` (String) This is the regional Fully Qualified Domain Name (FQDN) to call the API in the backend. Get this FQDN using the `VISIONONE_REGIONAL_FQDN` environment variable. For a full list of FQDNs, see the [Regional Domains Guide](https://automation.trendmicro.com/xdr/Guides/Regional-domains/).
 
 ## Bugs and Issues
 
