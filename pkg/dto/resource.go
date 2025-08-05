@@ -31,8 +31,10 @@ type ClusterResourceModel struct {
 	RuntimeSecurityEnabled   types.Bool       `tfsdk:"runtime_security_enabled"`
 	VulnerabilityScanEnabled types.Bool       `tfsdk:"vulnerability_scan_enabled"`
 	MalwareScanEnabled       types.Bool       `tfsdk:"malware_scan_enabled"`
+	SecretScanEnabled        types.Bool       `tfsdk:"secret_scan_enabled"`
 	InventoryCollection      types.Bool       `tfsdk:"inventory_collection"`
 	Proxy                    ProxyDetailModel `tfsdk:"proxy"`
+	CustomizableTagIDs       types.Set        `tfsdk:"customizable_tags"`
 }
 
 type ProxyDetailModel struct {
@@ -60,6 +62,12 @@ type PolicyResourceModel struct {
 	MalwareScanEnabled    types.Bool   `tfsdk:"malware_scan_enabled"`
 	MalwareScanSchedule   types.String `tfsdk:"malware_scan_schedule"`
 	MalwareScanMitigation types.String `tfsdk:"malware_scan_mitigation"`
+
+	SecretScanEnabled             types.Bool     `tfsdk:"secret_scan_enabled"`
+	SecretScanSchedule            types.String   `tfsdk:"secret_scan_schedule"`
+	SecretScanMitigation          types.String   `tfsdk:"secret_scan_mitigation"`
+	SecretScanSkipIfRuleNotChange types.Bool     `tfsdk:"secret_scan_skip_if_rule_not_change"`
+	SecretScanExcludePaths        []types.String `tfsdk:"secret_scan_exclude_paths"`
 }
 
 type PolicyDefaultResourceModel struct {

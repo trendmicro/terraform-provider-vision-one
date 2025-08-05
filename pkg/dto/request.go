@@ -1,11 +1,12 @@
 package dto
 
 type CreateClusterRequest struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	PolicyId    string `json:"policyId"`
-	ResourceId  string `json:"resourceId"`
-	GroupId     string `json:"groupId"`
+	Name               string   `json:"name"`
+	Description        string   `json:"description"`
+	PolicyId           string   `json:"policyId"`
+	ResourceId         string   `json:"resourceId"`
+	GroupId            string   `json:"groupId"`
+	CustomizableTagIDs []string `json:"customizableTagIds"`
 }
 
 type CreateRulesetRequest struct {
@@ -35,10 +36,11 @@ type GetClusterRequest struct {
 }
 
 type UpdateClusterRequest struct {
-	Description string `json:"description"`
-	PolicyId    string `json:"policyId"`
-	ResourceId  string `json:"resourceId"`
-	GroupId     string `json:"groupId"`
+	Description        string   `json:"description"`
+	PolicyId           string   `json:"policyId"`
+	ResourceId         string   `json:"resourceId"`
+	GroupId            string   `json:"groupId"`
+	CustomizableTagIDs []string `json:"customizableTagIds"`
 }
 
 // Container Security - Policy Request
@@ -52,16 +54,29 @@ type CreatePolicyRequest struct {
 	XdrEnabled           bool               `json:"xdrEnabled"`
 
 	MalwareScan *MalwareScan `json:"malwareScan,omitempty"`
+	SecretScan  *SecretScan  `json:"secretScan,omitempty"`
 }
 
 type MalwareScan struct {
-	Mitigation *string   `json:"mitigation,omitempty"`
-	Schedule   *Schedule `json:"schedule,omitempty"`
+	Mitigation *string          `json:"mitigation,omitempty"`
+	Schedule   *MalwareSchedule `json:"schedule,omitempty"`
 }
 
-type Schedule struct {
+type MalwareSchedule struct {
 	Enabled *bool   `json:"enabled,omitempty"`
 	Cron    *string `json:"cron,omitempty"`
+}
+
+type SecretScan struct {
+	Mitigation   *string         `json:"mitigation,omitempty"`
+	Schedule     *SecretSchedule `json:"schedule,omitempty"`
+	ExcludePaths []string        `json:"excludedPaths"`
+}
+
+type SecretSchedule struct {
+	Enabled             *bool   `json:"enabled,omitempty"`
+	Cron                *string `json:"cron,omitempty"`
+	SkipIfRuleNotChange *bool   `json:"skipIfRuleNotChanged,omitempty"`
 }
 
 type PolicyRuntime struct {
@@ -110,4 +125,5 @@ type UpdatePolicyRequest struct {
 	XdrEnabled           bool               `json:"xdrEnabled"`
 
 	MalwareScan *MalwareScan `json:"malwareScan,omitempty"`
+	SecretScan  *SecretScan  `json:"secretScan,omitempty"`
 }

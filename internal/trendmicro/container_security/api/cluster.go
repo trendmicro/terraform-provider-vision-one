@@ -10,6 +10,7 @@ import (
 	"path"
 	"terraform-provider-vision-one/pkg/dto"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -112,6 +113,13 @@ func (c *CsClient) UpdateCurrentState(resource *dto.ClusterResourceModel) error 
 	}
 	if latest.Item.ResourceId != "" {
 		resource.ResourceId = types.StringValue(latest.Item.ResourceId)
+	}
+	if latest.Item.CustomizableTagIDs != nil {
+		values := make([]attr.Value, len(latest.Item.CustomizableTagIDs))
+		for i, v := range latest.Item.CustomizableTagIDs {
+			values[i] = types.StringValue(v)
+		}
+		resource.CustomizableTagIDs = types.SetValueMust(types.StringType, values)
 	}
 	resource.CreatedDateTime = types.StringValue(latest.Item.CreatedDateTime)
 	resource.UpdatedDateTime = types.StringValue(latest.Item.UpdatedDateTime)

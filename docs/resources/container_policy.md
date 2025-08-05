@@ -46,6 +46,12 @@ resource "visionone_container_policy" "example_policy" {
   malware_scan_mitigation = "log"
   malware_scan_enabled    = true
   malware_scan_schedule   = "0 0 * * *"
+
+  secret_scan_mitigation              = "log"
+  secret_scan_enabled                 = true
+  secret_scan_schedule                = "0 0 * * *"
+  secret_scan_skip_if_rule_not_change = true
+  secret_scan_exclude_paths           = ["/safe_folder/*", "/folder?/*/config.json", "/folder/*/config.*"]
 }
 ```
 
@@ -839,6 +845,12 @@ resource "visionone_container_policy" "example_policy" {
   malware_scan_mitigation = "log"
   malware_scan_enabled    = true
   malware_scan_schedule   = "0 0 * * *"
+
+  secret_scan_mitigation              = "log"
+  secret_scan_enabled                 = true
+  secret_scan_schedule                = "0 0 * * *"
+  secret_scan_skip_if_rule_not_change = true
+  secret_scan_exclude_paths           = ["/safe_folder/*", "/folder?/*/config.json", "/folder/*/config.*"]
 }
 ```
 
@@ -860,6 +872,11 @@ resource "visionone_container_policy" "example_policy" {
 - `malware_scan_schedule` (String) The schedule for the malware scan in cron expression. If the schedule is not configured, the scheduled scan will be disabled, and the cron configuration will be empty. The cron expression for the schedule currently supports only daily and weekly schedules. An error will be returned if a monthly schedule is configured. The schedule will be set in the UTC timezone.
 - `namespaced` (Attributes List) The definition of all the policies. (see [below for nested schema](#nestedatt--namespaced))
 - `runtime` (Attributes) The runtime properties of this policy. (see [below for nested schema](#nestedatt--runtime))
+- `secret_scan_enabled` (Boolean) If true, enables scheduled scan. If the schedule has been configured and the new schedule is not provided, it will apply the configured schedule. An error will be returned if the schedule is not configured. Default is "false".
+- `secret_scan_exclude_paths` (List of String) The exclude paths for the secret scan.
+- `secret_scan_mitigation` (String) The mitigation action for secret.
+- `secret_scan_schedule` (String) The schedule for the secret scan in cron expression. If the schedule is not configured, the scheduled scan will be disabled, and the cron configuration will be empty. The cron expression for the schedule currently supports only daily and weekly schedules. An error will be returned if a monthly schedule is configured. The schedule will be set in the UTC timezone.
+- `secret_scan_skip_if_rule_not_change` (Boolean) If ture, secret schedule scan will skip if the rule is not change.
 - `xdr_enabled` (Boolean) If true, enables XDR telemetry. Default is "true".Important: To use XDR telemetry, enable runtime security.
 
 ### Read-Only
@@ -885,7 +902,7 @@ Optional:
 
 Required:
 
-- `type` (String) The type of the policy rule.Enum: [podSecurityContext, containerSecurityContext, registry, image, tag, imagePath, vulnerabilities, cvssAttackVector, cvssAttackComplexity, cvssAvailability, checklists, checklistProfile, contents, malware, unscannedImage, podexec, portforward, capabilities].
+- `type` (String) The type of the policy rule.Enum: [podSecurityContext, containerSecurityContext, registry, image, tag, imagePath, vulnerabilities, cvssAttackVector, cvssAttackComplexity, cvssAvailability, checklists, checklistProfile, contents, malware, secret, unscannedImage, podexec, portforward, capabilities].
 
 Optional:
 
@@ -917,7 +934,7 @@ Required:
 
 Required:
 
-- `type` (String) The type of the policy rule.Enum: [podSecurityContext, containerSecurityContext, registry, image, tag, imagePath, vulnerabilities, cvssAttackVector, cvssAttackComplexity, cvssAvailability, checklists, checklistProfile, contents, malware, unscannedImage, podexec, portforward, capabilities].
+- `type` (String) The type of the policy rule.Enum: [podSecurityContext, containerSecurityContext, registry, image, tag, imagePath, vulnerabilities, cvssAttackVector, cvssAttackComplexity, cvssAvailability, checklists, checklistProfile, contents, malware, secret, unscannedImage, podexec, portforward, capabilities].
 
 Optional:
 
@@ -963,7 +980,7 @@ Optional:
 
 Required:
 
-- `type` (String) The type of the policy rule.Enum: [podSecurityContext, containerSecurityContext, registry, image, tag, imagePath, vulnerabilities, cvssAttackVector, cvssAttackComplexity, cvssAvailability, checklists, checklistProfile, contents, malware, unscannedImage, podexec, portforward, capabilities].
+- `type` (String) The type of the policy rule.Enum: [podSecurityContext, containerSecurityContext, registry, image, tag, imagePath, vulnerabilities, cvssAttackVector, cvssAttackComplexity, cvssAvailability, checklists, checklistProfile, contents, malware, secret, unscannedImage, podexec, portforward, capabilities].
 
 Optional:
 
@@ -995,7 +1012,7 @@ Required:
 
 Required:
 
-- `type` (String) The type of the policy rule.Enum: [podSecurityContext, containerSecurityContext, registry, image, tag, imagePath, vulnerabilities, cvssAttackVector, cvssAttackComplexity, cvssAvailability, checklists, checklistProfile, contents, malware, unscannedImage, podexec, portforward, capabilities].
+- `type` (String) The type of the policy rule.Enum: [podSecurityContext, containerSecurityContext, registry, image, tag, imagePath, vulnerabilities, cvssAttackVector, cvssAttackComplexity, cvssAvailability, checklists, checklistProfile, contents, malware, secret, unscannedImage, podexec, portforward, capabilities].
 
 Optional:
 

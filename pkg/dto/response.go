@@ -29,19 +29,20 @@ type GetClusterResponse struct {
 }
 
 type ClusterItem struct {
-	ID                       string `json:"id"`
-	Name                     string `json:"name"`
-	Description              string `json:"description"`
-	RuntimeSecurityEnabled   bool   `json:"runtimeSecurityEnabled"`
-	VulnerabilityScanEnabled bool   `json:"vulnerabilityScanEnabled"`
-	MalwareScanEnabled       bool   `json:"malwareScanEnabled"`
-	PolicyId                 string `json:"policyId"`
-	Orchestrator             string `json:"orchestrator"`
-	Nodes                    []Node `json:"nodes"`
-	ResourceId               string `json:"resourceId"`
-	CreatedDateTime          string `json:"createdDateTime"`
-	UpdatedDateTime          string `json:"updatedDateTime"`
-	LastEvaluatedDateTime    string `json:"lastEvaluatedDateTime"`
+	ID                       string   `json:"id"`
+	Name                     string   `json:"name"`
+	Description              string   `json:"description"`
+	RuntimeSecurityEnabled   bool     `json:"runtimeSecurityEnabled"`
+	VulnerabilityScanEnabled bool     `json:"vulnerabilityScanEnabled"`
+	MalwareScanEnabled       bool     `json:"malwareScanEnabled"`
+	PolicyId                 string   `json:"policyId"`
+	Orchestrator             string   `json:"orchestrator"`
+	Nodes                    []Node   `json:"nodes"`
+	ResourceId               string   `json:"resourceId"`
+	CreatedDateTime          string   `json:"createdDateTime"`
+	UpdatedDateTime          string   `json:"updatedDateTime"`
+	LastEvaluatedDateTime    string   `json:"lastEvaluatedDateTime"`
+	CustomizableTagIDs       []string `json:"customizableTagIds"`
 }
 
 type Node struct {
@@ -85,6 +86,7 @@ type PolicyResponse struct {
 	RulesetsUpdatedDateTime string `json:"rulesetsUpdatedDateTime,omitempty"`
 
 	MalwareScan *MalwareScan `json:"malwareScan,omitempty"`
+	SecretScan  *SecretScan  `json:"secretScan,omitempty"`
 }
 
 type ListPolicyResponse struct {
