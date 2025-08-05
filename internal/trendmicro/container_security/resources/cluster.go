@@ -147,6 +147,12 @@ func (r *clusterResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Computed:            true,
 				Default:             booldefault.StaticBool(false),
 			},
+			"secret_scan_enabled": schema.BoolAttribute{
+				MarkdownDescription: "Whether secret scan is enabled for the cluster.",
+				Optional:            true,
+				Computed:            true,
+				Default:             booldefault.StaticBool(false),
+			},
 			"inventory_collection": schema.BoolAttribute{
 				Computed: true,
 				Default:  booldefault.StaticBool(true),
@@ -208,6 +214,18 @@ func (r *clusterResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					},
 				},
 			},
+			"customizable_tags": schema.SetNestedAttribute{
+				MarkdownDescription: "The custom tags and platform tags associated with the cluster. To obtain custom tags, refer to the following URL: https://automation.trendmicro.com/xdr/api-v3/#tag/Attack-Surface-Discovery/paths/~1v3.0~1asrm~1attackSurfaceCustomTags/get. However, platform tags will be provided through an additional API in the future. The difference between custom tags and platform tags is that properties of platform tags are defined by Trend Micro, while properties and values of custom tags can be created and updated by users.",
+				Optional:            true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"id": schema.StringAttribute{
+							MarkdownDescription: "The ID of the custom tag.",
+							Required:            true,
+						},
+					},
+				},
+			},
 		},
 	}
 }
@@ -235,6 +253,16 @@ func (r *clusterResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 	if !plan.ResourceId.IsNull() {
 		data.ResourceId = plan.ResourceId.ValueString()
+	}
+	if !plan.CustomizableTagIDs.IsNull() {
+		elements := plan.CustomizableTagIDs.Elements()
+		tagIDs := make([]string, len(elements))
+		for i, v := range elements {
+			obj := v.(types.Object)
+			tagID := obj.Attributes()["id"].(types.String)
+			tagIDs[i] = tagID.ValueString()
+		}
+		data.CustomizableTagIDs = tagIDs
 	}
 
 	err := proxyHandler(&plan)
@@ -361,6 +389,16 @@ func (r *clusterResource) Update(ctx context.Context, req resource.UpdateRequest
 	}
 	if !plan.ResourceId.IsNull() {
 		updateRequest.ResourceId = plan.ResourceId.ValueString()
+	}
+	if !plan.CustomizableTagIDs.IsNull() {
+		elements := plan.CustomizableTagIDs.Elements()
+		tagIDs := make([]string, len(elements))
+		for i, v := range elements {
+			obj := v.(types.Object)
+			tagID := obj.Attributes()["id"].(types.String)
+			tagIDs[i] = tagID.ValueString()
+		}
+		updateRequest.CustomizableTagIDs = tagIDs
 	}
 
 	err = r.client.UpdateCluster(plan.ID.ValueString(), &updateRequest)

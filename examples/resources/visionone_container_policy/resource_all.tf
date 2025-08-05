@@ -783,4 +783,10 @@ resource "visionone_container_policy" "example_policy" {
   malware_scan_mitigation = "log"
   malware_scan_enabled    = true
   malware_scan_schedule   = "0 0 * * *"
+
+  secret_scan_mitigation              = "log"
+  secret_scan_enabled                 = true
+  secret_scan_schedule                = "0 0 * * *"
+  secret_scan_skip_if_rule_not_change = true
+  secret_scan_exclude_paths           = ["/safe_folder/*", "/folder?/*/config.json", "/folder/*/config.*"]
 }

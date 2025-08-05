@@ -3,8 +3,10 @@ package resources
 import (
 	"terraform-provider-vision-one/internal/trendmicro/container_security/resources/config"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
@@ -13,47 +15,55 @@ import (
 )
 
 const (
-	IDSchemaName                         = "id"
-	NameSchemaName                       = "name"
-	DescriptionSchemaName                = "description"
-	DefaultSchemaName                    = "default"
-	RulesSchemaName                      = "rules"
-	ExceptionsSchemaName                 = "exceptions"
-	RuleTypeSchemaName                   = "type"
-	RuleEnabledSchemaName                = "enabled"
-	RuleActionSchemaName                 = "action"
-	RuleMitigationSchemaName             = "mitigation"
-	RuleStatementSchemaName              = "statement"
-	RuleStatementPropertiesSchemaName    = "properties"
-	RuleStatementPropertyKeySchemaName   = "key"
-	RuleStatementPropertyValueSchemaName = "value"
-	NamespacedListSchemaName             = "namespaced"
-	NamespacedNameSchemaName             = "name"
-	NamespacedNamespacesSchemaName       = "namespaces"
-	RuntimeSchemaName                    = "runtime"
-	RuntimeRulesetListSchemaName         = "rulesets"
-	RuntimeRulesetIDSchemaName           = "id"
-	XdrEnabledSchemaName                 = "xdr_enabled"
-	CreatedDateTimeSchemaName            = "created_date_time"
-	UpdateDateTimeSchemaName             = "updated_date_time"
-	RulesetsUpdatedDateTimeSchemaName    = "rulesets_updated_date_time"
-	MalwareScanEnabledSchemaName         = "malware_scan_enabled"
-	CronSchemaName                       = "malware_scan_schedule"
-	MalwareScanMitigationSchemaName      = "malware_scan_mitigation"
+	IDSchemaName                            = "id"
+	NameSchemaName                          = "name"
+	DescriptionSchemaName                   = "description"
+	DefaultSchemaName                       = "default"
+	RulesSchemaName                         = "rules"
+	ExceptionsSchemaName                    = "exceptions"
+	RuleTypeSchemaName                      = "type"
+	RuleEnabledSchemaName                   = "enabled"
+	RuleActionSchemaName                    = "action"
+	RuleMitigationSchemaName                = "mitigation"
+	RuleStatementSchemaName                 = "statement"
+	RuleStatementPropertiesSchemaName       = "properties"
+	RuleStatementPropertyKeySchemaName      = "key"
+	RuleStatementPropertyValueSchemaName    = "value"
+	NamespacedListSchemaName                = "namespaced"
+	NamespacedNameSchemaName                = "name"
+	NamespacedNamespacesSchemaName          = "namespaces"
+	RuntimeSchemaName                       = "runtime"
+	RuntimeRulesetListSchemaName            = "rulesets"
+	RuntimeRulesetIDSchemaName              = "id"
+	XdrEnabledSchemaName                    = "xdr_enabled"
+	CreatedDateTimeSchemaName               = "created_date_time"
+	UpdateDateTimeSchemaName                = "updated_date_time"
+	RulesetsUpdatedDateTimeSchemaName       = "rulesets_updated_date_time"
+	MalwareScanEnabledSchemaName            = "malware_scan_enabled"
+	CronSchemaName                          = "malware_scan_schedule"
+	MalwareScanMitigationSchemaName         = "malware_scan_mitigation"
+	SecretScanEnabledSchemaName             = "secret_scan_enabled"
+	SecretScanCronSchemaName                = "secret_scan_schedule"
+	SecretScanMitigationSchemaName          = "secret_scan_mitigation"
+	SecretScanSkipIfRuleNotChangeSchemaName = "secret_scan_skip_if_rule_not_change"
+	SecretScanExcludePathsSchemaName        = "secret_scan_exclude_paths" // #nosec G101
 
-	RuleEnabledDefault           = true
-	RuleActionDefault            = "none"
-	RuleMitigationDefault        = "none"
-	XdrEnabledDefault            = true
-	MalwareScanEnabledDefault    = false
-	MalwareScanMitigationDefault = "log"
+	RuleEnabledDefault                   = true
+	RuleActionDefault                    = "none"
+	RuleMitigationDefault                = "none"
+	XdrEnabledDefault                    = true
+	MalwareScanEnabledDefault            = false
+	MalwareScanMitigationDefault         = "log"
+	SecretScanEnabledDefault             = false
+	SecretScanMitigationDefault          = "log"
+	SecretScanSkipIfRuleNotChangeDefault = false
 
 	IDSchemaMarkdownDescription          = "The unique ID assigned to this policy."
 	NameSchemaMarkdownDescription        = "A descriptive name for the policy."
 	DescriptionSchemaMarkdownDescription = "A description of the policy."
 	RulesSchemaMarkdownDescription       = "The set of policy rules. The rules are OR together."
 	RuleTypeSchemaMarkdownDescription    = "The type of the policy rule." +
-		"Enum: [podSecurityContext, containerSecurityContext, registry, image, tag, imagePath, vulnerabilities, cvssAttackVector, cvssAttackComplexity, cvssAvailability, checklists, checklistProfile, contents, malware, unscannedImage, podexec, portforward, capabilities]."
+		"Enum: [podSecurityContext, containerSecurityContext, registry, image, tag, imagePath, vulnerabilities, cvssAttackVector, cvssAttackComplexity, cvssAvailability, checklists, checklistProfile, contents, malware, secret, unscannedImage, podexec, portforward, capabilities]."
 	RuleEnabledSchemaMarkdownDescription = "Enable the rule. " +
 		"Default is \"true\"."
 	RuleActionSchemaMarkdownDescription = "Action to take when the rule fails during the admission control phase. Action is ignored in exceptions. It returns none if there is no record. " +
@@ -72,9 +82,14 @@ const (
 	XdrEnabledSchemaMarkdownDescription               = "If true, enables XDR telemetry. " +
 		"Default is \"true\"." +
 		"Important: To use XDR telemetry, enable runtime security."
-	MalwareScanEnabledSchemaMarkdownDescription    = "If true, enables scheduled scan. If the schedule has been configured and the new schedule is not provided, it will apply the configured schedule. An error will be returned if the schedule is not configured." + " Default is \"false\"."
-	CronSchemaMarkdownDescription                  = "The schedule for the malware scan in cron expression. If the schedule is not configured, the scheduled scan will be disabled, and the cron configuration will be empty. The cron expression for the schedule currently supports only daily and weekly schedules. An error will be returned if a monthly schedule is configured. The schedule will be set in the UTC timezone."
-	MalwareScanMitigationSchemaMarkdownDescription = "The mitigation action for malware."
+	MalwareScanEnabledSchemaMarkdownDescription     = "If true, enables scheduled scan. If the schedule has been configured and the new schedule is not provided, it will apply the configured schedule. An error will be returned if the schedule is not configured." + " Default is \"false\"."
+	CronSchemaMarkdownDescription                   = "The schedule for the malware scan in cron expression. If the schedule is not configured, the scheduled scan will be disabled, and the cron configuration will be empty. The cron expression for the schedule currently supports only daily and weekly schedules. An error will be returned if a monthly schedule is configured. The schedule will be set in the UTC timezone."
+	MalwareScanMitigationSchemaMarkdownDescription  = "The mitigation action for malware."
+	SecretScanEnabledSchemaMarkdownDescription      = "If true, enables scheduled scan. If the schedule has been configured and the new schedule is not provided, it will apply the configured schedule. An error will be returned if the schedule is not configured." + " Default is \"false\"."
+	SecretScanCronSchemaMarkdownDescription         = "The schedule for the secret scan in cron expression. If the schedule is not configured, the scheduled scan will be disabled, and the cron configuration will be empty. The cron expression for the schedule currently supports only daily and weekly schedules. An error will be returned if a monthly schedule is configured. The schedule will be set in the UTC timezone."
+	SecretScanMitigationSchemaMarkdownDescription   = "The mitigation action for secret."
+	SecretScanSkipIfRuleNotChangeDescription        = "If ture, secret schedule scan will skip if the rule is not change." // #nosec G101
+	SecretScanExcludePathsSchemaMarkdownDescription = "The exclude paths for the secret scan."
 )
 
 func generatePolicySchema() schema.Schema {
@@ -150,6 +165,35 @@ func generatePolicySchema() schema.Schema {
 				Computed:            true,
 				MarkdownDescription: MalwareScanMitigationSchemaMarkdownDescription,
 				Default:             stringdefault.StaticString(MalwareScanMitigationDefault),
+			},
+			SecretScanEnabledSchemaName: schema.BoolAttribute{
+				Optional:            true,
+				Computed:            true,
+				MarkdownDescription: SecretScanEnabledSchemaMarkdownDescription,
+				Default:             booldefault.StaticBool(SecretScanEnabledDefault),
+			},
+			SecretScanCronSchemaName: schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: SecretScanCronSchemaMarkdownDescription,
+			},
+			SecretScanMitigationSchemaName: schema.StringAttribute{
+				Optional:            true,
+				Computed:            true,
+				MarkdownDescription: SecretScanMitigationSchemaMarkdownDescription,
+				Default:             stringdefault.StaticString(SecretScanMitigationDefault),
+			},
+			SecretScanSkipIfRuleNotChangeSchemaName: schema.BoolAttribute{
+				Optional:            true,
+				Computed:            true,
+				MarkdownDescription: SecretScanSkipIfRuleNotChangeDescription,
+				Default:             booldefault.StaticBool(SecretScanSkipIfRuleNotChangeDefault),
+			},
+			SecretScanExcludePathsSchemaName: schema.ListAttribute{
+				Optional:            true,
+				Computed:            true,
+				MarkdownDescription: SecretScanExcludePathsSchemaMarkdownDescription,
+				ElementType:         types.StringType,
+				Default:             listdefault.StaticValue(types.ListValueMust(types.StringType, []attr.Value{})),
 			},
 		},
 	}

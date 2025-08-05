@@ -7,21 +7,32 @@ Our Terraform Provider: https://registry.terraform.io/providers/trendmicro/visio
 ## Local Development Setup
 
 ### For Mac User
-create .terraformrc file under your home directory(~)
 
-### 1. Setup $GOBIN
+### 1. check if you have .terraformrc file
+Verify with
+
+```shell
+cat ~/.terraformrc
+```
+
+If shows nothing you can create .terraformrc file under your home directory(~)
+
+### 2. Setup GOBIN path
    Verify with
 
 ```shell
 go env GOBIN
 ```
 
-make sure you have the path ready.
-If nothing setup GOBIN with default /Users/YOUR_USERNAME/go/bin
+Make sure you have the path ready.
+If shows nothing you can setup GOBIN with default /Users/YOUR_USERNAME/go/bin
 
-### 2. Overrides local provider
+```shell
+export GOBIN=/Users/{YOUR_USERNAME}/go/bin
+```
 
-check your provider installation setting in ~/.terraformrc
+### 3. Overrides local provider
+Check your provider installation setting in ~/.terraformrc
 
 ```shell
 cat ~/.terraformrc
@@ -42,7 +53,8 @@ provider_installation {
 }
 ```
 
-### 3. Compile Provider Code
+### 4. Compile Provider Code
+In your terminal, go to terraform provider root folder to install go binary file
 
 ```shell
 go install .
@@ -50,7 +62,7 @@ go install .
 
 The binary executive file will store at your $GOBIN
 
-### 4. Verify with Terraform
+### 5. Verify with Terraform
 Either find sample code under example folder or make your own
 
 ```terraform

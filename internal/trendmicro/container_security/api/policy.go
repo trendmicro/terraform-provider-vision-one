@@ -44,11 +44,29 @@ func (c *CsClient) CreatePolicy(data *dto.CreatePolicyRequest) (*dto.PolicyRespo
 			if !*data.MalwareScan.Schedule.Enabled {
 				_, err = c.UpdatePolicy(policyID, &dto.UpdatePolicyRequest{
 					MalwareScan: &dto.MalwareScan{
-						Schedule: &dto.Schedule{
+						Schedule: &dto.MalwareSchedule{
 							Enabled: data.MalwareScan.Schedule.Enabled,
 						},
 					},
 					XdrEnabled: data.XdrEnabled,
+				})
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
+	// workaround for setting secretScanEnable = false but give schedule in the request
+	if data.SecretScan != nil {
+		if data.SecretScan.Schedule != nil {
+			if !*data.SecretScan.Schedule.Enabled {
+				_, err = c.UpdatePolicy(policyID, &dto.UpdatePolicyRequest{
+					SecretScan: &dto.SecretScan{
+						Schedule: &dto.SecretSchedule{
+							Enabled: data.SecretScan.Schedule.Enabled,
+						},
+					},
 				})
 				if err != nil {
 					return nil, err

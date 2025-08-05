@@ -24,6 +24,7 @@ var (
 
 var (
 	ErrMalwareScanScheduleRequired = errors.New("MalwareScanSchedule is required when MalwareScanEnabled is true")
+	ErrSecretScanScheduleRequired  = errors.New("SecretScanSchedule is required when SecretScanEnabled is true")
 )
 
 func NewPolicyResource() resource.Resource {
@@ -101,6 +102,7 @@ func (p *PolicyResource) Create(ctx context.Context, request resource.CreateRequ
 	data.UpdatedDateTime = types.StringValue(apiResponse.UpdatedDateTime)
 	data.RulesetsUpdatedDateTime = types.StringValue(apiResponse.RulesetsUpdatedDateTime)
 	data.MalwareScanEnabled = types.BoolValue(*apiResponse.MalwareScan.Schedule.Enabled)
+	data.SecretScanEnabled = types.BoolValue(*apiResponse.SecretScan.Schedule.Enabled)
 
 	tflog.Trace(ctx, "created a policy resource")
 
@@ -160,14 +162,32 @@ func generateCreatePolicyRequest(data *dto.PolicyResourceModel) (dto.CreatePolic
 
 	result.XdrEnabled = data.XdrEnabled.ValueBool()
 
-	result.MalwareScan = &dto.MalwareScan{}
-	result.MalwareScan.Mitigation = data.MalwareScanMitigation.ValueStringPointer()
-	if !data.MalwareScanSchedule.IsNull() {
-		result.MalwareScan.Schedule = &dto.Schedule{}
-		result.MalwareScan.Schedule.Cron = data.MalwareScanSchedule.ValueStringPointer()
-		result.MalwareScan.Schedule.Enabled = data.MalwareScanEnabled.ValueBoolPointer()
-	} else if data.MalwareScanEnabled.ValueBool() {
+	if data.MalwareScanSchedule.IsNull() && data.MalwareScanEnabled.ValueBool() {
 		return dto.CreatePolicyRequest{}, ErrMalwareScanScheduleRequired
+	}
+	result.MalwareScan = &dto.MalwareScan{
+		Mitigation: data.MalwareScanMitigation.ValueStringPointer(),
+		Schedule: &dto.MalwareSchedule{
+			Enabled: data.MalwareScanEnabled.ValueBoolPointer(),
+			Cron:    data.MalwareScanSchedule.ValueStringPointer(),
+		},
+	}
+
+	if data.SecretScanSchedule.IsNull() && data.SecretScanEnabled.ValueBool() {
+		return dto.CreatePolicyRequest{}, ErrSecretScanScheduleRequired
+	}
+	result.SecretScan = &dto.SecretScan{
+		Mitigation: data.SecretScanMitigation.ValueStringPointer(),
+		Schedule: &dto.SecretSchedule{
+			Enabled:             data.SecretScanEnabled.ValueBoolPointer(),
+			Cron:                data.SecretScanSchedule.ValueStringPointer(),
+			SkipIfRuleNotChange: data.SecretScanSkipIfRuleNotChange.ValueBoolPointer(),
+		},
+		ExcludePaths: []string{},
+	}
+
+	for _, path := range data.SecretScanExcludePaths {
+		result.SecretScan.ExcludePaths = append(result.SecretScan.ExcludePaths, path.ValueString())
 	}
 
 	return result, nil
@@ -325,6 +345,14 @@ func (p *PolicyResource) Read(ctx context.Context, request resource.ReadRequest,
 	data.MalwareScanEnabled = types.BoolValue(*apiResponse.MalwareScan.Schedule.Enabled)
 	data.MalwareScanSchedule = types.StringValue(*apiResponse.MalwareScan.Schedule.Cron)
 	data.MalwareScanMitigation = types.StringValue(*apiResponse.MalwareScan.Mitigation)
+	data.SecretScanEnabled = types.BoolValue(*apiResponse.SecretScan.Schedule.Enabled)
+	data.SecretScanSchedule = types.StringValue(*apiResponse.SecretScan.Schedule.Cron)
+	data.SecretScanMitigation = types.StringValue(*apiResponse.SecretScan.Mitigation)
+	data.SecretScanSkipIfRuleNotChange = types.BoolValue(*apiResponse.SecretScan.Schedule.SkipIfRuleNotChange)
+	data.SecretScanExcludePaths = []types.String{}
+	for _, path := range apiResponse.SecretScan.ExcludePaths {
+		data.SecretScanExcludePaths = append(data.SecretScanExcludePaths, types.StringValue(path))
+	}
 
 	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
 	if response.Diagnostics.HasError() {
@@ -507,14 +535,32 @@ func generateUpdatePolicyRequest(data *dto.PolicyResourceModel) (dto.UpdatePolic
 
 	result.XdrEnabled = data.XdrEnabled.ValueBool()
 
-	result.MalwareScan = &dto.MalwareScan{}
-	result.MalwareScan.Mitigation = data.MalwareScanMitigation.ValueStringPointer()
-	if !data.MalwareScanSchedule.IsNull() {
-		result.MalwareScan.Schedule = &dto.Schedule{}
-		result.MalwareScan.Schedule.Cron = data.MalwareScanSchedule.ValueStringPointer()
-		result.MalwareScan.Schedule.Enabled = data.MalwareScanEnabled.ValueBoolPointer()
-	} else if data.MalwareScanEnabled.ValueBool() {
+	if data.MalwareScanSchedule.IsNull() && data.MalwareScanEnabled.ValueBool() {
 		return dto.UpdatePolicyRequest{}, ErrMalwareScanScheduleRequired
+	}
+	result.MalwareScan = &dto.MalwareScan{
+		Mitigation: data.MalwareScanMitigation.ValueStringPointer(),
+		Schedule: &dto.MalwareSchedule{
+			Enabled: data.MalwareScanEnabled.ValueBoolPointer(),
+			Cron:    data.MalwareScanSchedule.ValueStringPointer(),
+		},
+	}
+
+	if data.SecretScanSchedule.IsNull() && data.SecretScanEnabled.ValueBool() {
+		return dto.UpdatePolicyRequest{}, ErrSecretScanScheduleRequired
+	}
+	result.SecretScan = &dto.SecretScan{
+		Mitigation: data.SecretScanMitigation.ValueStringPointer(),
+		Schedule: &dto.SecretSchedule{
+			Enabled:             data.SecretScanEnabled.ValueBoolPointer(),
+			Cron:                data.SecretScanSchedule.ValueStringPointer(),
+			SkipIfRuleNotChange: data.SecretScanSkipIfRuleNotChange.ValueBoolPointer(),
+		},
+		ExcludePaths: []string{},
+	}
+
+	for _, path := range data.SecretScanExcludePaths {
+		result.SecretScan.ExcludePaths = append(result.SecretScan.ExcludePaths, path.ValueString())
 	}
 
 	return result, nil

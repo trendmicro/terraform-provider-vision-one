@@ -1,36 +1,40 @@
 resource "helm_release" "trendmicro" {
   name             = "trendmicro"
-  chart            = "https://github.com/trendmicro/cloudone-container-security-helm/archive/master.tar.gz"
+  chart            = "https://github.com/trendmicro/visionone-container-security-helm/archive/main.tar.gz"
   namespace        = "trendmicro-system"
   create_namespace = true
   wait             = false
 
   set {
-    name  = "cloudOne.apiKey"
+    name  = "visionOne.bootstrapToken"
     value = visionone_container_cluster.example_cluster.api_key
   }
   set {
-    name  = "cloudOne.endpoint"
+    name  = "visionOne.endpoint"
     value = visionone_container_cluster.example_cluster.endpoint
   }
   set_list {
-    name  = "cloudOne.exclusion.namespaces"
+    name  = "visionOne.exclusion.namespaces"
     value = visionone_container_cluster.example_cluster.namespaces
   }
   set {
-    name  = "cloudOne.runtimeSecurity.enabled"
+    name  = "visionOne.runtimeSecurity.enabled"
     value = visionone_container_cluster.example_cluster.runtime_security_enabled
   }
   set {
-    name  = "cloudOne.vulnerabilityScanning.enabled"
+    name  = "visionOne.vulnerabilityScanning.enabled"
     value = visionone_container_cluster.example_cluster.vulnerability_scan_enabled
   }
   set {
-    name  = "cloudOne.malwareScanning.enabled"
+    name  = "visionOne.malwareScanning.enabled"
     value = visionone_container_cluster.example_cluster.malware_scan_enabled
   }
   set {
-    name  = "cloudOne.inventoryCollection.enabled"
+    name  = "visionOne.secretScanning.enabled"
+    value = visionone_container_cluster.example_cluster.secret_scan_enabled
+  }
+  set {
+    name  = "visionOne.inventoryCollection.enabled"
     value = visionone_container_cluster.example_cluster.inventory_collection
   }
 }

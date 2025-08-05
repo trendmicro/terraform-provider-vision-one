@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"terraform-provider-vision-one/pkg/dto"
@@ -119,7 +118,7 @@ func (c *Client) DoRequestWithFullResponse(req *http.Request) (*http.Response, e
 }
 
 func (c *Client) Auth() (*AuthResponse, error) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/v3.0/iam/apiKeys", c.HostURL), strings.NewReader(string("")))
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/v3.0/containerSecurity/kubernetesClusters", c.HostURL), http.NoBody)
 	if err != nil {
 		return nil, err
 	}

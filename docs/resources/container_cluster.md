@@ -23,7 +23,9 @@ resource "visionone_container_cluster" "example_cluster" {
   runtime_security_enabled   = true
   vulnerability_scan_enabled = true
   malware_scan_enabled       = true
+  secret_scan_enabled        = true
   namespaces                 = ["kube-system"]
+  customizable_tags          = [{ id = "tag-id-1" }, { id = "tag-id-2" }]
 }
 ```
 
@@ -32,37 +34,41 @@ resource "visionone_container_cluster" "example_cluster" {
 ```terraform
 resource "helm_release" "trendmicro" {
   name             = "trendmicro"
-  chart            = "https://github.com/trendmicro/cloudone-container-security-helm/archive/master.tar.gz"
+  chart            = "https://github.com/trendmicro/visionone-container-security-helm/archive/main.tar.gz"
   namespace        = "trendmicro-system"
   create_namespace = true
   wait             = false
 
   set {
-    name  = "cloudOne.apiKey"
+    name  = "visionOne.bootstrapToken"
     value = visionone_container_cluster.example_cluster.api_key
   }
   set {
-    name  = "cloudOne.endpoint"
+    name  = "visionOne.endpoint"
     value = visionone_container_cluster.example_cluster.endpoint
   }
   set_list {
-    name  = "cloudOne.exclusion.namespaces"
+    name  = "visionOne.exclusion.namespaces"
     value = visionone_container_cluster.example_cluster.namespaces
   }
   set {
-    name  = "cloudOne.runtimeSecurity.enabled"
+    name  = "visionOne.runtimeSecurity.enabled"
     value = visionone_container_cluster.example_cluster.runtime_security_enabled
   }
   set {
-    name  = "cloudOne.vulnerabilityScanning.enabled"
+    name  = "visionOne.vulnerabilityScanning.enabled"
     value = visionone_container_cluster.example_cluster.vulnerability_scan_enabled
   }
   set {
-    name  = "cloudOne.malwareScanning.enabled"
+    name  = "visionOne.malwareScanning.enabled"
     value = visionone_container_cluster.example_cluster.malware_scan_enabled
   }
   set {
-    name  = "cloudOne.inventoryCollection.enabled"
+    name  = "visionOne.secretScanning.enabled"
+    value = visionone_container_cluster.example_cluster.secret_scan_enabled
+  }
+  set {
+    name  = "visionOne.inventoryCollection.enabled"
     value = visionone_container_cluster.example_cluster.inventory_collection
   }
 }
@@ -110,6 +116,7 @@ resource "helm_release" "trendmicro" {
 
 ### Optional
 
+- `customizable_tags` (Attributes Set) The custom tags and platform tags associated with the cluster. To obtain custom tags, refer to the following URL: https://automation.trendmicro.com/xdr/api-v3/#tag/Attack-Surface-Discovery/paths/~1v3.0~1asrm~1attackSurfaceCustomTags/get. However, platform tags will be provided through an additional API in the future. The difference between custom tags and platform tags is that properties of platform tags are defined by Trend Micro, while properties and values of custom tags can be created and updated by users. (see [below for nested schema](#nestedatt--customizable_tags))
 - `description` (String) The description of the cluster.
 - `malware_scan_enabled` (Boolean) Whether malware scan is enabled for the cluster.
 - `namespaces` (Set of String) The namespaces of kubernetes you want to exclude from scanning. 
@@ -118,6 +125,7 @@ Accepted values: `calico-system`, `istio-system`, `kube-system`, `openshift*` De
 - `proxy` (Attributes) The proxy server for in-cluster component connect to Vision One (see [below for nested schema](#nestedatt--proxy))
 - `resource_id` (String) The ID of the cluster of a different cloud provider.
 - `runtime_security_enabled` (Boolean) Whether runtime security is enabled for the cluster.
+- `secret_scan_enabled` (Boolean) Whether secret scan is enabled for the cluster.
 - `vulnerability_scan_enabled` (Boolean) Whether vulnerability scan is enabled for the cluster.
 
 ### Read-Only
@@ -130,6 +138,14 @@ Accepted values: `calico-system`, `istio-system`, `kube-system`, `openshift*` De
 - `last_evaluated_date_time` (String) Last time of the cluster was evaluated against the policy rules.
 - `orchestrator` (String) The orchestrator of the cluster.
 - `updated_date_time` (String) The time when the cluster was last updated.
+
+<a id="nestedatt--customizable_tags"></a>
+### Nested Schema for `customizable_tags`
+
+Required:
+
+- `id` (String) The ID of the custom tag.
+
 
 <a id="nestedatt--proxy"></a>
 ### Nested Schema for `proxy`
