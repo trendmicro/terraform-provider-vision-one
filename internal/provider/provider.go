@@ -3,7 +3,10 @@ package provider
 import (
 	"context"
 	"os"
+
 	"terraform-provider-vision-one/internal/trendmicro"
+	camdatasources "terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/data-sources"
+	azureresources "terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/resources"
 	"terraform-provider-vision-one/internal/trendmicro/container_security/resources"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -29,8 +32,10 @@ const (
 )
 
 // Ensure TrendMicroProvider satisfies various provider interfaces.
-var _ provider.Provider = &TrendMicroProvider{}
-var _ provider.ProviderWithFunctions = &TrendMicroProvider{}
+var (
+	_ provider.Provider              = &TrendMicroProvider{}
+	_ provider.ProviderWithFunctions = &TrendMicroProvider{}
+)
 
 // TrendMicroProvider defines the provider implementation.
 type TrendMicroProvider struct {
@@ -162,12 +167,18 @@ func (p *TrendMicroProvider) Resources(ctx context.Context) []func() resource.Re
 		resources.NewClusterResource,
 		resources.NewRulesetResource,
 		resources.NewPolicyResource,
+		azureresources.NewAppRegistration,
+		azureresources.NewServicePrincipal,
+		azureresources.NewFederatedIdentity,
+		azureresources.NewRoleDefinition,
+		azureresources.NewRoleAssignmentResource,
+		azureresources.NewCAMConnectorResource,
 	}
 }
 
 func (p *TrendMicroProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
-		// NewVisionOneOneDataSource,
+		camdatasources.NewCAMCloudAccountsDataSource,
 	}
 }
 
