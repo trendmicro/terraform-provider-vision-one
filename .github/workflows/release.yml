@@ -20,6 +20,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       -
+        name: Remove Ruby, CodeQL, PyPy and Python folders
+        run: |
+          echo "Removing /opt/hostedtoolcache/Ruby, /opt/hostedtoolcache/CodeQL, /opt/hostedtoolcache/PyPy and /opt/hostedtoolcache/Python"
+          sudo rm -rf /opt/hostedtoolcache/Ruby || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /opt/hostedtoolcache/PyPy || true
+          sudo rm -rf /opt/hostedtoolcache/Python || true
+          echo "Cleanup complete."
+      -
         name: Checkout
         uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29 # v4.1.6
       -
