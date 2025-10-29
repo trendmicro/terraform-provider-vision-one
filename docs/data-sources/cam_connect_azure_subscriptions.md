@@ -1,6 +1,6 @@
 ---
 page_title: "visionone_cam_connect_azure_subscriptions Data Source - visionone"
-subcategory: ""
+subcategory: "Azure"
 description: |-
   Data source for retrieving cloud accounts from Trend Micro Vision One Cloud Account Management.
 ---

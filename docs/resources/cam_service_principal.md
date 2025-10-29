@@ -1,6 +1,6 @@
 ---
 page_title: "visionone_cam_service_principal Resource - visionone"
-subcategory: ""
+subcategory: "Azure"
 description: |-
   Trend Micro Vision One CAM Azure Service Principal resource
 ---

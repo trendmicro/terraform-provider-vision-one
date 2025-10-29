@@ -1,6 +1,6 @@
 ---
 page_title: "visionone_cam_role_definition Resource - visionone"
-subcategory: ""
+subcategory: "Azure"
 description: |-
   Trend Micro Vision One CAM Azure Role Definition resource. Creates a custom Azure role with the necessary permissions https://docs.trendmicro.com/en-us/documentation/article/trend-vision-one-azure-required-granted-permissions for Vision One Cloud Account Management.
 ---
