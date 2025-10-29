@@ -1,6 +1,6 @@
 ---
 page_title: "visionone_cam_federated_identity Resource - visionone"
-subcategory: ""
+subcategory: "Azure"
 description: |-
   Trend Micro Vision One CAM Azure Federated Identity Credential resource
 ---

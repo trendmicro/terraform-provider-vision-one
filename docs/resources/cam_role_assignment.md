@@ -1,6 +1,6 @@
 ---
 page_title: "visionone_cam_role_assignment Resource - visionone"
-subcategory: ""
+subcategory: "Azure"
 description: |-
   Trend Micro Vision One CAM Azure Role Assignment resource
 ---

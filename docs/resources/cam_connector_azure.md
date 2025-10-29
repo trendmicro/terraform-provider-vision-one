@@ -1,6 +1,6 @@
 ---
 page_title: "visionone_cam_connector_azure Resource - visionone"
-subcategory: ""
+subcategory: "Azure"
 description: |-
   Manages an Azure connector for Trend Micro Vision One CAM
 ---

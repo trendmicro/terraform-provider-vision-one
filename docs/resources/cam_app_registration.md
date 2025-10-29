@@ -1,6 +1,6 @@
 ---
 page_title: "visionone_cam_app_registration Resource - visionone"
-subcategory: ""
+subcategory: "Azure"
 description: |-
   Trend Micro Vision One CAM Azure App Registration resource
 ---
