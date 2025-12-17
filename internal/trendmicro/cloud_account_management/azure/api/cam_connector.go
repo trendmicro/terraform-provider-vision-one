@@ -73,7 +73,7 @@ func (c *CamClient) CreateSubscription(data *CreateSubscriptionRequest) error {
 
 	var resp *http.Response
 	var postRequestErr error
-	if describeResp != nil {
+	if describeResp != nil && describeResp.ApplicationID != "" {
 		// If the subscription already exists, we will modify it instead of creating a new one
 		fmt.Printf("Subscription already exists, modifying subscription: %s\n", data.SubscriptionID)
 		url := fmt.Sprintf("%s/beta/cam/azureSubscriptions/%s", c.Client.HostURL, data.SubscriptionID)
