@@ -41,8 +41,27 @@ jobs:
         name: Checkout
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
       -
-        name: Unshallow
-        run: git fetch --prune --unshallow
+        name: Set Git Identity
+        run: |
+          git config --global user.email "${{ github.event.inputs.email || 'actions@github.com' }}"
+          git config --global user.name "${{ github.event.inputs.name || github.actor }}"
+      -
+        name: Create Tag if Not Exists
+        id: create_tag
+        run: |
+          TAG_NAME=${{ github.event.inputs.tag_name }}
+          TAG_EXISTS=$(git tag -l "$TAG_NAME")
+          if [ -z "$TAG_EXISTS" ]; then
+            git tag -a "$TAG_NAME" -m "Tagging version $TAG_NAME"
+            git push origin "$TAG_NAME"
+            echo "::set-output name=tag_created::true"
+          else
+            echo "::set-output name=tag_created::false"
+          fi
+
+      -
+        name: Fetch all tags and branches
+        run: git fetch --prune --unshallow --tags
       -
         name: Set up Go
         uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
@@ -69,10 +88,3 @@ jobs:
           GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
           # GitHub sets this automatically
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish Release
-        run: |
-          RELEASE_ID=${{ steps.create_release.outputs.release_id }}
-          curl -s -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            -d "{\"draft\":false}" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID"
