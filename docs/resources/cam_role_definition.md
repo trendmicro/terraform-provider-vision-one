@@ -2,16 +2,16 @@
 page_title: "visionone_cam_role_definition Resource - visionone"
 subcategory: "Azure"
 description: |-
-  Trend Micro Vision One CAM Azure Role Definition resource. Creates a custom Azure role with the necessary permissions https://docs.trendmicro.com/en-us/documentation/article/trend-vision-one-azure-required-granted-permissions for Vision One Cloud Account Management.
+  Trend Micro Vision One CAM Azure Role Definition resource. Creates a custom Azure role with the necessary permissions https://docs.trendmicro.com/en-us/documentation/article/trend-vision-one-azure-sub-required-permissions for Vision One Cloud Account Management.
 ---
 
 # visionone_cam_role_definition (Resource)
 
-Trend Micro Vision One CAM Azure Role Definition resource. Creates a custom Azure role with the [necessary permissions](https://docs.trendmicro.com/en-us/documentation/article/trend-vision-one-azure-required-granted-permissions) for Vision One Cloud Account Management.
+Trend Micro Vision One CAM Azure Role Definition resource. Creates a custom Azure role with the [necessary permissions](https://docs.trendmicro.com/en-us/documentation/article/trend-vision-one-azure-sub-required-permissions) for Vision One Cloud Account Management.
 
 #### Note
 Feature-based permission configuration will be implemented in a future release. Currently, all standard permissions are applied regardless of selected features.
-Review the permissions required to deploy resources and the permissions granted during the terraform process, [Azure required and granted permissions](https://docs.trendmicro.com/en-us/documentation/article/trend-vision-one-azure-required-granted-permissions)
+Review the permissions required to deploy resources and the permissions granted during the terraform process, [Azure required and granted permissions](https://docs.trendmicro.com/en-us/documentation/article/trend-vision-one-azure-sub-required-permissions)
 
 ## Example Usage
 

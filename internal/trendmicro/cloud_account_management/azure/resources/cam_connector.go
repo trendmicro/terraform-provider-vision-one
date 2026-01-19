@@ -41,17 +41,26 @@ type CAMConnectorResource struct {
 
 // CAMConnectorResourceModel describes the resource data model.
 type CAMConnectorResourceModel struct {
-	ApplicationID             types.String `tfsdk:"application_id"`
-	ConnectedSecurityServices types.List   `tfsdk:"connected_security_services"`
-	CreatedDateTime           types.String `tfsdk:"created_date_time"`
-	Description               types.String `tfsdk:"description"`
-	ID                        types.String `tfsdk:"id"`
-	IsCAMCloudASRMEnabled     types.Bool   `tfsdk:"is_cam_cloud_asrm_enabled"`
-	Name                      types.String `tfsdk:"name"`
-	SubscriptionID            types.String `tfsdk:"subscription_id"`
-	State                     types.String `tfsdk:"state"`
-	TenantID                  types.String `tfsdk:"tenant_id"`
-	UpdatedDateTime           types.String `tfsdk:"updated_date_time"`
+	ApplicationID             types.String                `tfsdk:"application_id"`
+	ConnectedSecurityServices types.List                  `tfsdk:"connected_security_services"`
+	CreatedDateTime           types.String                `tfsdk:"created_date_time"`
+	Description               types.String                `tfsdk:"description"`
+	ID                        types.String                `tfsdk:"id"`
+	IsCAMCloudASRMEnabled     types.Bool                  `tfsdk:"is_cam_cloud_asrm_enabled"`
+	Name                      types.String                `tfsdk:"name"`
+	SubscriptionID            types.String                `tfsdk:"subscription_id"`
+	State                     types.String                `tfsdk:"state"`
+	TenantID                  types.String                `tfsdk:"tenant_id"`
+	UpdatedDateTime           types.String                `tfsdk:"updated_date_time"`
+	ManagementGroupDetails    ManagementGroupDetailsModel `tfsdk:"management_group_details"`
+	IsSharedApplication       types.Bool                  `tfsdk:"is_shared_application"`
+	CamDeployedRegion         types.String                `tfsdk:"cam_deployed_region"`
+}
+
+type ManagementGroupDetailsModel struct {
+	ID                    types.String `tfsdk:"id"`
+	DisplayName           types.String `tfsdk:"display_name"`
+	ExcludedSubscriptions types.List   `tfsdk:"excluded_subscriptions"`
 }
 
 func (r *CAMConnectorResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -152,6 +161,41 @@ func (r *CAMConnectorResource) Schema(ctx context.Context, req resource.SchemaRe
 					stringplanmodifier.RequiresReplaceIfConfigured(),
 				},
 			},
+			"management_group_details": schema.SingleNestedAttribute{
+				Optional:            true,
+				MarkdownDescription: "Azure management group details for the connector",
+				Attributes: map[string]schema.Attribute{
+					"id": schema.StringAttribute{
+						Required:            true,
+						MarkdownDescription: "Azure management group ID",
+					},
+					"display_name": schema.StringAttribute{
+						Required:            true,
+						MarkdownDescription: "Display name of the management group",
+					},
+					"excluded_subscriptions": schema.ListAttribute{
+						ElementType:         types.StringType,
+						Optional:            true,
+						MarkdownDescription: "List of subscription IDs to exclude from the management group",
+					},
+				},
+			},
+			"is_shared_application": schema.BoolAttribute{
+				Optional:            true,
+				Computed:            true,
+				MarkdownDescription: "Whether the application is shared across multiple connectors",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"cam_deployed_region": schema.StringAttribute{
+				Optional:            true,
+				Computed:            true,
+				MarkdownDescription: "Region where CAM is deployed for this connector",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
 		},
 	}
 }
@@ -212,6 +256,13 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 	tflog.Debug(ctx, fmt.Sprintf("[CAM Connector][Create] Creating Azure connector with name: %s, subscription ID: %s, tenant ID: %s",
 		plan.Name.ValueString(), plan.SubscriptionID.ValueString(), plan.TenantID.ValueString()))
 
+	// Convert management group details if provided
+	managementGroup, convertDiags := convertManagementGroupDetailsToAPI(ctx, &plan.ManagementGroupDetails)
+	resp.Diagnostics.Append(convertDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	body := &api.CreateSubscriptionRequest{
 		ApplicationID:             plan.ApplicationID.ValueString(),
 		ConnectedSecurityServices: connectedServices,
@@ -220,6 +271,10 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		Name:                      plan.Name.ValueString(),
 		SubscriptionID:            plan.SubscriptionID.ValueString(),
 		TenantID:                  plan.TenantID.ValueString(),
+		ManagementGroup:           managementGroup,
+		IsSharedApplication:       plan.IsSharedApplication.ValueBool(),
+		CamDeployedRegion:         plan.CamDeployedRegion.ValueString(),
+		IsTFProviderDeployed:      true,
 	}
 
 	createErr := r.client.CreateSubscription(body)
@@ -250,6 +305,14 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		plan.TenantID = types.StringValue(res.TenantID)
 		plan.CreatedDateTime = types.StringValue(res.CreatedDateTime)
 		plan.UpdatedDateTime = types.StringValue(res.UpdatedDateTime)
+
+		// Set cam_deployed_region from API response
+		if res.CamDeployedRegion != "" {
+			plan.CamDeployedRegion = types.StringValue(res.CamDeployedRegion)
+		}
+
+		// Preserve management_group_details and is_shared_application from plan
+		// since API response (SubscriptionResponse) doesn't return these fields
 
 		if !plan.ConnectedSecurityServices.IsNull() {
 			connectedServicesList, convertDiags := convertAPISecurityServicesToTerraform(ctx, res.ConnectedSecurityServices)
@@ -307,9 +370,16 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 
 	res, err := r.client.ReadSubscription(state.SubscriptionID.ValueString())
 	if err != nil {
-		tflog.Warn(ctx, "[CAM Connector][Read] Failed to describe subscription, will attempt to create it", map[string]interface{}{
+		tflog.Warn(ctx, "[CAM Connector][Read] Failed to describe subscription, will attempt to create it", map[string]any{
 			"error": err.Error(),
 		})
+
+		// Convert management group details if provided
+		managementGroup, convertDiags := convertManagementGroupDetailsToAPI(ctx, &state.ManagementGroupDetails)
+		resp.Diagnostics.Append(convertDiags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
 
 		body := &api.CreateSubscriptionRequest{
 			ApplicationID:             state.ApplicationID.ValueString(),
@@ -319,6 +389,10 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 			Name:                      state.Name.ValueString(),
 			SubscriptionID:            state.SubscriptionID.ValueString(),
 			TenantID:                  state.TenantID.ValueString(),
+			ManagementGroup:           managementGroup,
+			IsSharedApplication:       state.IsSharedApplication.ValueBool(),
+			CamDeployedRegion:         state.CamDeployedRegion.ValueString(),
+			IsTFProviderDeployed:      true,
 		}
 
 		err = r.client.CreateSubscription(body)
@@ -338,6 +412,7 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 			Name:                      state.Name.ValueString(),
 			SubscriptionID:            res.SubscriptionID,
 			TenantID:                  state.TenantID.ValueString(),
+			IsTFProviderDeployed:      true,
 		}
 
 		err = r.client.UpdateSubscription(res.SubscriptionID, body)
@@ -379,6 +454,14 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 		state.TenantID = types.StringValue(res.TenantID)
 		state.CreatedDateTime = types.StringValue(res.CreatedDateTime)
 		state.UpdatedDateTime = types.StringValue(res.UpdatedDateTime)
+
+		// Set cam_deployed_region from API response
+		if res.CamDeployedRegion != "" {
+			state.CamDeployedRegion = types.StringValue(res.CamDeployedRegion)
+		}
+
+		// Preserve management_group_details and is_shared_application from state
+		// since API response (SubscriptionResponse) doesn't return these fields
 
 		if !state.ConnectedSecurityServices.IsNull() {
 			connectedServicesList, convertDiags := convertAPISecurityServicesToTerraform(ctx, res.ConnectedSecurityServices)
@@ -467,6 +550,13 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		tenantID = state.TenantID.ValueString()
 	}
 
+	// Convert management group details if provided
+	managementGroup, convertDiags := convertManagementGroupDetailsToAPI(ctx, &plan.ManagementGroupDetails)
+	resp.Diagnostics.Append(convertDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	body := &api.ModifySubscriptionRequest{
 		ApplicationID:             applicationID,
 		ConnectedSecurityServices: connectedServices,
@@ -475,6 +565,10 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		Name:                      plan.Name.ValueString(),
 		SubscriptionID:            subscriptionID,
 		TenantID:                  tenantID,
+		ManagementGroup:           managementGroup,
+		IsSharedApplication:       plan.IsSharedApplication.ValueBool(),
+		CamDeployedRegion:         plan.CamDeployedRegion.ValueString(),
+		IsTFProviderDeployed:      true,
 	}
 
 	err := r.client.UpdateSubscription(subscriptionID, body)
@@ -505,6 +599,16 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		state.TenantID = types.StringValue(res.TenantID)
 		state.CreatedDateTime = types.StringValue(res.CreatedDateTime)
 		state.UpdatedDateTime = types.StringValue(res.UpdatedDateTime)
+
+		// Set cam_deployed_region from API response
+		if res.CamDeployedRegion != "" {
+			state.CamDeployedRegion = types.StringValue(res.CamDeployedRegion)
+		}
+
+		// Preserve management_group_details and is_shared_application from plan
+		// since API response doesn't return these fields
+		state.ManagementGroupDetails = plan.ManagementGroupDetails
+		state.IsSharedApplication = plan.IsSharedApplication
 
 		if !plan.ConnectedSecurityServices.IsNull() {
 			connectedServicesList, convertDiags := convertAPISecurityServicesToTerraform(ctx, res.ConnectedSecurityServices)
@@ -543,6 +647,32 @@ func (r *CAMConnectorResource) Delete(ctx context.Context, req resource.DeleteRe
 		)
 		return
 	}
+}
+
+func convertManagementGroupDetailsToAPI(ctx context.Context, mgmtGroup *ManagementGroupDetailsModel) (api.ManagementGroupDetails, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	var managementGroup api.ManagementGroupDetails
+
+	if !mgmtGroup.ID.IsNull() {
+		var excludedSubsStr string
+		if !mgmtGroup.ExcludedSubscriptions.IsNull() {
+			var excludedSubs []string
+			convertDiags := mgmtGroup.ExcludedSubscriptions.ElementsAs(ctx, &excludedSubs, false)
+			diags.Append(convertDiags...)
+			if diags.HasError() {
+				return managementGroup, diags
+			}
+			// Convert array to comma-separated string for backend API
+			excludedSubsStr = strings.Join(excludedSubs, ",")
+		}
+		managementGroup = api.ManagementGroupDetails{
+			ID:                    mgmtGroup.ID.ValueString(),
+			DisplayName:           mgmtGroup.DisplayName.ValueString(),
+			ExcludedSubscriptions: excludedSubsStr,
+		}
+	}
+
+	return managementGroup, diags
 }
 
 func convertAPISecurityServicesToTerraform(ctx context.Context, apiServices []api.SecurityService) (types.List, diag.Diagnostics) {

@@ -55,7 +55,7 @@ func (r *RoleDefinition) Metadata(_ context.Context, req resource.MetadataReques
 
 func (r *RoleDefinition) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Trend Micro Vision One CAM Azure Role Definition resource. Creates a custom Azure role with the [necessary permissions](https://docs.trendmicro.com/en-us/documentation/article/trend-vision-one-azure-required-granted-permissions) for Vision One Cloud Account Management.",
+		MarkdownDescription: "Trend Micro Vision One CAM Azure Role Definition resource. Creates a custom Azure role with the [necessary permissions](https://docs.trendmicro.com/en-us/documentation/article/trend-vision-one-azure-sub-required-permissions) for Vision One Cloud Account Management.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Unique identifier for the Trend Vision One CAM custom role definition.",

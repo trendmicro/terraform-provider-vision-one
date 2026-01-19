@@ -1,3 +1,4 @@
+# Basic example
 resource "visionone_cam_connector_azure" "cam_connector_azure" {
   application_id            = "aaaaaaaa-pppp-pppp-iiii-dddddddddddd"
   name                      = "Trend Micro Vision One CAM Azure Connector"

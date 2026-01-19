@@ -16,23 +16,31 @@ type SecurityService struct {
 }
 
 type CreateSubscriptionRequest struct {
-	ApplicationID             string            `json:"applicationId"`
-	ConnectedSecurityServices []SecurityService `json:"connectedSecurityServices"`
-	Description               string            `json:"description"`
-	IsCAMCloudASRMEnabled     bool              `json:"isCAMCloudASRMEnabled"`
-	Name                      string            `json:"name"`
-	SubscriptionID            string            `json:"subscriptionId"`
-	TenantID                  string            `json:"tenantId"`
+	ApplicationID             string                 `json:"applicationId"`
+	ConnectedSecurityServices []SecurityService      `json:"connectedSecurityServices"`
+	Description               string                 `json:"description"`
+	IsCAMCloudASRMEnabled     bool                   `json:"isCAMCloudASRMEnabled"`
+	Name                      string                 `json:"name"`
+	SubscriptionID            string                 `json:"subscriptionId"`
+	TenantID                  string                 `json:"tenantId"`
+	ManagementGroup           ManagementGroupDetails `json:"managementGroup,omitempty"`
+	IsSharedApplication       bool                   `json:"isSharedApplication,omitempty"`
+	CamDeployedRegion         string                 `json:"camDeployedRegion,omitempty"`
+	IsTFProviderDeployed      bool                   `json:"isTFProviderDeployed"`
 }
 
 type ModifySubscriptionRequest struct {
-	ApplicationID             string            `json:"applicationId"`
-	ConnectedSecurityServices []SecurityService `json:"connectedSecurityServices,omitempty"`
-	Description               string            `json:"description"`
-	IsCAMCloudASRMEnabled     bool              `json:"isCAMCloudASRMEnabled,omitempty"`
-	Name                      string            `json:"name"`
-	SubscriptionID            string            `json:"subscriptionId,omitempty"`
-	TenantID                  string            `json:"tenantId"`
+	ApplicationID             string                 `json:"applicationId"`
+	ConnectedSecurityServices []SecurityService      `json:"connectedSecurityServices,omitempty"`
+	Description               string                 `json:"description"`
+	IsCAMCloudASRMEnabled     bool                   `json:"isCAMCloudASRMEnabled,omitempty"`
+	Name                      string                 `json:"name"`
+	SubscriptionID            string                 `json:"subscriptionId,omitempty"`
+	TenantID                  string                 `json:"tenantId"`
+	ManagementGroup           ManagementGroupDetails `json:"managementGroup,omitempty"`
+	IsSharedApplication       bool                   `json:"isSharedApplication,omitempty"`
+	CamDeployedRegion         string                 `json:"camDeployedRegion,omitempty"`
+	IsTFProviderDeployed      bool                   `json:"isTFProviderDeployed"`
 }
 
 type SubscriptionResponse struct {
@@ -52,6 +60,12 @@ type SubscriptionResponse struct {
 	SubscriptionID            string            `json:"id"`
 	TenantID                  string            `json:"tenantId"`
 	UpdatedDateTime           string            `json:"updatedDateTime"`
+}
+
+type ManagementGroupDetails struct {
+	ID                    string `json:"id,omitempty"`
+	DisplayName           string `json:"displayName,omitempty"`
+	ExcludedSubscriptions string `json:"excludedSubscriptions,omitempty"`
 }
 
 func (c *CamClient) CreateSubscription(data *CreateSubscriptionRequest) error {
