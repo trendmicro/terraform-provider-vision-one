@@ -26,7 +26,6 @@ resource "visionone_cam_federated_identity" "cam_federated_identity" {
   depends_on                 = [visionone_cam_app_registration.cam_app_registration]
   application_id             = visionone_cam_app_registration.cam_app_registration.application_id
   app_registration_object_id = visionone_cam_app_registration.cam_app_registration.object_id
-  cam_deployed_region        = "us"                    # Replace with your deployed region, e.g., "us"
   v1_business_id             = "<your_v1_business_id>" # Replace with your Vision One business ID
   federated_identity_name    = "v1-fed-credential"     # Name of the Federated Identity, default set up to v1-fed-credential
 }
@@ -51,7 +50,6 @@ resource "visionone_cam_role_assignment" "cam_role_assignment" {
   role_definition_id = visionone_cam_role_definition.cam_role_definition[each.key].id
   principal_id       = visionone_cam_service_principal.cam_service_principal.principal_id
   subscription_id    = each.value
-
 }
 
 resource "visionone_cam_connector_azure" "cam_connector_azure" {
@@ -72,7 +70,6 @@ output "cam_configuration_main_subscription" {
   value = {
     app_registration_id         = visionone_cam_app_registration.cam_app_registration.application_id
     app_registration_object_id  = visionone_cam_app_registration.cam_app_registration.object_id
-    cam_deployed_region         = visionone_cam_federated_identity.cam_federated_identity.cam_deployed_region
     service_principal_object_id = visionone_cam_service_principal.cam_service_principal.principal_id
     subscription_id             = visionone_cam_app_registration.cam_app_registration.subscription_id
     tenant_id                   = visionone_cam_app_registration.cam_app_registration.tenant_id

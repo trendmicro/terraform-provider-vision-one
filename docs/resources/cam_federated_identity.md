@@ -39,7 +39,7 @@ resource "visionone_cam_service_principal" "cam_service_principal" {
 resource "visionone_cam_federated_identity" "cam_federated_identity" {
   depends_on                 = [visionone_cam_app_registration.cam_app_registration]
   app_registration_object_id = visionone_cam_app_registration.cam_app_registration.object_id
-  cam_deployed_region        = "us"                    # Replace with your deployed region, e.g., "us"
+  application_id             = visionone_cam_app_registration.cam_app_registration.application_id
   v1_business_id             = "<your_v1_business_id>" # Replace with your Vision One business ID
   federated_identity_name    = "v1-fed-credential"     # Name of the Federated Identity, default set up to v1-fed-credential
 }
@@ -64,8 +64,9 @@ output "cam_configuration_main_subscription" {
 
 ### Optional
 
-- `cam_deployed_region` (String) The region where CAM is deployed. Used to determine the issuer URL for the Federated Identity Credential. The supported regions are `au`, `sg`, `us`, `in`, `jp`, `eu`, and `mea`.
+- `cam_deployed_region` (String, Deprecated) **Deprecated**: Use `vision_one_region_code` instead. This field is kept for backwards compatibility and will be removed in a future version.
 - `federated_identity_name` (String) Name of the Federated Identity.
+- `vision_one_region_code` (String) Vision One region code for the federated identity credential. If not specified, the region code will be automatically extracted from the provider's `regional_fqdn` configuration. The supported region codes are `au`, `sg`, `us`, `in`, `jp`, `eu`, `mea`, `ca`, `uk`. Defaults to `us` if no region can be determined.
 
 ### Read-Only
 

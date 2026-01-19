@@ -18,12 +18,17 @@ import (
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/resources/config"
 )
 
+const (
+	defaultVisionOneRegionCode = "us"
+)
+
 type federatedIdentity struct {
 	client *api.CamClient
 }
 
 type camFederatedIdentityCredentialModel struct {
 	CamDeployedRegion     types.String `tfsdk:"cam_deployed_region"`
+	VisionOneRegionCode   types.String `tfsdk:"vision_one_region_code"`
 	ClientID              types.String `tfsdk:"application_id"`
 	FederatedIdentityName types.String `tfsdk:"federated_identity_name"`
 	ObjectID              types.String `tfsdk:"app_registration_object_id"`
@@ -50,9 +55,18 @@ func (r *federatedIdentity) Schema(_ context.Context, _ resource.SchemaRequest, 
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
-			"cam_deployed_region": schema.StringAttribute{
-				MarkdownDescription: "The region where CAM is deployed. Used to determine the issuer URL for the Federated Identity Credential. The supported regions are `au`, `sg`, `us`, `in`, `jp`, `eu`, and `mea`.",
+			"vision_one_region_code": schema.StringAttribute{
+				MarkdownDescription: "Vision One region code for the federated identity credential. If not specified, the region code will be automatically extracted from the provider's `regional_fqdn` configuration. The supported region codes are `au`, `sg`, `us`, `in`, `jp`, `eu`, `mea`, `ca`, `uk`. Defaults to `us` if no region can be determined.",
 				Optional:            true,
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"cam_deployed_region": schema.StringAttribute{
+				MarkdownDescription: "**Deprecated**: Use `vision_one_region_code` instead. This field is kept for backwards compatibility and will be removed in a future version.",
+				Optional:            true,
+				DeprecationMessage:  "Use vision_one_region_code instead. This field will be removed in a future version.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -121,14 +135,33 @@ func (r *federatedIdentity) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
-	camDeployedRegion := getDeployedRegion(plan.CamDeployedRegion.ValueString())
+	// Get regional FQDN from provider configuration
+	regionalFQDN := ""
+	if r.client != nil && r.client.Client != nil {
+		regionalFQDN = r.client.Client.HostURL
+	}
+
+	// Resolve Vision One region code with fallback logic
+	visionOneRegionCode := getVisionOneRegionCode(plan.VisionOneRegionCode.ValueString(), plan.CamDeployedRegion.ValueString(), regionalFQDN)
+
+	// Validate region code
+	if !isValidVisionOneRegionCode(visionOneRegionCode) {
+		resp.Diagnostics.AddError(
+			"[Federated Identity][Create] Invalid Vision One Region Code",
+			fmt.Sprintf("Invalid region code '%s'. Supported region codes are: au, sg, us, in, jp, eu, mea, ca, uk", visionOneRegionCode),
+		)
+		return
+	}
+
+	// Convert region code for subject (e.g., "test-us" → "us")
+	subjectRegionCode := getSubjectRegionCode(visionOneRegionCode)
 
 	fed := models.NewFederatedIdentityCredential()
 	fed.SetName(toStringPointer(getFederatedIdentityName(plan.FederatedIdentityName.ValueString())))
 	fed.SetDescription(toStringPointer(config.FEDERATED_CREDENTIALS_DESCRIPTION))
 	fed.SetAudiences([]string{"api://AzureADTokenExchange"})
-	fed.SetIssuer(toStringPointer(getIssuerURL(camDeployedRegion)))
-	fed.SetSubject(toStringPointer(`urn:visionone:identity:` + camDeployedRegion + `:` + v1BusinessID + `:account/` + v1BusinessID))
+	fed.SetIssuer(toStringPointer(getIssuerURL(visionOneRegionCode)))
+	fed.SetSubject(toStringPointer(`urn:visionone:identity:` + subjectRegionCode + `:` + v1BusinessID + `:account/` + v1BusinessID))
 
 	_, err = client.GraphClient.Applications().ByApplicationId(*objectId).FederatedIdentityCredentials().Post(ctx, fed, nil)
 	if err != nil {
@@ -140,6 +173,7 @@ func (r *federatedIdentity) Create(ctx context.Context, req resource.CreateReque
 	plan.FederatedIdentityName = types.StringValue(getFederatedIdentityName(plan.FederatedIdentityName.ValueString()))
 	plan.ObjectID = types.StringValue(plan.ObjectID.ValueString())
 	plan.SubscriptionID = types.StringValue(subscriptionID)
+	plan.VisionOneRegionCode = types.StringValue(visionOneRegionCode)
 
 	diags = resp.State.Set(ctx, &plan)
 	resp.Diagnostics.Append(diags...)
@@ -177,7 +211,7 @@ func (r *federatedIdentity) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 
-	state.CamDeployedRegion = types.StringValue(state.CamDeployedRegion.ValueString())
+	// Preserve the region code from state (don't overwrite with resolved value)
 	state.ClientID = types.StringValue(*app.GetAppId())
 	state.FederatedIdentityName = types.StringValue(getFederatedIdentityName(state.FederatedIdentityName.ValueString()))
 	state.ObjectID = types.StringValue(*app.GetId())
@@ -224,23 +258,44 @@ func (r *federatedIdentity) Update(ctx context.Context, req resource.UpdateReque
 
 	v1BusinessID := plan.V1BusinessID.ValueString()
 	if v1BusinessID == "" {
-		resp.Diagnostics.AddError("Invalid Business ID", "V1 Business ID cannot be empty")
+		resp.Diagnostics.AddError("[Federated Identity][Update] Invalid Business ID", "V1 Business ID cannot be empty")
 		return
 	}
-	camDeployedRegion := getDeployedRegion(plan.CamDeployedRegion.ValueString())
+
+	// Get regional FQDN from provider configuration
+	regionalFQDN := ""
+	if r.client != nil && r.client.Client != nil {
+		regionalFQDN = r.client.Client.HostURL
+	}
+
+	// Resolve Vision One region code with fallback logic
+	visionOneRegionCode := getVisionOneRegionCode(plan.VisionOneRegionCode.ValueString(), plan.CamDeployedRegion.ValueString(), regionalFQDN)
+
+	// Validate region code
+	if !isValidVisionOneRegionCode(visionOneRegionCode) {
+		resp.Diagnostics.AddError(
+			"[Federated Identity][Update] Invalid Vision One Region Code",
+			fmt.Sprintf("Invalid region code '%s'. Supported region codes are: au, sg, us, in, jp, eu, mea, ca, uk", visionOneRegionCode),
+		)
+		return
+	}
+
+	// Convert region code for subject (e.g., "test-us" → "us")
+	subjectRegionCode := getSubjectRegionCode(visionOneRegionCode)
+
 	fed := models.NewFederatedIdentityCredential()
 	fed.SetName(toStringPointer(getFederatedIdentityName(plan.FederatedIdentityName.ValueString())))
 	fed.SetDescription(toStringPointer(config.FEDERATED_CREDENTIALS_DESCRIPTION))
 	fed.SetAudiences([]string{"api://AzureADTokenExchange"})
-	fed.SetIssuer(toStringPointer(getIssuerURL(camDeployedRegion)))
-	fed.SetSubject(toStringPointer(`urn:visionone:identity:` + camDeployedRegion + `:` + v1BusinessID + `:account/` + v1BusinessID))
+	fed.SetIssuer(toStringPointer(getIssuerURL(visionOneRegionCode)))
+	fed.SetSubject(toStringPointer(`urn:visionone:identity:` + subjectRegionCode + `:` + v1BusinessID + `:account/` + v1BusinessID))
 	_, err = client.GraphClient.Applications().ByApplicationId(state.ObjectID.ValueString()).FederatedIdentityCredentials().Post(ctx, fed, nil)
 	if err != nil {
 		resp.Diagnostics.AddError("[Federated Identity][Update] Update Federated Identity Credential Failed", err.Error())
 		return
 	}
 
-	state.CamDeployedRegion = types.StringValue(camDeployedRegion)
+	state.VisionOneRegionCode = types.StringValue(visionOneRegionCode)
 	state.ClientID = types.StringValue(*app.GetAppId())
 	state.ObjectID = types.StringValue(*app.GetId())
 	state.SubscriptionID = plan.SubscriptionID
@@ -312,9 +367,74 @@ func getFederatedIdentityName(name string) string {
 	return name
 }
 
-func getDeployedRegion(region string) string {
-	if region == "" {
-		return "us"
+// extractRegionFromFQDN extracts the region code from Vision One regional FQDN
+// Maps FQDNs to region codes based on the official Vision One regional domains
+func extractRegionFromFQDN(fqdn string) string {
+	// Remove protocol if present
+	fqdn = strings.TrimPrefix(fqdn, "https://")
+	fqdn = strings.TrimPrefix(fqdn, "http://")
+
+	// Regional FQDN mapping
+	fqdnToRegion := map[string]string{
+		"api.au.xdr.trendmicro.com":  "au",                       // Australia
+		"api.ca.xdr.trendmicro.com":  "ca",                       // Canada
+		"api.eu.xdr.trendmicro.com":  "eu",                       // Germany
+		"api.in.xdr.trendmicro.com":  "in",                       // India
+		"api.xdr.trendmicro.co.jp":   "jp",                       // Japan
+		"api.sg.xdr.trendmicro.com":  "sg",                       // Singapore
+		"api.mea.xdr.trendmicro.com": "mea",                      // United Arab Emirates
+		"api.uk.xdr.trendmicro.com":  "uk",                       // United Kingdom
+		"api.xdr.trendmicro.com":     defaultVisionOneRegionCode, // United States
 	}
-	return region
+
+	if region, ok := fqdnToRegion[fqdn]; ok {
+		return region
+	}
+
+	// Return empty string if not found (will trigger fallback logic)
+	return ""
+}
+
+// getVisionOneRegionCode resolves the Vision One region code with fallback logic
+// Priority: vision_one_region_code > regional_fqdn from provider > cam_deployed_region (deprecated) > default "us"
+func getVisionOneRegionCode(visionOneRegion, camDeployedRegion, regionalFQDN string) string {
+	// Prefer vision_one_region_code if provided
+	if visionOneRegion != "" {
+		return visionOneRegion
+	}
+
+	// Try to extract region from provider's regional_fqdn
+	if regionalFQDN != "" {
+		if region := extractRegionFromFQDN(regionalFQDN); region != "" {
+			return region
+		}
+	}
+
+	// Fall back to cam_deployed_region for backwards compatibility
+	if camDeployedRegion != "" {
+		return camDeployedRegion
+	}
+
+	// Default to "us"
+	return defaultVisionOneRegionCode
+}
+
+// isValidVisionOneRegionCode validates the Vision One region code
+func isValidVisionOneRegionCode(region string) bool {
+	validRegions := []string{"au", "sg", "us", "in", "jp", "eu", "mea", "ca", "uk", "test-us"}
+	for _, valid := range validRegions {
+		if region == valid {
+			return true
+		}
+	}
+	return false
+}
+
+// getSubjectRegionCode converts region codes to their subject format
+// Special handling: "test-us" → "us" for subject URN
+func getSubjectRegionCode(regionCode string) string {
+	if regionCode == "test-us" {
+		return defaultVisionOneRegionCode
+	}
+	return regionCode
 }

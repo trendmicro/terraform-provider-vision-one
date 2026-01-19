@@ -25,7 +25,7 @@ resource "visionone_cam_service_principal" "cam_service_principal" {
 resource "visionone_cam_federated_identity" "cam_federated_identity" {
   depends_on                 = [visionone_cam_app_registration.cam_app_registration]
   app_registration_object_id = visionone_cam_app_registration.cam_app_registration.object_id
-  cam_deployed_region        = "us"                    # Replace with your deployed region, e.g., "us"
+  application_id             = visionone_cam_app_registration.cam_app_registration.application_id
   v1_business_id             = "<your_v1_business_id>" # Replace with your Vision One business ID
   federated_identity_name    = "v1-fed-credential"     # Name of the Federated Identity, default set up to v1-fed-credential
 }
