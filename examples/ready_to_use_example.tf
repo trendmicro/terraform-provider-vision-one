@@ -27,11 +27,11 @@ provider "helm" {
 }
 
 provider "visionone" {
-  api_key       = "<your-api-key>" # get your api key
+  api_key       = "<your-api-key>"       # get your api key
   regional_fqdn = "<your-regional-fqdn>" # get your fqdn
 }
 
-
+# Container Security Cluster
 resource "visionone_container_cluster" "example_cluster" {
   name                       = "user_eks_fargat"
   description                = "terraform create cluster"
@@ -92,5 +92,54 @@ resource "helm_release" "trendmicro" {
   #  name = "visionOne.fargateInjector.enabled"
   #  value = "true"
   #}
+}
+
+# Cloud Risk Management Profile
+resource "visionone_crm_profile" "example_profile" {
+  name        = "my-crm-profile"
+  description = "Cloud Risk Management profile managed by Terraform"
+
+  # Rule without extra settings
+  scan_rule {
+    id         = "EC2-001"
+    provider   = "aws"
+    enabled    = true
+    risk_level = "MEDIUM"
+  }
+
+  # Rule with ttl setting
+  scan_rule {
+    id         = "RTM-002"
+    provider   = "aws"
+    enabled    = true
+    risk_level = "MEDIUM"
+    extra_settings {
+      name  = "ttl"
+      type  = "ttl"
+      value = 72
+    }
+  }
+
+  # Rule with multiple extra settings and exceptions
+  scan_rule {
+    id         = "SNS-002"
+    provider   = "aws"
+    enabled    = true
+    risk_level = "MEDIUM"
+    exceptions {
+      filter_tags = ["ignore_this_tag"]
+      resource_ids = []
+    }
+    extra_settings {
+      name      = "friendlyAccounts"
+      type      = "multiple-aws-account-values"
+      value_set = ["123456789012"]
+    }
+    extra_settings {
+      name      = "accountTags"
+      type      = "tags"
+      value_set = ["env_prod", "team_devops"]
+    }
+  }
 }
 

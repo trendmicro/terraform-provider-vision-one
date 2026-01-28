@@ -34,3 +34,18 @@ bin/
 **/bootstrap
 
 .idea/
+.vscode/
+.DS_Store
+dev/
+
+# Terraform state files
+*.tfstate
+*.tfstate.backup
+*.terraform.lock.hcl
+
+# .terraform directory
+.terraform/
+
+# Terraform plan output
+tfplan
+tfplan.json

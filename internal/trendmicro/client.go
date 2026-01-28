@@ -32,6 +32,9 @@ const (
 	StatusVisionOneInnerError = 491
 
 	TMUserAgent = "TMXDRContainerTerraform"
+
+	// global User-Agent header for all requests
+	UserAgentHeader = "TMV1-Terraform-Provider"
 )
 
 // NewClient -
@@ -55,6 +58,7 @@ func NewClient(host, token *string, version string) (*Client, error) {
 func (c *Client) DoRequest(req *http.Request) (body []byte, err error) {
 	req.Header.Set("Authorization", "Bearer "+c.BearerToken)
 	req.Header.Set("HOST", c.HostURL)
+	req.Header.Set("User-Agent", UserAgentHeader+"/"+c.ProviderVersion)
 	req.Header.Set("x-tm-user-agent", c.TMUserAgent+"/"+c.ProviderVersion)
 
 	fmt.Printf("Sending HTTP Request %v", req)
@@ -89,6 +93,7 @@ func (c *Client) DoRequest(req *http.Request) (body []byte, err error) {
 func (c *Client) DoRequestWithFullResponse(req *http.Request) (*http.Response, error) {
 	req.Header.Set("Authorization", "Bearer "+c.BearerToken)
 	req.Header.Set("HOST", c.HostURL)
+	req.Header.Set("User-Agent", UserAgentHeader+"/"+c.ProviderVersion)
 	req.Header.Set("x-tm-user-agent", c.TMUserAgent+"/"+c.ProviderVersion)
 
 	res, err := c.HTTPClient.Do(req)
@@ -117,15 +122,29 @@ func (c *Client) DoRequestWithFullResponse(req *http.Request) (*http.Response, e
 	}
 }
 
+// Auth - Authenticate the client with the Trend Micro Vision One API Secret Token and validate connectivity
 func (c *Client) Auth() (*AuthResponse, error) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/v3.0/containerSecurity/kubernetesClusters", c.HostURL), http.NoBody)
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/v3.0/healthcheck/connectivity", c.HostURL), http.NoBody)
 	if err != nil {
 		return nil, err
 	}
 
-	_, err = c.DoRequest(req)
+	body, err := c.DoRequest(req)
 	if err != nil {
 		return nil, err
+	}
+
+	bodyJSON := struct {
+		Status string `json:"status"`
+	}{}
+
+	err = json.Unmarshal(body, &bodyJSON)
+	if err != nil {
+		return nil, err
+	}
+
+	if bodyJSON.Status != "available" {
+		return nil, fmt.Errorf("authentication failed with status: %s", bodyJSON.Status)
 	}
 
 	return nil, nil
