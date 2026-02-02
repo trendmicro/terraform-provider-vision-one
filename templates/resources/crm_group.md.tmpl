@@ -1,0 +1,21 @@
+---
+page_title: "{{.Name}} {{.Type}} - visionone"
+subcategory: "Cloud Risk Management"
+description: |-
+{{ .Description | plainmarkdown | trimspace | prefixlines "  " }}
+---
+
+# {{.Name}} ({{.Type}})
+
+{{ .Description | trimspace }}
+
+## Example Usage
+
+{{ tffile (printf "examples/crm/resources/%s/resource.tf" .Name)}}
+
+{{ .SchemaMarkdown | trimspace }}
+
+## Import
+```shell
+terraform import visionone_crm_group.example_group ${group_id}
+```
