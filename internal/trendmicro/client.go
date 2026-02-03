@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"path"
 	"time"
 
 	"terraform-provider-vision-one/pkg/dto"
@@ -148,4 +150,23 @@ func (c *Client) Auth() (*AuthResponse, error) {
 	}
 
 	return nil, nil
+}
+
+func (c *Client) ExtractIDFromLocationHeader(respHeader http.Header) (string, error) {
+	location := respHeader.Get("Location")
+	if location == "" {
+		return "", fmt.Errorf("Location header not found in response")
+	}
+
+	parsedURL, err := url.Parse(location)
+	if err != nil {
+		return "", fmt.Errorf("Failed to parse Location header: %v", err)
+	}
+
+	id := path.Base(parsedURL.Path)
+	if id == "." || id == "/" || id == "" {
+		return "", fmt.Errorf("No ID found in Location header")
+	}
+
+	return id, nil
 }
