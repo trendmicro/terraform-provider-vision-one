@@ -404,6 +404,13 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 			return
 		}
 	} else {
+		// Convert management group details if provided
+		managementGroup, convertDiags := convertManagementGroupDetailsToAPI(ctx, &state.ManagementGroupDetails)
+		resp.Diagnostics.Append(convertDiags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
 		body := &api.ModifySubscriptionRequest{
 			ApplicationID:             state.ApplicationID.ValueString(),
 			ConnectedSecurityServices: connectedServices,
@@ -412,6 +419,9 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 			Name:                      state.Name.ValueString(),
 			SubscriptionID:            res.SubscriptionID,
 			TenantID:                  state.TenantID.ValueString(),
+			ManagementGroup:           managementGroup,
+			IsSharedApplication:       state.IsSharedApplication.ValueBool(),
+			CamDeployedRegion:         state.CamDeployedRegion.ValueString(),
 			IsTFProviderDeployed:      true,
 		}
 

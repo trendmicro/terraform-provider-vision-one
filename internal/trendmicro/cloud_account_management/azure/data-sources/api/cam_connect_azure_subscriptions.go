@@ -67,9 +67,10 @@ func (c *CamClient) ListAzureSubscriptions(subscriptionIds []string, top int64, 
 		if state != "" {
 			var filteredCloudAccounts []CAMCloudAccount
 			for i := range allCloudAccounts {
-				if allCloudAccounts[i].State == state {
-					filteredCloudAccounts = append(filteredCloudAccounts, allCloudAccounts[i])
+				if allCloudAccounts[i].State != state {
+					continue
 				}
+				filteredCloudAccounts = append(filteredCloudAccounts, allCloudAccounts[i])
 			}
 			allCloudAccounts = filteredCloudAccounts
 		}
@@ -103,9 +104,10 @@ func (c *CamClient) ListAzureSubscriptions(subscriptionIds []string, top int64, 
 	if state != "" {
 		var filteredCloudAccounts []CAMCloudAccount
 		for i := range cloudAccountsResponse.CloudAccounts {
-			if cloudAccountsResponse.CloudAccounts[i].State == state {
-				filteredCloudAccounts = append(filteredCloudAccounts, cloudAccountsResponse.CloudAccounts[i])
+			if cloudAccountsResponse.CloudAccounts[i].State != state {
+				continue
 			}
+			filteredCloudAccounts = append(filteredCloudAccounts, cloudAccountsResponse.CloudAccounts[i])
 		}
 		cloudAccountsResponse.CloudAccounts = filteredCloudAccounts
 	}
