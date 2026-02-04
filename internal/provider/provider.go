@@ -174,6 +174,9 @@ func (p *TrendMicroProvider) Resources(ctx context.Context) []func() resource.Re
 		azureresources.NewRoleDefinition,
 		azureresources.NewRoleAssignmentResource,
 		azureresources.NewCAMConnectorResource,
+		azureresources.NewLegacyCleanupCustomRole,
+		azureresources.NewLegacyCleanupResourceGroup,
+		azureresources.NewLegacyCleanupAppRegistration,
 		crmresources.NewProfileResource,
 		crmresources.NewGroupResource,
 	}

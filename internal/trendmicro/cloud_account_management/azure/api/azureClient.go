@@ -19,7 +19,7 @@ type AzureClients struct {
 	RGClient       *armresources.ResourceGroupsClient
 	RoleClient     *armauthorization.RoleDefinitionsClient
 	GraphClient    *msgraph.GraphServiceClient
-	Credential     azidentity.AzureCLICredential
+	Credential     *azidentity.DefaultAzureCredential
 }
 
 func GetAzureClients(ctx context.Context, subscriptionID string) (*AzureClients, diag.Diagnostics) {
@@ -66,7 +66,28 @@ func GetAzureClients(ctx context.Context, subscriptionID string) (*AzureClients,
 		RGClient:       rgClient,
 		RoleClient:     roleClient,
 		GraphClient:    graphClient,
+		Credential:     cred,
 	}, diags
+}
+
+// GetGraphClient returns a Graph client for Microsoft Graph API operations
+// that don't require a subscription ID (App Registrations, Service Principals, etc.)
+func GetGraphClient(ctx context.Context) (*msgraph.GraphServiceClient, *azidentity.DefaultAzureCredential, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	cred, err := azidentity.NewDefaultAzureCredential(nil)
+	if err != nil {
+		diags.AddError("Azure Credential Error", fmt.Sprintf("Failed to get credential: %s", err))
+		return nil, nil, diags
+	}
+
+	graphClient, err := msgraph.NewGraphServiceClientWithCredentials(cred, []string{"https://graph.microsoft.com/.default"})
+	if err != nil {
+		diags.AddError("Graph Client Error", fmt.Sprintf("Failed to create GraphServiceClient: %s", err))
+		return nil, nil, diags
+	}
+
+	return graphClient, cred, diags
 }
 
 func GetAzureCredential() (*azidentity.DefaultAzureCredential, error) {
