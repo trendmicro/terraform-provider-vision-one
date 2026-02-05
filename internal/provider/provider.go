@@ -179,6 +179,7 @@ func (p *TrendMicroProvider) Resources(ctx context.Context) []func() resource.Re
 		azureresources.NewLegacyCleanupAppRegistration,
 		crmresources.NewProfileResource,
 		crmresources.NewGroupResource,
+		crmresources.NewCheckSuppressionResource,
 	}
 }
 
