@@ -35,12 +35,13 @@ type RoleDefinition struct {
 }
 
 type customRoleDefinitionResourceModel struct {
-	ID             types.String `tfsdk:"id"`
-	Name           types.String `tfsdk:"name"`
-	Scope          types.String `tfsdk:"scope"`
-	Description    types.String `tfsdk:"description"`
-	Features       types.Set    `tfsdk:"features"`
-	SubscriptionId types.String `tfsdk:"subscription_id"`
+	ID               types.String `tfsdk:"id"`
+	Name             types.String `tfsdk:"name"`
+	Scope            types.String `tfsdk:"scope"`
+	Description      types.String `tfsdk:"description"`
+	Features         types.Set    `tfsdk:"features"`
+	SubscriptionId   types.String `tfsdk:"subscription_id"`
+	AssignableScopes types.Set    `tfsdk:"assignable_scopes"`
 }
 
 func NewRoleDefinition() resource.Resource {
@@ -90,6 +91,12 @@ func (r *RoleDefinition) Schema(_ context.Context, _ resource.SchemaRequest, res
 				MarkdownDescription: "Set of features associated with the Trend Vision One CAM custom role definition. The role will include all permissions required by the specified features according to the Trend Vision One Azure required permissions documentation.",
 				Optional:            true,
 			},
+			"assignable_scopes": schema.SetAttribute{
+				ElementType:         types.StringType,
+				MarkdownDescription: "Set of scopes where the role can be assigned. Defaults to the subscription scope if not provided. For management group deployments, include all member subscription scopes to enable cross-subscription role assignments. Example: [\"/subscriptions/sub-id-1\", \"/subscriptions/sub-id-2\"] or [\"/providers/Microsoft.Management/managementGroups/mg-id\"]",
+				Optional:            true,
+				Computed:            true,
+			},
 			"subscription_id": schema.StringAttribute{
 				MarkdownDescription: "The ID of the subscription.",
 				Required:            true,
@@ -116,7 +123,21 @@ func (r *RoleDefinition) Create(ctx context.Context, req resource.CreateRequest,
 	roleScope := config.AZURE_CUSTOM_ROLE_SCOPE + subID
 	roleDescription := config.AZURE_CUSTOM_ROLE_DESCRIPTION
 
-	if err := r.createRoleDefinition(ctx, subID, roleDefinitionID, roleName, roleScope, roleDescription); err != nil {
+	// Extract assignable scopes from plan, or default to subscription scope
+	var assignableScopes []string
+	if !plan.AssignableScopes.IsNull() && !plan.AssignableScopes.IsUnknown() {
+		diags := plan.AssignableScopes.ElementsAs(ctx, &assignableScopes, false)
+		if diags.HasError() {
+			resp.Diagnostics.Append(diags...)
+			return
+		}
+	}
+	if len(assignableScopes) == 0 {
+		// Default to subscription scope if not provided
+		assignableScopes = []string{roleScope}
+	}
+
+	if err := r.createRoleDefinition(ctx, subID, roleDefinitionID, roleName, roleDescription, assignableScopes); err != nil {
 		resp.Diagnostics.AddError("[Role Definition][Create] Failed to create role definition", err.Error())
 		return
 	}
@@ -125,6 +146,14 @@ func (r *RoleDefinition) Create(ctx context.Context, req resource.CreateRequest,
 	plan.Name = types.StringValue(roleName)
 	plan.Scope = types.StringValue(roleScope)
 	plan.Description = types.StringValue(roleDescription)
+
+	// Set assignable_scopes in state
+	assignableScopesSet, diags := types.SetValueFrom(ctx, types.StringType, assignableScopes)
+	if diags.HasError() {
+		resp.Diagnostics.Append(diags...)
+		return
+	}
+	plan.AssignableScopes = assignableScopesSet
 
 	if diags := resp.State.Set(ctx, plan); diags.HasError() {
 		resp.Diagnostics.Append(diags...)
@@ -168,6 +197,22 @@ func (r *RoleDefinition) Read(ctx context.Context, req resource.ReadRequest, res
 	if roleDefinition.Properties != nil {
 		state.Name = types.StringPointerValue(roleDefinition.Properties.RoleName)
 		state.Description = types.StringPointerValue(roleDefinition.Properties.Description)
+
+		// Read assignable scopes from Azure
+		if roleDefinition.Properties.AssignableScopes != nil {
+			var scopes []string
+			for _, scope := range roleDefinition.Properties.AssignableScopes {
+				if scope != nil {
+					scopes = append(scopes, *scope)
+				}
+			}
+			assignableScopesSet, diags := types.SetValueFrom(ctx, types.StringType, scopes)
+			if diags.HasError() {
+				resp.Diagnostics.Append(diags...)
+				return
+			}
+			state.AssignableScopes = assignableScopesSet
+		}
 	}
 
 	if diags := resp.State.Set(ctx, state); diags.HasError() {
@@ -199,10 +244,32 @@ func (r *RoleDefinition) Update(ctx context.Context, req resource.UpdateRequest,
 	roleName := state.Name.ValueString()
 	roleDescription := state.Description.ValueString()
 
-	if err := r.updateRoleDefinition(ctx, subID, roleDefinitionID, roleName, scope, roleDescription); err != nil {
+	// Extract assignable scopes from plan
+	var assignableScopes []string
+	if !plan.AssignableScopes.IsNull() && !plan.AssignableScopes.IsUnknown() {
+		diags := plan.AssignableScopes.ElementsAs(ctx, &assignableScopes, false)
+		if diags.HasError() {
+			resp.Diagnostics.Append(diags...)
+			return
+		}
+	}
+	if len(assignableScopes) == 0 {
+		// Default to subscription scope if not provided
+		assignableScopes = []string{scope}
+	}
+
+	if err := r.updateRoleDefinition(ctx, subID, roleDefinitionID, roleName, roleDescription, assignableScopes); err != nil {
 		resp.Diagnostics.AddError("[Role Definition][Update] Failed to update role definition", err.Error())
 		return
 	}
+
+	// Update assignable_scopes in state
+	assignableScopesSet, diags := types.SetValueFrom(ctx, types.StringType, assignableScopes)
+	if diags.HasError() {
+		resp.Diagnostics.Append(diags...)
+		return
+	}
+	plan.AssignableScopes = assignableScopesSet
 
 	if diags := resp.State.Set(ctx, plan); diags.HasError() {
 		resp.Diagnostics.Append(diags...)
@@ -245,12 +312,12 @@ func (r *RoleDefinition) Configure(ctx context.Context, req resource.ConfigureRe
 	tflog.Debug(ctx, "[Role Definition] resource configured successfully")
 }
 
-func (r *RoleDefinition) buildRoleDefinitionBody(roleName, roleDescription, scope string) map[string]any {
+func (r *RoleDefinition) buildRoleDefinitionBody(roleName, roleDescription string, assignableScopes []string) map[string]any {
 	return map[string]any{
 		"properties": map[string]any{
 			"roleName":         roleName,
 			"description":      roleDescription,
-			"assignableScopes": []string{scope},
+			"assignableScopes": assignableScopes,
 			"permissions": []map[string]any{
 				{
 					"actions":     config.AZURE_CUSTOM_ROLE_ACTIONS,
@@ -261,13 +328,13 @@ func (r *RoleDefinition) buildRoleDefinitionBody(roleName, roleDescription, scop
 	}
 }
 
-func (r *RoleDefinition) createRoleDefinition(ctx context.Context, subID, roleDefinitionID, roleName, roleScope, roleDescription string) error {
+func (r *RoleDefinition) createRoleDefinition(ctx context.Context, subID, roleDefinitionID, roleName, roleDescription string, assignableScopes []string) error {
 	token, err := r.getAzureToken(ctx)
 	if err != nil {
 		return err
 	}
 
-	body := r.buildRoleDefinitionBody(roleName, roleDescription, roleScope)
+	body := r.buildRoleDefinitionBody(roleName, roleDescription, assignableScopes)
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("failed to marshal request body: %w", err)
@@ -328,13 +395,13 @@ func (r *RoleDefinition) getAzureToken(ctx context.Context) (string, error) {
 	return token.Token, nil
 }
 
-func (r *RoleDefinition) updateRoleDefinition(ctx context.Context, subID, roleDefinitionID, roleName, scope, roleDescription string) error {
+func (r *RoleDefinition) updateRoleDefinition(ctx context.Context, subID, roleDefinitionID, roleName, roleDescription string, assignableScopes []string) error {
 	token, err := r.getAzureToken(ctx)
 	if err != nil {
 		return err
 	}
 
-	body := r.buildRoleDefinitionBody(roleName, roleDescription, scope)
+	body := r.buildRoleDefinitionBody(roleName, roleDescription, assignableScopes)
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("failed to marshal request body: %w", err)

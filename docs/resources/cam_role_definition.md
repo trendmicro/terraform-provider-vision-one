@@ -15,9 +15,56 @@ Review the permissions required to deploy resources and the permissions granted 
 
 ## Example Usage
 
+### Basic Usage (Single Subscription)
+
 ```terraform
 resource "visionone_cam_role_definition" "cam_role_definition" {
   subscription_id = "11111111-1111-2222-aaaa-bbbbbbbbbbbb"
+}
+```
+
+### Management Group Usage (Cross-Subscription Role Assignment)
+
+```terraform
+variable "all_subscription_ids" {
+  type = list(string)
+  default = [
+    "11111111-1111-2222-aaaa-bbbbbbbbbbbb",  # Primary
+    "00000000-1ea8-4822-b823-abcdefghijkl",  # Member 1
+    "22222222-3333-4444-cccc-dddddddddddd"   # Member 2
+  ]
+}
+
+resource "visionone_cam_role_definition" "primary" {
+  subscription_id = var.all_subscription_ids[0]  # Created in primary subscription
+
+  # Include all subscriptions in assignable_scopes to enable cross-subscription assignments
+  assignable_scopes = toset([
+    for sub_id in var.all_subscription_ids :
+    "/subscriptions/${sub_id}"
+  ])
+}
+
+# Now you can assign this role to ANY subscription in assignable_scopes
+resource "visionone_cam_role_assignment" "members" {
+  for_each = toset(slice(var.all_subscription_ids, 1, length(var.all_subscription_ids)))
+
+  role_definition_id = visionone_cam_role_definition.primary.id
+  principal_id       = "<service-principal-object-id>"
+  subscription_id    = each.value  # Can assign to member subscriptions
+}
+```
+
+### Example with Management Group Scope
+
+```terraform
+resource "visionone_cam_role_definition" "mgmt_group" {
+  subscription_id = "11111111-1111-2222-aaaa-bbbbbbbbbbbb"
+
+  # Use management group scope to cover all current and future subscriptions
+  assignable_scopes = [
+    "/providers/Microsoft.Management/managementGroups/my-mgmt-group"
+  ]
 }
 ```
 
@@ -47,6 +94,7 @@ resource "visionone_cam_role_definition" "cam_role_definition" {
 
 ### Optional
 
+- `assignable_scopes` (Set of String) Set of scopes where the role can be assigned. Defaults to the subscription scope if not provided. For management group deployments, include all member subscription scopes to enable cross-subscription role assignments. Example: ["/subscriptions/sub-id-1", "/subscriptions/sub-id-2"] or ["/providers/Microsoft.Management/managementGroups/mg-id"]
 - `features` (Set of String) Set of features associated with the Trend Vision One CAM custom role definition. The role will include all permissions required by the specified features according to the Trend Vision One Azure required permissions documentation.
 
 ### Read-Only
