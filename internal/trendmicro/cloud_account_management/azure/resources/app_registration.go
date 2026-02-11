@@ -335,8 +335,6 @@ func getIssuerURL(deployRegion string) string {
 		return "https://cloudaccounts-ca.xdr.trendmicro.com"
 	case "uk":
 		return "https://cloudaccounts-uk.xdr.trendmicro.com"
-	case "test-us":
-		return "https://cloudaccounts-dev-us.visionone.trendmicro.com"
 	default:
 		return "https://cloudaccounts-us.xdr.trendmicro.com"
 	}
