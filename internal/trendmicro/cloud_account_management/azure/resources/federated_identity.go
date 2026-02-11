@@ -29,6 +29,7 @@ type federatedIdentity struct {
 type camFederatedIdentityCredentialModel struct {
 	CamDeployedRegion     types.String `tfsdk:"cam_deployed_region"`
 	VisionOneRegionCode   types.String `tfsdk:"vision_one_region_code"`
+	IssuerURL             types.String `tfsdk:"issuer_url"`
 	ClientID              types.String `tfsdk:"application_id"`
 	FederatedIdentityName types.String `tfsdk:"federated_identity_name"`
 	ObjectID              types.String `tfsdk:"app_registration_object_id"`
@@ -57,6 +58,14 @@ func (r *federatedIdentity) Schema(_ context.Context, _ resource.SchemaRequest, 
 			},
 			"vision_one_region_code": schema.StringAttribute{
 				MarkdownDescription: "Vision One region code for the federated identity credential. If not specified, the region code will be automatically extracted from the provider's `regional_fqdn` configuration. The supported region codes are `au`, `sg`, `us`, `in`, `jp`, `eu`, `mea`, `ca`, `uk`. Defaults to `us` if no region can be determined.",
+				Optional:            true,
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"issuer_url": schema.StringAttribute{
+				MarkdownDescription: "Issuer URL for the federated identity credential. If not specified, the issuer URL will be automatically derived from the `vision_one_region_code`. This allows advanced users to specify custom issuer URLs for testing or specialized deployments.",
 				Optional:            true,
 				Computed:            true,
 				PlanModifiers: []planmodifier.String{
@@ -153,15 +162,18 @@ func (r *federatedIdentity) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
-	// Convert region code for subject (e.g., "test-us" → "us")
-	subjectRegionCode := getSubjectRegionCode(visionOneRegionCode)
+	// Determine issuer URL - use explicit value if provided, otherwise derive from region
+	issuerURL := plan.IssuerURL.ValueString()
+	if issuerURL == "" {
+		issuerURL = getIssuerURL(visionOneRegionCode)
+	}
 
 	fed := models.NewFederatedIdentityCredential()
 	fed.SetName(toStringPointer(getFederatedIdentityName(plan.FederatedIdentityName.ValueString())))
 	fed.SetDescription(toStringPointer(config.FEDERATED_CREDENTIALS_DESCRIPTION))
 	fed.SetAudiences([]string{"api://AzureADTokenExchange"})
-	fed.SetIssuer(toStringPointer(getIssuerURL(visionOneRegionCode)))
-	fed.SetSubject(toStringPointer(`urn:visionone:identity:` + subjectRegionCode + `:` + v1BusinessID + `:account/` + v1BusinessID))
+	fed.SetIssuer(toStringPointer(issuerURL))
+	fed.SetSubject(toStringPointer(`urn:visionone:identity:` + visionOneRegionCode + `:` + v1BusinessID + `:account/` + v1BusinessID))
 
 	_, err = client.GraphClient.Applications().ByApplicationId(*objectId).FederatedIdentityCredentials().Post(ctx, fed, nil)
 	if err != nil {
@@ -174,6 +186,7 @@ func (r *federatedIdentity) Create(ctx context.Context, req resource.CreateReque
 	plan.ObjectID = types.StringValue(plan.ObjectID.ValueString())
 	plan.SubscriptionID = types.StringValue(subscriptionID)
 	plan.VisionOneRegionCode = types.StringValue(visionOneRegionCode)
+	plan.IssuerURL = types.StringValue(issuerURL)
 
 	diags = resp.State.Set(ctx, &plan)
 	resp.Diagnostics.Append(diags...)
@@ -280,15 +293,18 @@ func (r *federatedIdentity) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	// Convert region code for subject (e.g., "test-us" → "us")
-	subjectRegionCode := getSubjectRegionCode(visionOneRegionCode)
+	// Determine issuer URL - use explicit value if provided, otherwise derive from region
+	issuerURL := plan.IssuerURL.ValueString()
+	if issuerURL == "" {
+		issuerURL = getIssuerURL(visionOneRegionCode)
+	}
 
 	fed := models.NewFederatedIdentityCredential()
 	fed.SetName(toStringPointer(getFederatedIdentityName(plan.FederatedIdentityName.ValueString())))
 	fed.SetDescription(toStringPointer(config.FEDERATED_CREDENTIALS_DESCRIPTION))
 	fed.SetAudiences([]string{"api://AzureADTokenExchange"})
-	fed.SetIssuer(toStringPointer(getIssuerURL(visionOneRegionCode)))
-	fed.SetSubject(toStringPointer(`urn:visionone:identity:` + subjectRegionCode + `:` + v1BusinessID + `:account/` + v1BusinessID))
+	fed.SetIssuer(toStringPointer(issuerURL))
+	fed.SetSubject(toStringPointer(`urn:visionone:identity:` + visionOneRegionCode + `:` + v1BusinessID + `:account/` + v1BusinessID))
 	_, err = client.GraphClient.Applications().ByApplicationId(state.ObjectID.ValueString()).FederatedIdentityCredentials().Post(ctx, fed, nil)
 	if err != nil {
 		resp.Diagnostics.AddError("[Federated Identity][Update] Update Federated Identity Credential Failed", err.Error())
@@ -296,6 +312,7 @@ func (r *federatedIdentity) Update(ctx context.Context, req resource.UpdateReque
 	}
 
 	state.VisionOneRegionCode = types.StringValue(visionOneRegionCode)
+	state.IssuerURL = types.StringValue(issuerURL)
 	state.ClientID = types.StringValue(*app.GetAppId())
 	state.ObjectID = types.StringValue(*app.GetId())
 	state.SubscriptionID = plan.SubscriptionID
@@ -421,20 +438,11 @@ func getVisionOneRegionCode(visionOneRegion, camDeployedRegion, regionalFQDN str
 
 // isValidVisionOneRegionCode validates the Vision One region code
 func isValidVisionOneRegionCode(region string) bool {
-	validRegions := []string{"au", "sg", "us", "in", "jp", "eu", "mea", "ca", "uk", "test-us"}
+	validRegions := []string{"au", "sg", "us", "in", "jp", "eu", "mea", "ca", "uk"}
 	for _, valid := range validRegions {
 		if region == valid {
 			return true
 		}
 	}
 	return false
-}
-
-// getSubjectRegionCode converts region codes to their subject format
-// Special handling: "test-us" → "us" for subject URN
-func getSubjectRegionCode(regionCode string) string {
-	if regionCode == "test-us" {
-		return defaultVisionOneRegionCode
-	}
-	return regionCode
 }
