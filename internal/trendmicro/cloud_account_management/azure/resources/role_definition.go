@@ -42,6 +42,8 @@ type customRoleDefinitionResourceModel struct {
 	Features         types.Set    `tfsdk:"features"`
 	SubscriptionId   types.String `tfsdk:"subscription_id"`
 	AssignableScopes types.Set    `tfsdk:"assignable_scopes"`
+	Actions          types.List   `tfsdk:"actions"`
+	DataActions      types.List   `tfsdk:"data_actions"`
 }
 
 func NewRoleDefinition() resource.Resource {
@@ -97,6 +99,16 @@ func (r *RoleDefinition) Schema(_ context.Context, _ resource.SchemaRequest, res
 				Optional:            true,
 				Computed:            true,
 			},
+			"actions": schema.ListAttribute{
+				ElementType:         types.StringType,
+				MarkdownDescription: "Optional list of Azure role actions to assign to the custom role. If not provided, defaults to the standard Vision One CAM required permissions.",
+				Optional:            true,
+			},
+			"data_actions": schema.ListAttribute{
+				ElementType:         types.StringType,
+				MarkdownDescription: "Optional list of Azure role data actions to assign to the custom role. If not provided, defaults to the standard Vision One CAM required data permissions.",
+				Optional:            true,
+			},
 			"subscription_id": schema.StringAttribute{
 				MarkdownDescription: "The ID of the subscription.",
 				Required:            true,
@@ -137,7 +149,27 @@ func (r *RoleDefinition) Create(ctx context.Context, req resource.CreateRequest,
 		assignableScopes = []string{roleScope}
 	}
 
-	if err := r.createRoleDefinition(ctx, subID, roleDefinitionID, roleName, roleDescription, assignableScopes); err != nil {
+	// Extract custom role actions if provided
+	var roleActions []string
+	if !plan.Actions.IsNull() && !plan.Actions.IsUnknown() {
+		diags := plan.Actions.ElementsAs(ctx, &roleActions, false)
+		if diags.HasError() {
+			resp.Diagnostics.Append(diags...)
+			return
+		}
+	}
+
+	// Extract custom role data actions if provided
+	var roleDataActions []string
+	if !plan.DataActions.IsNull() && !plan.DataActions.IsUnknown() {
+		diags := plan.DataActions.ElementsAs(ctx, &roleDataActions, false)
+		if diags.HasError() {
+			resp.Diagnostics.Append(diags...)
+			return
+		}
+	}
+
+	if err := r.createRoleDefinition(ctx, subID, roleDefinitionID, roleName, roleDescription, assignableScopes, roleActions, roleDataActions); err != nil {
 		resp.Diagnostics.AddError("[Role Definition][Create] Failed to create role definition", err.Error())
 		return
 	}
@@ -258,7 +290,27 @@ func (r *RoleDefinition) Update(ctx context.Context, req resource.UpdateRequest,
 		assignableScopes = []string{scope}
 	}
 
-	if err := r.updateRoleDefinition(ctx, subID, roleDefinitionID, roleName, roleDescription, assignableScopes); err != nil {
+	// Extract custom role actions if provided
+	var roleActions []string
+	if !plan.Actions.IsNull() && !plan.Actions.IsUnknown() {
+		diags := plan.Actions.ElementsAs(ctx, &roleActions, false)
+		if diags.HasError() {
+			resp.Diagnostics.Append(diags...)
+			return
+		}
+	}
+
+	// Extract custom role data actions if provided
+	var roleDataActions []string
+	if !plan.DataActions.IsNull() && !plan.DataActions.IsUnknown() {
+		diags := plan.DataActions.ElementsAs(ctx, &roleDataActions, false)
+		if diags.HasError() {
+			resp.Diagnostics.Append(diags...)
+			return
+		}
+	}
+
+	if err := r.updateRoleDefinition(ctx, subID, roleDefinitionID, roleName, roleDescription, assignableScopes, roleActions, roleDataActions); err != nil {
 		resp.Diagnostics.AddError("[Role Definition][Update] Failed to update role definition", err.Error())
 		return
 	}
@@ -312,7 +364,18 @@ func (r *RoleDefinition) Configure(ctx context.Context, req resource.ConfigureRe
 	tflog.Debug(ctx, "[Role Definition] resource configured successfully")
 }
 
-func (r *RoleDefinition) buildRoleDefinitionBody(roleName, roleDescription string, assignableScopes []string) map[string]any {
+func (r *RoleDefinition) buildRoleDefinitionBody(roleName, roleDescription string, assignableScopes, roleActions, roleDataActions []string) map[string]any {
+	// Use provided actions if available, otherwise use defaults
+	actions := roleActions
+	if len(actions) == 0 {
+		actions = config.AZURE_CUSTOM_ROLE_ACTIONS
+	}
+
+	dataActions := roleDataActions
+	if len(dataActions) == 0 {
+		dataActions = config.AZURE_CUSTOM_ROLE_DATA_ACTIONS
+	}
+
 	return map[string]any{
 		"properties": map[string]any{
 			"roleName":         roleName,
@@ -320,21 +383,21 @@ func (r *RoleDefinition) buildRoleDefinitionBody(roleName, roleDescription strin
 			"assignableScopes": assignableScopes,
 			"permissions": []map[string]any{
 				{
-					"actions":     config.AZURE_CUSTOM_ROLE_ACTIONS,
-					"dataActions": config.AZURE_CUSTOM_ROLE_DATA_ACTIONS,
+					"actions":     actions,
+					"dataActions": dataActions,
 				},
 			},
 		},
 	}
 }
 
-func (r *RoleDefinition) createRoleDefinition(ctx context.Context, subID, roleDefinitionID, roleName, roleDescription string, assignableScopes []string) error {
+func (r *RoleDefinition) createRoleDefinition(ctx context.Context, subID, roleDefinitionID, roleName, roleDescription string, assignableScopes, roleActions, roleDataActions []string) error {
 	token, err := r.getAzureToken(ctx)
 	if err != nil {
 		return err
 	}
 
-	body := r.buildRoleDefinitionBody(roleName, roleDescription, assignableScopes)
+	body := r.buildRoleDefinitionBody(roleName, roleDescription, assignableScopes, roleActions, roleDataActions)
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("failed to marshal request body: %w", err)
@@ -395,13 +458,13 @@ func (r *RoleDefinition) getAzureToken(ctx context.Context) (string, error) {
 	return token.Token, nil
 }
 
-func (r *RoleDefinition) updateRoleDefinition(ctx context.Context, subID, roleDefinitionID, roleName, roleDescription string, assignableScopes []string) error {
+func (r *RoleDefinition) updateRoleDefinition(ctx context.Context, subID, roleDefinitionID, roleName, roleDescription string, assignableScopes, roleActions, roleDataActions []string) error {
 	token, err := r.getAzureToken(ctx)
 	if err != nil {
 		return err
 	}
 
-	body := r.buildRoleDefinitionBody(roleName, roleDescription, assignableScopes)
+	body := r.buildRoleDefinitionBody(roleName, roleDescription, assignableScopes, roleActions, roleDataActions)
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("failed to marshal request body: %w", err)

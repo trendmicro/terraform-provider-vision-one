@@ -43,12 +43,14 @@ var (
 		"Microsoft.AppConfiguration/configurationStores/ListKeyValue/action",
 		"Microsoft.Authorization/roleAssignments/read",
 		"Microsoft.Authorization/roleDefinitions/read",
+		"Microsoft.ContainerRegistry/registries/read",
 		"Microsoft.ContainerService/managedClusters/listClusterUserCredential/action",
 		"Microsoft.ContainerService/managedClusters/read",
 		"Microsoft.EventGrid/eventSubscriptions/read",
 		"Microsoft.EventGrid/systemTopics/read",
 		"Microsoft.KeyVault/vaults/secrets/read",
 		"Microsoft.Network/networkWatchers/queryFlowLogStatus/action",
+		"Microsoft.ResourceGraph/resources/read",
 		"Microsoft.Resources/deployments/operationstatuses/read",
 		"Microsoft.Resources/deployments/operations/read",
 		"Microsoft.Resources/deployments/read",
@@ -59,6 +61,7 @@ var (
 		"Microsoft.Web/sites/config/list/Action",
 		"Microsoft.Web/sites/config/read",
 		"Microsoft.Web/sites/functions/listkeys/action",
+		"microsoft.app/containerapps/read",
 	}
 	AZURE_CUSTOM_ROLE_DATA_ACTIONS = []string{
 		"Microsoft.KeyVault/vaults/keys/read",
