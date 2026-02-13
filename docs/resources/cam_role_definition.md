@@ -68,6 +68,48 @@ resource "visionone_cam_role_definition" "mgmt_group" {
 }
 ```
 
+### Example with Custom Permissions
+
+```terraform
+# Example: Custom Role Definition with Custom Permissions
+# This example shows how to override the default Vision One CAM permissions
+# with custom actions and data_actions
+
+resource "visionone_cam_role_definition" "custom_permissions" {
+  subscription_id = "11111111-1111-2222-aaaa-bbbbbbbbbbbb"
+
+  # Override default actions with custom permissions
+  # If not provided, defaults to standard Vision One CAM required permissions
+  actions = [
+    "Microsoft.Resources/subscriptions/read",
+    "Microsoft.Storage/storageAccounts/read",
+    "Microsoft.Storage/storageAccounts/listKeys/action",
+    "Microsoft.ContainerRegistry/registries/read",
+    "Microsoft.KeyVault/vaults/secrets/read"
+  ]
+
+  # Override default data actions with custom data permissions
+  # If not provided, defaults to standard Vision One CAM required data permissions
+  data_actions = [
+    "Microsoft.KeyVault/vaults/secrets/getSecret/action",
+    "Microsoft.KeyVault/vaults/keys/read",
+    "Microsoft.KeyVault/vaults/secrets/readMetadata/action"
+  ]
+}
+
+# Example: Partial Override - Only Custom Actions
+# You can override just actions or just data_actions
+resource "visionone_cam_role_definition" "custom_actions_only" {
+  subscription_id = "11111111-1111-2222-aaaa-bbbbbbbbbbbb"
+
+  # Custom actions, but data_actions will use defaults
+  actions = [
+    "*/read",
+    "Microsoft.Storage/storageAccounts/listKeys/action"
+  ]
+}
+```
+
 ### Example Detailed Usage
 - Create multiple role definitions for different Azure subscriptions.
 <details>
@@ -94,7 +136,9 @@ resource "visionone_cam_role_definition" "cam_role_definition" {
 
 ### Optional
 
+- `actions` (List of String) Optional list of Azure role actions to assign to the custom role. If not provided, defaults to the standard Vision One CAM required permissions.
 - `assignable_scopes` (Set of String) Set of scopes where the role can be assigned. Defaults to the subscription scope if not provided. For management group deployments, include all member subscription scopes to enable cross-subscription role assignments. Example: ["/subscriptions/sub-id-1", "/subscriptions/sub-id-2"] or ["/providers/Microsoft.Management/managementGroups/mg-id"]
+- `data_actions` (List of String) Optional list of Azure role data actions to assign to the custom role. If not provided, defaults to the standard Vision One CAM required data permissions.
 - `features` (Set of String) Set of features associated with the Trend Vision One CAM custom role definition. The role will include all permissions required by the specified features according to the Trend Vision One Azure required permissions documentation.
 
 ### Read-Only
