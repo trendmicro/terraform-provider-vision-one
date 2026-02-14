@@ -90,12 +90,12 @@ resource "visionone_container_cluster" "this" {
 ### 1. Navigate to example folder. Use ruleset for example.
 
 ```
-cd examples/resources/visionone_container_ruleset
+cd examples/container_security/resources/visionone_container_ruleset
 ```
 
 ### 2. Copy provider settings.
 
-Copy the provider settings from `examples/provider/provider.tf`, fill in your API key and regional fully qualified domain name (FQDN), then paste in `examples/resources/visionone_container_ruleset/resource.tf`.
+Copy the provider settings from `examples/provider/provider.tf`, fill in your API key and regional fully qualified domain name (FQDN), then paste in `examples/container_security/resources/visionone_container_ruleset/resource.tf`.
 
 For the API key, add in the Vision One console.
 
