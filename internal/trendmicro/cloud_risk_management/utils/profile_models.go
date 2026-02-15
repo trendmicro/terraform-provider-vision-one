@@ -41,30 +41,8 @@ type ExtraSettingModel struct {
 
 // ExtraSettingsValuesObjectModel represents a value object within extra settings.
 type ExtraSettingsValuesObjectModel struct {
-	Value      types.String          `tfsdk:"value"`
-	Enabled    types.Bool            `tfsdk:"enabled"`
-	Customised types.Bool            `tfsdk:"customised"`
-	Severity   types.String          `tfsdk:"severity"`
-	Settings   []NestedSettingsModel `tfsdk:"settings"`
-	VpcId      types.String          `tfsdk:"vpc_id"`
-	GatewayIds []types.String        `tfsdk:"gateway_ids"`
-}
-
-// NestedSettingsModel represents nested settings within a value object,
-// used for choice-multiple-values type.
-type NestedSettingsModel struct {
-	Name     types.String                      `tfsdk:"name"`
-	Type     types.String                      `tfsdk:"type"`
-	Value    types.String                      `tfsdk:"value"`
-	Values   []NestedSettingsValuesObjectModel `tfsdk:"values"`
-	ValueSet []types.String                    `tfsdk:"value_set"`
-}
-
-type NestedSettingsValuesObjectModel struct {
 	Value      types.String   `tfsdk:"value"`
 	Enabled    types.Bool     `tfsdk:"enabled"`
-	Customised types.Bool     `tfsdk:"customised"`
-	Severity   types.String   `tfsdk:"severity"`
 	VpcId      types.String   `tfsdk:"vpc_id"`
 	GatewayIds []types.String `tfsdk:"gateway_ids"`
 }

@@ -145,12 +145,12 @@ func (r *profileResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 										},
 									},
 									"value": schema.StringAttribute{
-										MarkdownDescription: "Single value for the setting.",
+										MarkdownDescription: "Single value for the setting. For numeric types (`ttl`, `single-number-value`, `multiple-number-values`), the value is automatically converted to a number.",
 										Optional:            true,
 									},
 									"value_set": schema.SetAttribute{
 										ElementType:         types.StringType,
-										MarkdownDescription: "Set of string values for simple types like multiple-string-values, multiple-ip-values, multiple-aws-account-values, multiple-number-values, regions, ignored-regions, tags, countries.",
+										MarkdownDescription: "Set of string values for simple types like multiple-string-values, multiple-ip-values, multiple-aws-account-values, multiple-number-values, regions, ignored-regions, tags, countries. For `multiple-number-values`, values are automatically converted to numbers.",
 										Optional:            true,
 									},
 								},
@@ -160,19 +160,11 @@ func (r *profileResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 										NestedObject: schema.NestedBlockObject{
 											Attributes: map[string]schema.Attribute{
 												"value": schema.StringAttribute{
-													MarkdownDescription: "Value for the setting. For multiple-object-values type, use JSON string (or jsonencode function).",
+													MarkdownDescription: "Value for the setting. For `multiple-object-values` type, use JSON string (or `jsonencode` function). For numeric types, values are automatically converted to numbers.",
 													Optional:            true,
 												},
 												"enabled": schema.BoolAttribute{
 													MarkdownDescription: "Enabled value for the setting.",
-													Optional:            true,
-												},
-												"customised": schema.BoolAttribute{
-													MarkdownDescription: "Indicates if the value is customised .",
-													Optional:            true,
-												},
-												"severity": schema.StringAttribute{
-													MarkdownDescription: "Severity level for the value. Allowed values: LOW, MEDIUM, HIGH, VERY_HIGH, EXTREME.",
 													Optional:            true,
 												},
 												"vpc_id": schema.StringAttribute{
@@ -183,66 +175,6 @@ func (r *profileResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 													ElementType:         types.StringType,
 													MarkdownDescription: "List of gateway IDs (only for multiple-vpc-gateway-mappings type).",
 													Optional:            true,
-												},
-											},
-											Blocks: map[string]schema.Block{
-												"settings": schema.ListNestedBlock{
-													MarkdownDescription: "Additional nested settings for the object value.",
-													NestedObject: schema.NestedBlockObject{
-														Attributes: map[string]schema.Attribute{
-															"name": schema.StringAttribute{
-																MarkdownDescription: "The name of the setting.",
-																Required:            true,
-															},
-															"type": schema.StringAttribute{
-																MarkdownDescription: "The type of the setting.",
-																Required:            true,
-															},
-															"value": schema.StringAttribute{
-																MarkdownDescription: "Single value for the setting.",
-																Optional:            true,
-															},
-															"value_set": schema.SetAttribute{
-																ElementType:         types.StringType,
-																MarkdownDescription: "Set of string values for simple types like multiple-string-values, multiple-ip-values, multiple-aws-account-values, multiple-number-values, regions, ignored-regions, tags, countries.",
-																Optional:            true,
-															},
-														},
-														Blocks: map[string]schema.Block{
-															"values": schema.ListNestedBlock{
-																MarkdownDescription: "Additional values for the setting.",
-																NestedObject: schema.NestedBlockObject{
-																	Attributes: map[string]schema.Attribute{
-																		"value": schema.StringAttribute{
-																			MarkdownDescription: "Value for the setting. For multiple-object-values type, use JSON string (or jsonencode function).",
-																			Optional:            true,
-																		},
-																		"enabled": schema.BoolAttribute{
-																			MarkdownDescription: "Enabled value for the setting.",
-																			Optional:            true,
-																		},
-																		"customised": schema.BoolAttribute{
-																			MarkdownDescription: "Indicates if the value is customised .",
-																			Optional:            true,
-																		},
-																		"severity": schema.StringAttribute{
-																			MarkdownDescription: "Severity level for the value. Allowed values: LOW, MEDIUM, HIGH, VERY_HIGH, EXTREME.",
-																			Optional:            true,
-																		},
-																		"vpc_id": schema.StringAttribute{
-																			MarkdownDescription: "The VPC ID (only for multiple-vpc-gateway-mappings type).",
-																			Optional:            true,
-																		},
-																		"gateway_ids": schema.SetAttribute{
-																			ElementType:         types.StringType,
-																			MarkdownDescription: "List of gateway IDs (only for multiple-vpc-gateway-mappings type).",
-																			Optional:            true,
-																		},
-																	},
-																},
-															},
-														},
-													},
 												},
 											},
 										},
