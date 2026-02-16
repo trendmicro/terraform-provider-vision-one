@@ -57,11 +57,16 @@ func UpdatePlanFromProfile(plan *ProfileResourceModel, profile *cloud_risk_manag
 				RiskLevel: types.StringValue(rule.RiskLevel),
 			}
 
-			// Convert exceptions - only create if API returned actual values
-			if rule.Exceptions != nil && (len(rule.Exceptions.FilterTags) > 0 || len(rule.Exceptions.ResourceIds) > 0) {
+			// Convert exceptions: start with user's original (preserves nil vs empty), then override with API values
+			if originalExc := originalExceptions[rule.ID]; originalExc != nil {
 				plan.ScanRules[i].Exceptions = &RuleExceptionsModel{
-					FilterTags:  []types.String{},
-					ResourceIds: []types.String{},
+					FilterTags:  originalExc.FilterTags,
+					ResourceIds: originalExc.ResourceIds,
+				}
+			}
+			if rule.Exceptions != nil {
+				if plan.ScanRules[i].Exceptions == nil {
+					plan.ScanRules[i].Exceptions = &RuleExceptionsModel{}
 				}
 
 				if len(rule.Exceptions.FilterTags) > 0 {
@@ -79,9 +84,6 @@ func UpdatePlanFromProfile(plan *ProfileResourceModel, profile *cloud_risk_manag
 					}
 					plan.ScanRules[i].Exceptions.ResourceIds = resourceIds
 				}
-			} else if originalExceptions[rule.ID] != nil {
-				// API didn't return exceptions, but user had them in plan - preserve the plan values
-				plan.ScanRules[i].Exceptions = originalExceptions[rule.ID]
 			}
 
 			// Convert extra settings - always convert to match plan structure
@@ -115,8 +117,8 @@ func ConvertExtraSettingsFromDTO(settings []cloud_risk_management_dto.RuleExtraS
 
 // ConvertSingleSettingFromDTO converts a single RuleExtraSetting DTO from the API response
 // to an ExtraSettingModel for the Terraform state. It handles different setting types:
-// - multiple-object-values: JSON objects with nested settings
-// - choice-multiple-value: options with enabled/customised flags
+// - multiple-object-values: JSON objects
+// - choice-multiple-value: options with enabled flags
 // - value_set types: populates ValueSet if the original plan used it
 // - numeric types: converts numbers back to strings
 // The origSetting parameter is used to preserve user-specified values and determine
@@ -171,11 +173,8 @@ func convertMultipleObjectValuesFromDTO(es *cloud_risk_management_dto.RuleExtraS
 			valuesObj := ExtraSettingsValuesObjectModel{
 				// For multiple-object-values, all fields except value should be null/nil
 				Enabled:    types.BoolNull(),
-				Customised: types.BoolNull(),
-				Severity:   types.StringNull(),
 				VpcId:      types.StringNull(),
 				GatewayIds: nil,
-				Settings:   nil,
 			}
 
 			// Convert pairs format from API back to JSON object string
@@ -274,27 +273,18 @@ func convertChoiceMultipleValueFromDTO(es *cloud_risk_management_dto.RuleExtraSe
 
 			// Get original field values or defaults
 			origEnabled := types.BoolNull()
-			origCustomised := types.BoolNull()
-			origSeverity := types.StringNull()
 			if origValue != nil {
 				origEnabled = origValue.Enabled
-				origCustomised = origValue.Customised
-				origSeverity = origValue.Severity
 			}
 
 			valuesObj := ExtraSettingsValuesObjectModel{}
-			fields := convertValuesObjectFromMap(valMap, valueStr, origEnabled, origCustomised, origSeverity, types.StringNull(), nil)
+			fields := convertValuesObjectFromMap(valMap, valueStr, origEnabled, types.StringNull(), nil)
 			valuesObj.Value = fields.Value
 			valuesObj.Enabled = fields.Enabled
-			valuesObj.Customised = fields.Customised
-			valuesObj.Severity = fields.Severity
 
 			// For choice-multiple-value, vpc_id and gateway_ids are not used - set to null
 			valuesObj.VpcId = types.StringNull()
 			valuesObj.GatewayIds = nil
-
-			// Handle nested settings
-			valuesObj.Settings = convertNestedSettingsFromDTO(valMap, origValue)
 
 			result.Values = append(result.Values, valuesObj)
 		}
@@ -358,20 +348,16 @@ func convertDefaultTypeFromDTO(es *cloud_risk_management_dto.RuleExtraSetting, o
 type valuesObjectFields struct {
 	Value      types.String
 	Enabled    types.Bool
-	Customised types.Bool
-	Severity   types.String
 	VpcId      types.String
 	GatewayIds []types.String
 }
 
 // convertValuesObjectFromMap is a generic helper that converts common fields from a map to populate fields.
-// It handles value, enabled, customised, severity, vpcId, and gatewayIds.
+// It handles value, enabled, vpcId, and gatewayIds.
 func convertValuesObjectFromMap(
 	valMap map[string]interface{},
 	valueStr string,
 	origEnabled types.Bool,
-	origCustomised types.Bool,
-	origSeverity types.String,
 	origVpcId types.String,
 	origGatewayIds []types.String,
 ) valuesObjectFields {
@@ -393,28 +379,6 @@ func convertValuesObjectFromMap(
 		}
 	} else {
 		fields.Enabled = origEnabled
-	}
-
-	// Handle customised field - use plan value if API doesn't return it
-	if customisedVal, exists := valMap["customised"]; exists {
-		if boolVal, ok := customisedVal.(bool); ok {
-			fields.Customised = types.BoolValue(boolVal)
-		} else {
-			fields.Customised = origCustomised
-		}
-	} else {
-		fields.Customised = origCustomised
-	}
-
-	// Handle severity field - use plan value if API doesn't return it
-	if severityVal, exists := valMap["severity"]; exists {
-		if severityStr, ok := severityVal.(string); ok {
-			fields.Severity = types.StringValue(severityStr)
-		} else {
-			fields.Severity = origSeverity
-		}
-	} else {
-		fields.Severity = origSeverity
 	}
 
 	// Handle vpcId field
@@ -505,112 +469,23 @@ func convertValuesBlockFromDTO(es *cloud_risk_management_dto.RuleExtraSetting, o
 
 		// Get original field values or defaults
 		origEnabled := types.BoolNull()
-		origCustomised := types.BoolNull()
-		origSeverity := types.StringNull()
 		origVpcId := types.StringNull()
 		origGatewayIds := []types.String{}
 		if origValue != nil {
 			origEnabled = origValue.Enabled
-			origCustomised = origValue.Customised
-			origSeverity = origValue.Severity
 			origVpcId = origValue.VpcId
 			origGatewayIds = origValue.GatewayIds
 		}
 
 		valuesObj := ExtraSettingsValuesObjectModel{}
-		fields := convertValuesObjectFromMap(valMap, valueStr, origEnabled, origCustomised, origSeverity, origVpcId, origGatewayIds)
+		fields := convertValuesObjectFromMap(valMap, valueStr, origEnabled, origVpcId, origGatewayIds)
 		valuesObj.Value = fields.Value
 		valuesObj.Enabled = fields.Enabled
-		valuesObj.Customised = fields.Customised
-		valuesObj.Severity = fields.Severity
 		valuesObj.VpcId = fields.VpcId
 		valuesObj.GatewayIds = fields.GatewayIds
-
-		// Always initialize Settings to empty slice to match schema
-		valuesObj.Settings = []NestedSettingsModel{}
 
 		result.Values = append(result.Values, valuesObj)
 	}
 
 	return result
-} // convertNestedSettingsFromDTO converts nested settings from a value map.
-func convertNestedSettingsFromDTO(valMap map[string]any, origValue *ExtraSettingsValuesObjectModel) []NestedSettingsModel {
-	if settingsArr, exists := valMap["settings"]; exists {
-		if settingsSlice, ok := settingsArr.([]any); ok && len(settingsSlice) > 0 {
-			settings := []NestedSettingsModel{}
-			for _, settingItem := range settingsSlice {
-				settingMap, ok := settingItem.(map[string]any)
-				if !ok {
-					continue
-				}
-				setting := NestedSettingsModel{}
-
-				if name, exists := settingMap["name"]; exists {
-					if nameStr, ok := name.(string); ok {
-						setting.Name = types.StringValue(nameStr)
-					}
-				}
-
-				if typeVal, exists := settingMap["type"]; exists {
-					if typeStr, ok := typeVal.(string); ok {
-						setting.Type = types.StringValue(typeStr)
-					}
-				}
-
-				// Handle single value field
-				if value, exists := settingMap["value"]; exists {
-					if vStr, ok := ConvertValueToString(value); ok {
-						setting.Value = types.StringValue(vStr)
-					}
-				} else {
-					setting.Value = types.StringNull()
-				}
-
-				// Handle values array in settings
-				if valuesArr, exists := settingMap["values"]; exists {
-					if valuesSlice, ok := valuesArr.([]any); ok {
-						setting.Values = []NestedSettingsValuesObjectModel{}
-						for _, valItem := range valuesSlice {
-							valItemMap, ok := valItem.(map[string]any)
-							if !ok {
-								continue
-							}
-							// Handle value field
-							var valueStr string
-							if v, exists := valItemMap["value"]; exists {
-								if vStr, ok := ConvertValueToString(v); ok {
-									valueStr = vStr
-								}
-							}
-
-							valObj := NestedSettingsValuesObjectModel{}
-							fields := convertValuesObjectFromMap(valItemMap, valueStr, types.BoolNull(), types.BoolNull(), types.StringNull(), types.StringNull(), []types.String{})
-							valObj.Value = fields.Value
-							valObj.Enabled = fields.Enabled
-							valObj.Customised = fields.Customised
-							valObj.Severity = fields.Severity
-							valObj.VpcId = fields.VpcId
-							valObj.GatewayIds = fields.GatewayIds
-
-							setting.Values = append(setting.Values, valObj)
-						}
-					}
-				} else {
-					// No values array - initialize to empty slice
-					setting.Values = []NestedSettingsValuesObjectModel{}
-				}
-
-				// Always initialize ValueSet to empty slice to match schema
-				setting.ValueSet = []types.String{}
-
-				settings = append(settings, setting)
-			}
-			return settings
-		} else if origValue != nil {
-			return origValue.Settings
-		}
-	} else if origValue != nil {
-		return origValue.Settings
-	}
-	return []NestedSettingsModel{}
 }

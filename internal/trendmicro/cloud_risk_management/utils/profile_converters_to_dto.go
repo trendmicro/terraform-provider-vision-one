@@ -145,8 +145,8 @@ func ConvertExtraSettingsToDTO(settings []ExtraSettingModel) ([]cloud_risk_manag
 
 // ConvertExtraSettingToDTO converts a single ExtraSettingModel from the Terraform plan
 // to a RuleExtraSetting DTO for API requests. It handles different setting types:
-// - multiple-object-values: JSON objects with nested settings
-// - choice-multiple-value: options with enabled/customised flags
+// - multiple-object-values: JSON objects
+// - choice-multiple-value: options with enabled flags
 // - value_set types: simple string arrays (regions, tags, IPs, etc.)
 // - numeric types: converts string values to numbers
 func ConvertExtraSettingToDTO(setting *ExtraSettingModel) (cloud_risk_management_dto.RuleExtraSetting, error) {
@@ -182,7 +182,7 @@ func ConvertExtraSettingToDTO(setting *ExtraSettingModel) (cloud_risk_management
 }
 
 // convertMultipleObjectValuesToDTO handles the multiple-object-values type conversion.
-// It handles both JSON parsing and nested settings.
+// It handles JSON parsing for object values.
 func convertMultipleObjectValuesToDTO(setting *ExtraSettingModel, result *cloud_risk_management_dto.RuleExtraSetting) {
 	if setting.Values == nil {
 		return
@@ -236,58 +236,38 @@ func convertMultipleObjectValuesToDTO(setting *ExtraSettingModel, result *cloud_
 	}
 }
 
-// convertSettingValuesToDTO is a generic helper that converts values for both ExtraSettingModel and NestedSettingsModel.
+// convertSettingValuesToDTO is a generic helper that converts values for ExtraSettingModel.
 // It handles choice-multiple-value, value_set types, and default types.
-// The hasNestedSettings parameter indicates if the values can contain nested settings (only for ExtraSettingsValuesObjectModel).
 func convertSettingValuesToDTO(
 	settingType string,
 	valueSetInput []types.String,
-	valuesInput interface{}, // []ExtraSettingsValuesObjectModel or []NestedSettingsValuesObjectModel
-	hasNestedSettings bool,
+	valuesInput []ExtraSettingsValuesObjectModel,
 ) []any {
-	var result []any
-
 	// Handle value_set for simple types
 	if IsValueSetType(settingType) && len(valueSetInput) > 0 {
 		return convertValueSetToArray(valueSetInput, settingType)
 	}
 
 	// Handle values block
-	switch v := valuesInput.(type) {
-	case []ExtraSettingsValuesObjectModel:
-		if v == nil {
-			return nil
-		}
-		result = []any{}
-		for i := range v {
-			val := v[i]
-			valuesMap := convertValuesObjectToMap(val.Value, val.Enabled, val.Customised, val.Severity, val.VpcId, val.GatewayIds, settingType)
-			if hasNestedSettings && len(val.Settings) > 0 {
-				valuesMap["settings"] = convertNestedSettingsToDTO(val.Settings)
-			}
-			result = append(result, valuesMap)
-		}
-	case []NestedSettingsValuesObjectModel:
-		if v == nil {
-			return nil
-		}
-		result = []any{}
-		for _, val := range v {
-			valuesMap := convertValuesObjectToMap(val.Value, val.Enabled, val.Customised, val.Severity, val.VpcId, val.GatewayIds, settingType)
-			result = append(result, valuesMap)
-		}
+	if valuesInput == nil {
+		return nil
+	}
+
+	result := []any{}
+	for i := range valuesInput {
+		val := valuesInput[i]
+		valuesMap := convertValuesObjectToMap(val.Value, val.Enabled, val.VpcId, val.GatewayIds, settingType)
+		result = append(result, valuesMap)
 	}
 
 	return result
 }
 
 // convertValuesObjectToMap converts common fields from a values object to a map.
-// Handles value, enabled, customised, severity, vpcId, and gatewayIds fields.
+// Handles value, enabled, vpcId, and gatewayIds fields.
 func convertValuesObjectToMap(
 	value types.String,
 	enabled types.Bool,
-	customised types.Bool,
-	severity types.String,
 	vpcId types.String,
 	gatewayIds []types.String,
 	settingType string,
@@ -314,16 +294,6 @@ func convertValuesObjectToMap(
 		valuesMap["enabled"] = enabled.ValueBool()
 	}
 
-	// Only include customised if explicitly specified
-	if !customised.IsNull() {
-		valuesMap["customised"] = customised.ValueBool()
-	}
-
-	// Only include severity if explicitly specified
-	if !severity.IsNull() {
-		valuesMap["severity"] = severity.ValueString()
-	}
-
 	// Handle vpc_id field
 	if !vpcId.IsNull() {
 		valuesMap["vpcId"] = vpcId.ValueString()
@@ -342,66 +312,14 @@ func convertValuesObjectToMap(
 }
 
 // convertChoiceMultipleValueToDTO handles the choice-multiple-value type conversion.
-// Only includes enabled/customised if explicitly specified (not null).
+// Only includes enabled if explicitly specified (not null).
 func convertChoiceMultipleValueToDTO(setting *ExtraSettingModel, result *cloud_risk_management_dto.RuleExtraSetting) {
-	result.Values = convertSettingValuesToDTO(setting.Type.ValueString(), setting.ValueSet, setting.Values, true)
+	result.Values = convertSettingValuesToDTO(setting.Type.ValueString(), setting.ValueSet, setting.Values)
 }
 
 // convertDefaultTypeToDTO handles the default type conversion including value_set types.
 func convertDefaultTypeToDTO(setting *ExtraSettingModel, settingType string, result *cloud_risk_management_dto.RuleExtraSetting) {
-	result.Values = convertSettingValuesToDTO(settingType, setting.ValueSet, setting.Values, false)
-}
-
-// convertNestedSettingsToDTO converts nested settings to a slice of maps for the DTO.
-func convertNestedSettingsToDTO(settings []NestedSettingsModel) []any {
-	settingsArray := []any{}
-	for _, nestedSetting := range settings {
-		settingMap := map[string]any{
-			"name": nestedSetting.Name.ValueString(),
-			"type": nestedSetting.Type.ValueString(),
-		}
-
-		// Handle value field
-		if !nestedSetting.Value.IsNull() {
-			valueStr := nestedSetting.Value.ValueString()
-			// For numeric types, convert to number
-			if IsNumericType(nestedSetting.Type.ValueString()) {
-				if numVal, ok := ConvertStringToNumber(valueStr); ok {
-					settingMap["value"] = numVal
-				} else {
-					settingMap["value"] = valueStr
-				}
-			} else {
-				settingMap["value"] = valueStr
-			}
-		}
-
-		// Handle different setting types (similar to ConvertExtraSettingToDTO)
-		settingType := nestedSetting.Type.ValueString()
-		switch settingType {
-		case choiceMultipleValueType:
-			convertNestedChoiceMultipleValueToDTO(&nestedSetting, settingMap)
-		default:
-			convertNestedDefaultTypeToDTO(&nestedSetting, settingType, settingMap)
-		}
-
-		settingsArray = append(settingsArray, settingMap)
-	}
-	return settingsArray
-}
-
-// convertNestedChoiceMultipleValueToDTO handles choice-multiple-value type for nested settings
-func convertNestedChoiceMultipleValueToDTO(setting *NestedSettingsModel, settingMap map[string]any) {
-	if values := convertSettingValuesToDTO(setting.Type.ValueString(), setting.ValueSet, setting.Values, false); values != nil {
-		settingMap["values"] = values
-	}
-}
-
-// convertNestedDefaultTypeToDTO handles default types for nested settings (including value_set types)
-func convertNestedDefaultTypeToDTO(setting *NestedSettingsModel, settingType string, settingMap map[string]any) {
-	if values := convertSettingValuesToDTO(settingType, setting.ValueSet, setting.Values, false); values != nil {
-		settingMap["values"] = values
-	}
+	result.Values = convertSettingValuesToDTO(settingType, setting.ValueSet, setting.Values)
 }
 
 // convertValueSetToArray converts a value_set to an array of value objects for the API

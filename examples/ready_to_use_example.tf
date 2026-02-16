@@ -127,7 +127,7 @@ resource "visionone_crm_profile" "example_profile" {
     enabled    = true
     risk_level = "MEDIUM"
     exceptions {
-      filter_tags = ["ignore_this_tag"]
+      filter_tags  = ["ignore_this_tag"]
       resource_ids = []
     }
     extra_settings {

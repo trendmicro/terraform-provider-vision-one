@@ -1,8 +1,4 @@
-resource "visionone_crm_profile" "profile_without_rules" {
-  name        = "crm-profile-without-rules"
-  description = "Cloud Risk Management profile - without rules"
-}
-
-output "profile_without_rules" {
-  value = visionone_crm_profile.profile_without_rules
+resource "visionone_crm_profile" "basic" {
+  name        = "my-crm-profile"
+  description = "Basic Cloud Risk Management profile"
 }
