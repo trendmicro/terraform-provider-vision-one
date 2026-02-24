@@ -181,6 +181,7 @@ func (p *TrendMicroProvider) Resources(ctx context.Context) []func() resource.Re
 		crmresources.NewProfileResource,
 		crmresources.NewGroupResource,
 		crmresources.NewCheckSuppressionResource,
+		crmresources.NewCustomRuleResource,
 	}
 }
 
