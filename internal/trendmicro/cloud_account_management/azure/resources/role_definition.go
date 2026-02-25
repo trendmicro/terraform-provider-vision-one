@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"terraform-provider-vision-one/internal/trendmicro"
+	cam "terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/api"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/resources/config"
 
@@ -99,6 +100,13 @@ func (r *RoleDefinition) Schema(_ context.Context, _ resource.SchemaRequest, res
 				Optional:            true,
 				Computed:            true,
 			},
+			"subscription_id": schema.StringAttribute{
+				MarkdownDescription: "The ID of the subscription.",
+				Required:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
 			"actions": schema.ListAttribute{
 				ElementType:         types.StringType,
 				MarkdownDescription: "Optional list of Azure role actions to assign to the custom role. If not provided, defaults to the standard Vision One CAM required permissions.",
@@ -108,13 +116,6 @@ func (r *RoleDefinition) Schema(_ context.Context, _ resource.SchemaRequest, res
 				ElementType:         types.StringType,
 				MarkdownDescription: "Optional list of Azure role data actions to assign to the custom role. If not provided, defaults to the standard Vision One CAM required data permissions.",
 				Optional:            true,
-			},
-			"subscription_id": schema.StringAttribute{
-				MarkdownDescription: "The ID of the subscription.",
-				Required:            true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
 			},
 		},
 	}
@@ -131,7 +132,7 @@ func (r *RoleDefinition) Create(ctx context.Context, req resource.CreateRequest,
 	subID := plan.SubscriptionId.ValueString()
 
 	roleDefinitionID := uuid.New().String()
-	roleName := config.AZURE_CUSTOM_ROLE_NAME + subID + "-" + generateRandomString(4)
+	roleName := config.AZURE_CUSTOM_ROLE_NAME + subID + "-" + cam.GenerateRandomString(4)
 	roleScope := config.AZURE_CUSTOM_ROLE_SCOPE + subID
 	roleDescription := config.AZURE_CUSTOM_ROLE_DESCRIPTION
 

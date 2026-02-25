@@ -149,4 +149,4 @@ resource "visionone_cam_role_definition" "cam_role_definition" {
 - `scope` (String) Scope where the Trend Vision One CAM custom role definition applies, typically a subscription.
 
 ## Import
-Will supported coming soon.
+Will be supported coming soon.

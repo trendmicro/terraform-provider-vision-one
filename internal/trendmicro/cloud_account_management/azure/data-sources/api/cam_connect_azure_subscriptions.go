@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 
+	cam "terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
+
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
@@ -19,30 +21,25 @@ type CAMCloudAccountsResponse struct {
 }
 
 type CAMCloudAccount struct {
-	ApplicationID             string                     `json:"applicationId,omitempty"`
-	CamDeployedRegion         string                     `json:"camDeployedRegion,omitempty"`
-	CloudAssetCount           int                        `json:"cloudAssetCount,omitempty"`
-	ConnectedSecurityServices []ConnectedSecurityService `json:"connectedSecurityServices,omitempty"`
-	CreatedDateTime           string                     `json:"createdDateTime,omitempty"`
-	Description               string                     `json:"description,omitempty"`
-	Features                  interface{}                `json:"features,omitempty"`
-	ID                        string                     `json:"id,omitempty"`
-	IsCAMCloudASRMEnabled     bool                       `json:"isCAMCloudASRMEnabled,omitempty"`
-	IsCloudASRMEditable       bool                       `json:"isCloudASRMEditable,omitempty"`
-	IsCloudASRMEnabled        bool                       `json:"isCloudASRMEnabled,omitempty"`
-	IsTerraformDeployed       bool                       `json:"isTerraformDeployed,omitempty"`
-	LastSyncedDateTime        string                     `json:"lastSyncedDateTime,omitempty"`
-	Name                      string                     `json:"name,omitempty"`
-	Region                    string                     `json:"region,omitempty"`
-	State                     string                     `json:"state,omitempty"`
-	Sources                   []string                   `json:"sources,omitempty"`
-	TenantID                  string                     `json:"tenantId,omitempty"`
-	UpdatedDateTime           string                     `json:"updatedDateTime,omitempty"`
-}
-
-type ConnectedSecurityService struct {
-	Name        string   `json:"name"`
-	InstanceIds []string `json:"instanceIds"`
+	ApplicationID             string                         `json:"applicationId,omitempty"`
+	CamDeployedRegion         string                         `json:"camDeployedRegion,omitempty"`
+	CloudAssetCount           int                            `json:"cloudAssetCount,omitempty"`
+	ConnectedSecurityServices []cam.ConnectedSecurityService `json:"connectedSecurityServices,omitempty"`
+	CreatedDateTime           string                         `json:"createdDateTime,omitempty"`
+	Description               string                         `json:"description,omitempty"`
+	Features                  interface{}                    `json:"features,omitempty"`
+	ID                        string                         `json:"id,omitempty"`
+	IsCAMCloudASRMEnabled     bool                           `json:"isCAMCloudASRMEnabled,omitempty"`
+	IsCloudASRMEditable       bool                           `json:"isCloudASRMEditable,omitempty"`
+	IsCloudASRMEnabled        bool                           `json:"isCloudASRMEnabled,omitempty"`
+	IsTerraformDeployed       bool                           `json:"isTerraformDeployed,omitempty"`
+	LastSyncedDateTime        string                         `json:"lastSyncedDateTime,omitempty"`
+	Name                      string                         `json:"name,omitempty"`
+	Region                    string                         `json:"region,omitempty"`
+	State                     string                         `json:"state,omitempty"`
+	Sources                   []string                       `json:"sources,omitempty"`
+	TenantID                  string                         `json:"tenantId,omitempty"`
+	UpdatedDateTime           string                         `json:"updatedDateTime,omitempty"`
 }
 
 type FeatureDetail struct {

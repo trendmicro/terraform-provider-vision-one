@@ -2,7 +2,6 @@ package azure
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
 	"strings"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/microsoftgraph/msgraph-sdk-go/models"
 
 	"terraform-provider-vision-one/internal/trendmicro"
+	cam "terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/api"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/resources/config"
 )
@@ -347,26 +347,9 @@ func getSubscriptionID(subscriptionID types.String) (string, error) {
 	return subscriptionID.ValueString(), nil
 }
 
-func generateRandomString(length int) string {
-	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	result := make([]byte, length)
-
-	randomBytes := make([]byte, length)
-	_, err := rand.Read(randomBytes)
-	if err != nil {
-		panic("failed to generate random bytes: " + err.Error())
-	}
-
-	for i := range randomBytes {
-		result[i] = charset[int(randomBytes[i])%len(charset)]
-	}
-
-	return string(result)
-}
-
 func getDisplayName(displayName types.String, subscriptionID string) string {
 	if displayName.IsNull() || displayName.IsUnknown() {
-		return config.AZURE_APP_REGISTRATION_NAME + subscriptionID + "-" + generateRandomString(4)
+		return config.AZURE_APP_REGISTRATION_NAME + subscriptionID + "-" + cam.GenerateRandomString(4)
 	}
 	return displayName.ValueString()
 }

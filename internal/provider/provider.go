@@ -5,8 +5,10 @@ import (
 	"os"
 
 	"terraform-provider-vision-one/internal/trendmicro"
-	camdatasources "terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/data-sources"
+	azurecamdatasources "terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/data-sources"
 	azureresources "terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/resources"
+	gcpcamdatasources "terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/data-sources"
+	gcpresources "terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/resources"
 	crmdatasources "terraform-provider-vision-one/internal/trendmicro/cloud_risk_management/data-sources"
 	crmresources "terraform-provider-vision-one/internal/trendmicro/cloud_risk_management/resources"
 	"terraform-provider-vision-one/internal/trendmicro/container_security/resources"
@@ -181,12 +183,20 @@ func (p *TrendMicroProvider) Resources(ctx context.Context) []func() resource.Re
 		crmresources.NewProfileResource,
 		crmresources.NewGroupResource,
 		crmresources.NewCheckSuppressionResource,
+		crmresources.NewCustomRuleResource,
+		gcpresources.NewIAMCustomRole,
+		gcpresources.NewServiceAccountIntegration,
+		gcpresources.NewEnableAPIServices,
+		gcpresources.NewGCPTagKeyResource,
+		gcpresources.NewGCPTagValueResource,
+		gcpresources.NewCAMConnectorResource,
 	}
 }
 
 func (p *TrendMicroProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
-		camdatasources.NewCAMCloudAccountsDataSource,
+		azurecamdatasources.NewCAMCloudAccountsDataSource,
+		gcpcamdatasources.NewCAMCloudAccountsDataSource,
 		crmdatasources.NewCRMAccountDataSource,
 	}
 }

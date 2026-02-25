@@ -15,12 +15,12 @@ Manages a check suppression in Vision One Cloud Risk Management. A check suppres
 
 ```terraform
 # Example: Suppressing a check until a specific date/time
-resource "visionone_crm_check_suppression" "check_suppression_with_date" {
-  account_id  = "12345678-4b0c-4200-86e0-1ff4acecac5b" # Vision One Cloud Risk Management account UUID
-  service     = "AutoScaling"
-  rule_id     = "ASG-003"
-  region      = "ap-southeast-2"
-  resource_id = "lcs-test-config-pd12345"
+resource "visionone_crm_check_suppression" "check" {
+  account_id  = "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d" # Vision One Cloud Risk Management account UUID
+  service     = "EC2"
+  rule_id     = "EC2-074"
+  region      = "ap-south-1"
+  resource_id = "sg-061c4319bdc0646a3"
   note        = "Suppressed for maintenance window - will be reviewed in Q2"
 
   # Optional: Suppress until a specific date/time (ISO 8601 format with UTC timezone)
@@ -30,9 +30,9 @@ resource "visionone_crm_check_suppression" "check_suppression_with_date" {
 output "check_suppression_with_date" {
   description = "Check suppression configuration with expiry date"
   value = {
-    id                         = visionone_crm_check_suppression.check_suppression_with_date.id
-    note                       = visionone_crm_check_suppression.check_suppression_with_date.note
-    suppressed_until_date_time = visionone_crm_check_suppression.check_suppression_with_date.suppressed_until_date_time
+    id                         = visionone_crm_check_suppression.check.id
+    note                       = visionone_crm_check_suppression.check.note
+    suppressed_until_date_time = visionone_crm_check_suppression.check.suppressed_until_date_time
   }
 }
 ```
@@ -41,12 +41,12 @@ output "check_suppression_with_date" {
 
 ```terraform
 # Example: Suppressing a check indefinitely
-resource "visionone_crm_check_suppression" "check_suppression_indefinite" {
-  account_id  = "12345678-4b0c-4200-86e0-1ff4acecac5b" # Vision One Cloud Risk Management account UUID
-  service     = "AutoScaling"
-  rule_id     = "ASG-003"
-  region      = "ap-southeast-2"
-  resource_id = "lcs-test-config-pd12345"
+resource "visionone_crm_check_suppression" "check" {
+  account_id  = "2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e" # Vision One Cloud Risk Management account UUID
+  service     = "KeyVault"
+  rule_id     = "KeyVault-001"
+  region      = "eastus"
+  resource_id = "/subscriptions/f212b923-fc10-47fb-9940-6c844ec628d5/resourceGroups/myResources/providers/Microsoft.KeyVault/vaults/myKeyVault"
   note        = "Development environment - security exception approved"
 
   # Suppress indefinitely (no suppressed_until_date_time specified)
@@ -55,8 +55,8 @@ resource "visionone_crm_check_suppression" "check_suppression_indefinite" {
 output "check_suppression_indefinite" {
   description = "Check suppression configuration without expiry date"
   value = {
-    id   = visionone_crm_check_suppression.check_suppression_indefinite.id
-    note = visionone_crm_check_suppression.check_suppression_indefinite.note
+    id   = visionone_crm_check_suppression.check.id
+    note = visionone_crm_check_suppression.check.note
   }
 }
 ```
@@ -90,3 +90,4 @@ terraform import visionone_crm_check_suppression.example {check_id}
 ```
 
 The check ID format is: `ccc:{crmAccountId}:{ruleId}:{service}:{region}:{resourceId}`
+
