@@ -58,4 +58,4 @@ resource "visionone_cam_role_assignment" "cam_role_assignment" {
 - `id` (String) Unique identifier for the role assignment.
 
 ## Import
-Will supported coming soon.
+Will be supported coming soon.

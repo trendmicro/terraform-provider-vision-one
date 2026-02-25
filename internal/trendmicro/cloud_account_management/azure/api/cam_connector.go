@@ -8,58 +8,55 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	cam "terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
 )
 
-type SecurityService struct {
-	Name        string   `json:"name"`
-	InstanceIds []string `json:"instanceIds"`
-}
-
 type CreateSubscriptionRequest struct {
-	ApplicationID             string                 `json:"applicationId"`
-	ConnectedSecurityServices []SecurityService      `json:"connectedSecurityServices"`
-	Description               string                 `json:"description"`
-	IsCAMCloudASRMEnabled     bool                   `json:"isCAMCloudASRMEnabled"`
-	Name                      string                 `json:"name"`
-	SubscriptionID            string                 `json:"subscriptionId"`
-	TenantID                  string                 `json:"tenantId"`
-	ManagementGroup           ManagementGroupDetails `json:"managementGroup,omitempty"`
-	IsSharedApplication       bool                   `json:"isSharedApplication,omitempty"`
-	CamDeployedRegion         string                 `json:"camDeployedRegion,omitempty"`
-	IsTFProviderDeployed      bool                   `json:"isTFProviderDeployed"`
+	ApplicationID             string                         `json:"applicationId"`
+	ConnectedSecurityServices []cam.ConnectedSecurityService `json:"connectedSecurityServices"`
+	Description               string                         `json:"description"`
+	IsCAMCloudASRMEnabled     bool                           `json:"isCAMCloudASRMEnabled"`
+	Name                      string                         `json:"name"`
+	SubscriptionID            string                         `json:"subscriptionId"`
+	TenantID                  string                         `json:"tenantId"`
+	ManagementGroup           ManagementGroupDetails         `json:"managementGroup,omitempty"`
+	IsSharedApplication       bool                           `json:"isSharedApplication,omitempty"`
+	CamDeployedRegion         string                         `json:"camDeployedRegion,omitempty"`
+	IsTFProviderDeployed      bool                           `json:"isTFProviderDeployed"`
 }
 
 type ModifySubscriptionRequest struct {
-	ApplicationID             string                 `json:"applicationId"`
-	ConnectedSecurityServices []SecurityService      `json:"connectedSecurityServices,omitempty"`
-	Description               string                 `json:"description"`
-	IsCAMCloudASRMEnabled     bool                   `json:"isCAMCloudASRMEnabled,omitempty"`
-	Name                      string                 `json:"name"`
-	SubscriptionID            string                 `json:"subscriptionId,omitempty"`
-	TenantID                  string                 `json:"tenantId"`
-	ManagementGroup           ManagementGroupDetails `json:"managementGroup,omitempty"`
-	IsSharedApplication       bool                   `json:"isSharedApplication,omitempty"`
-	CamDeployedRegion         string                 `json:"camDeployedRegion,omitempty"`
-	IsTFProviderDeployed      bool                   `json:"isTFProviderDeployed"`
+	ApplicationID             string                         `json:"applicationId"`
+	ConnectedSecurityServices []cam.ConnectedSecurityService `json:"connectedSecurityServices,omitempty"`
+	Description               string                         `json:"description"`
+	IsCAMCloudASRMEnabled     bool                           `json:"isCAMCloudASRMEnabled,omitempty"`
+	Name                      string                         `json:"name"`
+	SubscriptionID            string                         `json:"subscriptionId,omitempty"`
+	TenantID                  string                         `json:"tenantId"`
+	ManagementGroup           ManagementGroupDetails         `json:"managementGroup,omitempty"`
+	IsSharedApplication       bool                           `json:"isSharedApplication,omitempty"`
+	CamDeployedRegion         string                         `json:"camDeployedRegion,omitempty"`
+	IsTFProviderDeployed      bool                           `json:"isTFProviderDeployed"`
 }
 
 type SubscriptionResponse struct {
-	ApplicationID             string            `json:"applicationId"`
-	CamDeployedRegion         string            `json:"camDeployedRegion,omitempty"`
-	CloudAssetCount           int               `json:"cloudAssetCount,omitempty"`
-	ConnectedSecurityServices []SecurityService `json:"connectedSecurityServices,omitempty"`
-	CreatedDateTime           string            `json:"createdDateTime"`
-	Description               string            `json:"description,omitempty"`
-	IsCAMCloudASRMEnabled     bool              `json:"isCAMCloudASRMEnabled,omitempty"`
-	IsCloudASRMEditable       bool              `json:"isCloudASRMEditable,omitempty"`
-	IsCloudASRMEnabled        bool              `json:"isCloudASRMEnabled,omitempty"`
-	LastSyncedDateTime        string            `json:"lastSyncedDateTime,omitempty"`
-	Name                      string            `json:"name"`
-	Sources                   []string          `json:"sources,omitempty"`
-	State                     string            `json:"state"`
-	SubscriptionID            string            `json:"id"`
-	TenantID                  string            `json:"tenantId"`
-	UpdatedDateTime           string            `json:"updatedDateTime"`
+	ApplicationID             string                         `json:"applicationId"`
+	CamDeployedRegion         string                         `json:"camDeployedRegion,omitempty"`
+	CloudAssetCount           int                            `json:"cloudAssetCount,omitempty"`
+	ConnectedSecurityServices []cam.ConnectedSecurityService `json:"connectedSecurityServices,omitempty"`
+	CreatedDateTime           string                         `json:"createdDateTime"`
+	Description               string                         `json:"description,omitempty"`
+	IsCAMCloudASRMEnabled     bool                           `json:"isCAMCloudASRMEnabled,omitempty"`
+	IsCloudASRMEditable       bool                           `json:"isCloudASRMEditable,omitempty"`
+	IsCloudASRMEnabled        bool                           `json:"isCloudASRMEnabled,omitempty"`
+	LastSyncedDateTime        string                         `json:"lastSyncedDateTime,omitempty"`
+	Name                      string                         `json:"name"`
+	Sources                   []string                       `json:"sources,omitempty"`
+	State                     string                         `json:"state"`
+	SubscriptionID            string                         `json:"id"`
+	TenantID                  string                         `json:"tenantId"`
+	UpdatedDateTime           string                         `json:"updatedDateTime"`
 }
 
 type ManagementGroupDetails struct {

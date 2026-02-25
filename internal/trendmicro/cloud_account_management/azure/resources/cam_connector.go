@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"terraform-provider-vision-one/internal/trendmicro"
+	cam "terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/api"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/resources/config"
 
@@ -229,7 +230,7 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 
-	var connectedServices []api.SecurityService
+	var connectedServices []cam.ConnectedSecurityService
 	if !plan.ConnectedSecurityServices.IsNull() {
 		var securityServiceModels []SecurityServiceModel
 		diags = plan.ConnectedSecurityServices.ElementsAs(ctx, &securityServiceModels, false)
@@ -246,7 +247,7 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 				return
 			}
 
-			connectedServices = append(connectedServices, api.SecurityService{
+			connectedServices = append(connectedServices, cam.ConnectedSecurityService{
 				Name:        model.Name.ValueString(),
 				InstanceIds: instanceIds,
 			})
@@ -344,7 +345,7 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 		return
 	}
 
-	var connectedServices []api.SecurityService
+	var connectedServices []cam.ConnectedSecurityService
 	if !state.ConnectedSecurityServices.IsNull() {
 		var securityServiceModels []SecurityServiceModel
 		diags = state.ConnectedSecurityServices.ElementsAs(ctx, &securityServiceModels, false)
@@ -361,7 +362,7 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 				return
 			}
 
-			connectedServices = append(connectedServices, api.SecurityService{
+			connectedServices = append(connectedServices, cam.ConnectedSecurityService{
 				Name:        model.Name.ValueString(),
 				InstanceIds: instanceIds,
 			})
@@ -515,7 +516,7 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		applicationID = state.ApplicationID.ValueString()
 	}
 
-	var connectedServices []api.SecurityService
+	var connectedServices []cam.ConnectedSecurityService
 	if !plan.ConnectedSecurityServices.IsNull() {
 		var securityServiceModels []SecurityServiceModel
 		diags := plan.ConnectedSecurityServices.ElementsAs(ctx, &securityServiceModels, false)
@@ -532,7 +533,7 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 				return
 			}
 
-			connectedServices = append(connectedServices, api.SecurityService{
+			connectedServices = append(connectedServices, cam.ConnectedSecurityService{
 				Name:        model.Name.ValueString(),
 				InstanceIds: instanceIds,
 			})
@@ -685,7 +686,7 @@ func convertManagementGroupDetailsToAPI(ctx context.Context, mgmtGroup *Manageme
 	return managementGroup, diags
 }
 
-func convertAPISecurityServicesToTerraform(ctx context.Context, apiServices []api.SecurityService) (types.List, diag.Diagnostics) {
+func convertAPISecurityServicesToTerraform(ctx context.Context, apiServices []cam.ConnectedSecurityService) (types.List, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
 	objectType := types.ObjectType{

@@ -11,7 +11,7 @@ import (
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/api"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/resources/config"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/authorization/armauthorization"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/authorization/armauthorization/v2"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/microsoftgraph/msgraph-sdk-go/applications"
 	"github.com/microsoftgraph/msgraph-sdk-go/serviceprincipals"

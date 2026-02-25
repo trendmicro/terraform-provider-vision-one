@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"terraform-provider-vision-one/internal/trendmicro"
+	cam "terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/data-sources/api"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/data-sources/config"
 
@@ -41,11 +42,11 @@ type CAMCloudAccountModel struct {
 	IsTerraformDeployed types.Bool `tfsdk:"is_terraform_deployed"`
 
 	// Trend Micro security features and services (common)
-	IsCAMCloudASRMEnabled     types.Bool                      `tfsdk:"is_cam_cloud_asrm_enabled"`
-	IsCloudASRMEditable       types.Bool                      `tfsdk:"is_cloud_asrm_editable"`
-	IsCloudASRMEnabled        types.Bool                      `tfsdk:"is_cloud_asrm_enabled"`
-	ConnectedSecurityServices []ConnectedSecurityServiceModel `tfsdk:"connected_security_services"`
-	Features                  []FeatureModel                  `tfsdk:"features"`
+	IsCAMCloudASRMEnabled     types.Bool                          `tfsdk:"is_cam_cloud_asrm_enabled"`
+	IsCloudASRMEditable       types.Bool                          `tfsdk:"is_cloud_asrm_editable"`
+	IsCloudASRMEnabled        types.Bool                          `tfsdk:"is_cloud_asrm_enabled"`
+	ConnectedSecurityServices []cam.ConnectedSecurityServiceModel `tfsdk:"connected_security_services"`
+	Features                  []cam.FeatureModel                  `tfsdk:"features"`
 
 	// Metadata and tracking (common)
 	CloudAssetCount    types.Int64    `tfsdk:"cloud_asset_count"`
@@ -64,17 +65,6 @@ type CAMAzureSubscriptionDataSourceModel struct {
 	SubscriptionIds []types.String         `tfsdk:"subscription_ids"`
 	State           types.String           `tfsdk:"state"`
 	Top             types.Int64            `tfsdk:"top"`
-}
-
-type ConnectedSecurityServiceModel struct {
-	InstanceIds []types.String `tfsdk:"instance_ids"`
-	Name        types.String   `tfsdk:"name"`
-}
-
-type FeatureModel struct {
-	ID              types.String   `tfsdk:"id"`
-	Regions         []types.String `tfsdk:"regions"`
-	TemplateVersion types.String   `tfsdk:"template_version"`
 }
 
 // Metadata sets the data source type name for CAM Cloud Accounts
@@ -245,7 +235,7 @@ func (d *CAMCloudAccountsDataSource) Read(ctx context.Context, req datasource.Re
 		return
 	}
 
-	subscriptionIDs := convertTypesStringSliceToStringSlice(data.SubscriptionIds)
+	subscriptionIDs := cam.ConvertTypesStringSliceToStringSlice(data.SubscriptionIds)
 
 	var top int64
 	if data.Top.ValueInt64() > 0 {
@@ -309,18 +299,6 @@ func (d *CAMCloudAccountsDataSource) Configure(ctx context.Context, req datasour
 	tflog.Debug(ctx, "[CAM Cloud Accounts] CAM Cloud Accounts data source configured successfully")
 }
 
-// convertTypesStringSliceToStringSlice converts Terraform types.String slice to native string slice
-func convertTypesStringSliceToStringSlice(typesSlice []types.String) []string {
-	if len(typesSlice) == 0 {
-		return []string{}
-	}
-	result := make([]string, len(typesSlice))
-	for i, ts := range typesSlice {
-		result[i] = ts.ValueString()
-	}
-	return result
-}
-
 // convertToCAMCloudAccountModel transforms API response into Terraform data source model
 func convertToCAMCloudAccountModel(response *api.CAMCloudAccountsResponse) []CAMCloudAccountModel {
 	if response == nil || len(response.CloudAccounts) == 0 {
@@ -334,141 +312,35 @@ func convertToCAMCloudAccountModel(response *api.CAMCloudAccountsResponse) []CAM
 		account := &response.CloudAccounts[i]
 		model := CAMCloudAccountModel{
 			// Common fields
-			ID:          getStringValue(account.ID),
-			Name:        getStringValue(account.Name),
-			Description: getStringValue(account.Description),
-			State:       getStringValue(account.State),
+			ID:          cam.GetStringValue(account.ID),
+			Name:        cam.GetStringValue(account.Name),
+			Description: cam.GetStringValue(account.Description),
+			State:       cam.GetStringValue(account.State),
 
 			// Azure-specific fields
-			TenantID:      getStringValue(account.TenantID),
-			ApplicationID: getStringValue(account.ApplicationID),
+			TenantID:      cam.GetStringValue(account.TenantID),
+			ApplicationID: cam.GetStringValue(account.ApplicationID),
 
 			// Deployment and infrastructure
-			IsTerraformDeployed: getBoolValue(account.IsTerraformDeployed),
-			CamDeployedRegion:   getStringValue(account.CamDeployedRegion),
+			IsTerraformDeployed: cam.GetBoolValue(account.IsTerraformDeployed),
+			CamDeployedRegion:   cam.GetStringValue(account.CamDeployedRegion),
 
 			// Trend Micro security features
-			IsCAMCloudASRMEnabled:     getBoolValue(account.IsCAMCloudASRMEnabled),
-			IsCloudASRMEditable:       getBoolValue(account.IsCloudASRMEditable),
-			IsCloudASRMEnabled:        getBoolValue(account.IsCloudASRMEnabled),
-			ConnectedSecurityServices: convertConnectedSecurityServices(account.ConnectedSecurityServices),
-			Features:                  convertFeatures(account.Features),
+			IsCAMCloudASRMEnabled:     cam.GetBoolValue(account.IsCAMCloudASRMEnabled),
+			IsCloudASRMEditable:       cam.GetBoolValue(account.IsCloudASRMEditable),
+			IsCloudASRMEnabled:        cam.GetBoolValue(account.IsCloudASRMEnabled),
+			ConnectedSecurityServices: cam.ConvertConnectedSecurityServices(account.ConnectedSecurityServices),
+			Features:                  cam.ConvertFeatures(account.Features),
 
 			// Metadata and tracking
-			CloudAssetCount:    getInt64Value(account.CloudAssetCount),
-			Sources:            convertStringSlice(account.Sources),
-			CreatedDateTime:    getStringValue(account.CreatedDateTime),
-			UpdatedDateTime:    getStringValue(account.UpdatedDateTime),
-			LastSyncedDateTime: getStringValue(account.LastSyncedDateTime),
+			CloudAssetCount:    cam.GetInt64Value(account.CloudAssetCount),
+			Sources:            cam.ConvertStringSlice(account.Sources),
+			CreatedDateTime:    cam.GetStringValue(account.CreatedDateTime),
+			UpdatedDateTime:    cam.GetStringValue(account.UpdatedDateTime),
+			LastSyncedDateTime: cam.GetStringValue(account.LastSyncedDateTime),
 		}
 		accounts = append(accounts, model)
 	}
 
 	return accounts
-}
-
-// getStringValue safely converts string to types.String, returning null for empty strings
-func getStringValue(s string) types.String {
-	if s == "" {
-		return types.StringNull()
-	}
-	return types.StringValue(s)
-}
-
-// getInt64Value safely converts int to types.Int64, returning null for zero values
-func getInt64Value(i int) types.Int64 {
-	if i == 0 {
-		return types.Int64Null()
-	}
-	return types.Int64Value(int64(i))
-}
-
-// getBoolValue converts bool to types.Bool
-func getBoolValue(b bool) types.Bool {
-	return types.BoolValue(b)
-}
-
-// convertStringSlice converts native string slice to types.String slice
-func convertStringSlice(slice []string) []types.String {
-	if slice == nil {
-		return nil
-	}
-	result := make([]types.String, len(slice))
-	for i, s := range slice {
-		result[i] = types.StringValue(s)
-	}
-	return result
-}
-
-// convertConnectedSecurityServices transforms API security services to Terraform model
-func convertConnectedSecurityServices(services []api.ConnectedSecurityService) []ConnectedSecurityServiceModel {
-	if services == nil {
-		return nil
-	}
-	result := make([]ConnectedSecurityServiceModel, len(services))
-	for i, service := range services {
-		result[i] = ConnectedSecurityServiceModel{
-			Name:        getStringValue(service.Name),
-			InstanceIds: convertStringSlice(service.InstanceIds),
-		}
-	}
-	return result
-}
-
-// convertFeatures transforms API features (which can be any type) to Terraform model
-// The API returns features as interface{} which requires type assertion
-func convertFeatures(features any) []FeatureModel {
-	if features == nil {
-		return nil
-	}
-
-	// The features field is defined as any in the API
-	// We need to handle it carefully as it might be a slice or other type
-	switch f := features.(type) {
-	case []any:
-		result := make([]FeatureModel, len(f))
-		for i, feature := range f {
-			if featureMap, ok := feature.(map[string]any); ok {
-				result[i] = FeatureModel{
-					ID:              getStringFromInterface(featureMap["id"]),
-					Regions:         convertInterfaceSliceToStringSlice(featureMap["regions"]),
-					TemplateVersion: getStringFromInterface(featureMap["templateVersion"]),
-				}
-			}
-		}
-		return result
-	default:
-		// If it's not a slice, return empty slice
-		return []FeatureModel{}
-	}
-}
-
-// getStringFromInterface safely extracts string from interface{} and converts to types.String
-func getStringFromInterface(value any) types.String {
-	if value == nil {
-		return types.StringNull()
-	}
-	if str, ok := value.(string); ok {
-		return getStringValue(str)
-	}
-	return types.StringNull()
-}
-
-// convertInterfaceSliceToStringSlice safely converts interface{} slice to types.String slice
-func convertInterfaceSliceToStringSlice(value any) []types.String {
-	if value == nil {
-		return nil
-	}
-	if slice, ok := value.([]any); ok {
-		result := make([]types.String, len(slice))
-		for i, item := range slice {
-			if str, ok := item.(string); ok {
-				result[i] = types.StringValue(str)
-			} else {
-				result[i] = types.StringNull()
-			}
-		}
-		return result
-	}
-	return nil
 }
