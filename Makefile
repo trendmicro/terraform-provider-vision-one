@@ -1,46 +1,68 @@
-TEST?=$$(go list ./... | grep -v 'vendor')
-HOSTNAME=trendmicro.com
-NAMESPACE=visionone
-NAME=vision-one
-BINARY=terraform-provider-${NAME}
-VERSION=0.4
-OS_ARCH=darwin_arm64
+.PHONY: build clean
+.PHONY: lint lint-fix
 
-default: install
+# Get golangci-lint binary path
+GOPATH=$(shell go env GOPATH)
+GOBIN=$(shell go env GOBIN)
+ifeq ($(GOBIN),)
+	LINT_BINARY_PATH=$(GOPATH)/bin/golangci-lint
+else
+	LINT_BINARY_PATH=$(GOBIN)/golangci-lint
+endif
 
-build:
-	go build -o ${BINARY}
+# Get all function binaries for this code base
+# Find all directories with .go files
+TARGETS=$(sort $(dir $(wildcard services/public/func/*/*.go)))
+HANDLERS=$(addsuffix bootstrap,$(TARGETS))
+PACKAGES=$(HANDLERS:/bootstrap=.zip)
+ARTIFACT=bin/
 
-release:
-	GOOS=darwin GOARCH=amd64 go build -o ./bin/${BINARY}_${VERSION}_darwin_amd64
-	GOOS=freebsd GOARCH=386 go build -o ./bin/${BINARY}_${VERSION}_freebsd_386
-	GOOS=freebsd GOARCH=amd64 go build -o ./bin/${BINARY}_${VERSION}_freebsd_amd64
-	GOOS=freebsd GOARCH=arm go build -o ./bin/${BINARY}_${VERSION}_freebsd_arm
-	GOOS=linux GOARCH=386 go build -o ./bin/${BINARY}_${VERSION}_linux_386
-	GOOS=linux GOARCH=amd64 go build -o ./bin/${BINARY}_${VERSION}_linux_amd64
-	GOOS=linux GOARCH=arm go build -o ./bin/${BINARY}_${VERSION}_linux_arm
-	GOOS=openbsd GOARCH=386 go build -o ./bin/${BINARY}_${VERSION}_openbsd_386
-	GOOS=openbsd GOARCH=amd64 go build -o ./bin/${BINARY}_${VERSION}_openbsd_amd64
-	GOOS=solaris GOARCH=amd64 go build -o ./bin/${BINARY}_${VERSION}_solaris_amd64
-	GOOS=windows GOARCH=386 go build -o ./bin/${BINARY}_${VERSION}_windows_386
-	GOOS=windows GOARCH=amd64 go build -o ./bin/${BINARY}_${VERSION}_windows_amd64
+build: setup test $(ARTIFACT) $(HANDLERS) $(PACKAGES)
 
-install: build
-	mkdir -p ~/.terraform.d/plugins/${HOSTNAME}/${NAMESPACE}/${NAME}/${VERSION}/${OS_ARCH}
-	mv ${BINARY} ~/.terraform.d/plugins/${HOSTNAME}/${NAMESPACE}/${NAME}/${VERSION}/${OS_ARCH}
+%/bootstrap: %/*.go
+	env GOARCH=amd64 GOOS=linux go build -tags lambda.norpc -o $@ ./$*
+	zip -FS -j $*.zip $@
+	cp $*.zip $(ARTIFACT)
 
-test:  
-	@go test $(TEST) -race -coverprofile=coverage.txt -covermode=atomic -timeout=30s -parallel=4
-	go tool cover -html=coverage.txt 
-	go tool cover -func coverage.txt 
-	rm coverage.txt                   
+$(ARTIFACT):
+	@mkdir -p $(dir $(ARTIFACT))
 
-testacc-local: 
-	TF_ACC=1 go test $(TEST) -v $(TESTARGS) -timeout 120m -coverprofile=coverage.txt -covermode=atomic
-	go tool cover -html=coverage.txt 
-	go tool cover -func coverage.txt
-	rm coverage.txt
+tidy: | node_modules/go.mod
+	go mod tidy
 
-testacc:
-	TF_ACC=1 go test $(TEST) $(TESTARGS) -timeout 120m -coverprofile=count.out
-	go tool cover -func=count.out
+test:
+	go test -tags "testtools" -v ./... -coverprofile=coverage.out
+
+coverage:
+	go tool cover -html=coverage.out
+
+# node_modules/go.mod used to ignore possible go modules in node_modules.
+node_modules/go.mod:
+	-@touch $@
+
+vars:
+	@echo TARGETS: $(TARGETS)
+	@echo HANDLERS: $(HANDLERS)
+	@echo PACKAGES: $(PACKAGES)
+
+setup:
+	@echo "Checking golangci-lint for building..."
+	@if [ ! -e "$(LINT_BINARY_PATH)" ]; then \
+		echo "golangci-lint is not installed. Installing..."; \
+		go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest; \
+	else \
+			echo "golangci-lint is already installed."; \
+	fi
+
+lint: setup
+	@echo "Running golangci-lint..."
+	$(LINT_BINARY_PATH) run -v ./... --config ./.golangci.yml
+
+lint-fix: setup ## Run golangci-lint and prettier formatting fixers and go mod tidy
+	@echo "Running golangci-lint auto-fix..."
+	$(LINT_BINARY_PATH) run -v ./... --fix --config ./.golangci.yml
+	go mod tidy
+
+clean:
+	$(RM) $(HANDLERS) $(PACKAGES)
+	$(RM) -r $(ARTIFACT)

@@ -3,9 +3,25 @@ package cloud_account_management
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
+	"math/big"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
+
+// Applies a randomized delay based on the given JitterConfig
+// to prevent high concurrency API throttling.
+func JitterSleep(cfg JitterConfig) {
+	jitterRange := cfg.MaxDelayMs - cfg.MinDelayMs
+	if jitterRange <= 0 {
+		jitterRange = 1
+	}
+	n, _ := big.NewInt(0).SetString(fmt.Sprintf("%d", jitterRange), 10)
+	jitter, _ := rand.Int(rand.Reader, n)
+	delay := time.Duration(cfg.MinDelayMs+int(jitter.Int64())) * time.Millisecond
+	time.Sleep(delay)
+}
 
 // GenerateRandomString generates a random string of specified length
 func GenerateRandomString(length int) string {

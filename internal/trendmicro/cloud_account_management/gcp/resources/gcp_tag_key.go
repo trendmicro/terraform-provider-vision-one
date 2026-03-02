@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"terraform-provider-vision-one/internal/trendmicro"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/api"
@@ -149,8 +150,9 @@ func (r *GCPTagKeyResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
-	// Create Cloud Resource Manager v3 client for tags
-	crmService, err := cloudresourcemanager.NewService(ctx, option.WithCredentials(gcpCred))
+	// Create Cloud Resource Manager v3 client for tags with rate-limited HTTP client
+	ratLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpCred)
+	crmService, err := cloudresourcemanager.NewService(ctx, option.WithHTTPClient(ratLimitedClient))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[GCP Tag Key][Create]",
@@ -312,8 +314,9 @@ func (r *GCPTagKeyResource) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 
-	// Create Cloud Resource Manager v3 client
-	crmService, err := cloudresourcemanager.NewService(ctx, option.WithCredentials(gcpCred))
+	// Create Cloud Resource Manager v3 client with rate-limited HTTP client
+	ratLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpCred)
+	crmService, err := cloudresourcemanager.NewService(ctx, option.WithHTTPClient(ratLimitedClient))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[GCP Tag Key][Read]",
@@ -374,8 +377,9 @@ func (r *GCPTagKeyResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	// Create Cloud Resource Manager v3 client
-	crmService, err := cloudresourcemanager.NewService(ctx, option.WithCredentials(gcpCred))
+	// Create Cloud Resource Manager v3 client with rate-limited HTTP client
+	ratLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpCred)
+	crmService, err := cloudresourcemanager.NewService(ctx, option.WithHTTPClient(ratLimitedClient))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[GCP Tag Key][Update]",
@@ -473,8 +477,9 @@ func (r *GCPTagKeyResource) Delete(ctx context.Context, req resource.DeleteReque
 		return
 	}
 
-	// Create Cloud Resource Manager v3 client
-	crmService, err := cloudresourcemanager.NewService(ctx, option.WithCredentials(gcpCred))
+	// Create Cloud Resource Manager v3 client with rate-limited HTTP client
+	ratLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpCred)
+	crmService, err := cloudresourcemanager.NewService(ctx, option.WithHTTPClient(ratLimitedClient))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[GCP Tag Key][Delete]",
@@ -564,6 +569,39 @@ func (r *GCPTagKeyResource) Delete(ctx context.Context, req resource.DeleteReque
 			fmt.Sprintf("Tag key deletion operation failed: %s", finalOp.Error.Message),
 		)
 		return
+	}
+
+	// Verify the tag key is fully deleted by polling until GET returns 404
+	maxVerifyRetries := 5
+	verifyInterval := 2 * time.Second
+	for i := 0; i < maxVerifyRetries; i++ {
+		_, getErr := crmService.TagKeys.Get(state.Name.ValueString()).Context(ctx).Do()
+		if getErr != nil {
+			if strings.Contains(getErr.Error(), "404") || strings.Contains(getErr.Error(), "not found") {
+				tflog.Debug(ctx, "Tag key deletion verified", map[string]interface{}{
+					"tag_key_name": state.Name.ValueString(),
+					"attempts":     i + 1,
+				})
+				break
+			}
+		}
+		if i == maxVerifyRetries-1 {
+			resp.Diagnostics.AddWarning(
+				"[GCP Tag Key][Delete]",
+				fmt.Sprintf("Tag key '%s' deletion operation completed but the resource may still be propagating. "+
+					"It should be fully removed shortly.", state.Name.ValueString()),
+			)
+			break
+		}
+		tflog.Debug(ctx, "Waiting for tag key deletion to propagate", map[string]interface{}{
+			"tag_key_name": state.Name.ValueString(),
+			"attempt":      i + 1,
+		})
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(verifyInterval):
+		}
 	}
 
 	tflog.Info(ctx, "Tag key deleted successfully", map[string]interface{}{

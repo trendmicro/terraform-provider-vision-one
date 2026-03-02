@@ -149,8 +149,9 @@ func (r *GCPTagValueResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
-	// Create Cloud Resource Manager v3 client for tags
-	crmService, err := cloudresourcemanager.NewService(ctx, option.WithCredentials(gcpCred))
+	// Create Cloud Resource Manager v3 client for tags with rate-limited HTTP client
+	ratLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpCred)
+	crmService, err := cloudresourcemanager.NewService(ctx, option.WithHTTPClient(ratLimitedClient))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[GCP Tag Value][Create]",
@@ -312,8 +313,9 @@ func (r *GCPTagValueResource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
-	// Create Cloud Resource Manager v3 client
-	crmService, err := cloudresourcemanager.NewService(ctx, option.WithCredentials(gcpCred))
+	// Create Cloud Resource Manager v3 client with rate-limited HTTP client
+	ratLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpCred)
+	crmService, err := cloudresourcemanager.NewService(ctx, option.WithHTTPClient(ratLimitedClient))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[GCP Tag Value][Read]",
@@ -374,8 +376,9 @@ func (r *GCPTagValueResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
-	// Create Cloud Resource Manager v3 client
-	crmService, err := cloudresourcemanager.NewService(ctx, option.WithCredentials(gcpCred))
+	// Create Cloud Resource Manager v3 client with rate-limited HTTP client
+	ratLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpCred)
+	crmService, err := cloudresourcemanager.NewService(ctx, option.WithHTTPClient(ratLimitedClient))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[GCP Tag Value][Update]",
@@ -473,8 +476,9 @@ func (r *GCPTagValueResource) Delete(ctx context.Context, req resource.DeleteReq
 		return
 	}
 
-	// Create Cloud Resource Manager v3 client
-	crmService, err := cloudresourcemanager.NewService(ctx, option.WithCredentials(gcpCred))
+	// Create Cloud Resource Manager v3 client with rate-limited HTTP client
+	ratLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpCred)
+	crmService, err := cloudresourcemanager.NewService(ctx, option.WithHTTPClient(ratLimitedClient))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[GCP Tag Value][Delete]",
@@ -596,7 +600,9 @@ func (r *GCPTagValueResource) updateStateFromAPI(_ context.Context, tagValue *cl
 
 	if tagValue.Description != "" {
 		model.Description = types.StringValue(tagValue.Description)
-	} else {
+	} else if model.Description.IsNull() || model.Description.IsUnknown() {
 		model.Description = types.StringNull()
+	} else {
+		model.Description = types.StringValue("")
 	}
 }

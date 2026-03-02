@@ -66,6 +66,7 @@ type ManagementGroupDetails struct {
 }
 
 func (c *CamClient) CreateSubscription(data *CreateSubscriptionRequest) error {
+	cam.JitterSleep(cam.AzureJitterConfig)
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return err
@@ -143,6 +144,7 @@ func (c *CamClient) CreateSubscription(data *CreateSubscriptionRequest) error {
 }
 
 func (c *CamClient) ReadSubscription(subscriptionID string) (*SubscriptionResponse, error) {
+	cam.JitterSleep(cam.AzureJitterConfig)
 	url := fmt.Sprintf("%s/beta/cam/azureSubscriptions/%s", c.Client.HostURL, subscriptionID)
 
 	req, err := http.NewRequest("GET", url, http.NoBody)
@@ -171,6 +173,7 @@ func (c *CamClient) ReadSubscription(subscriptionID string) (*SubscriptionRespon
 }
 
 func (c *CamClient) UpdateSubscription(subscriptionID string, data *ModifySubscriptionRequest) error {
+	cam.JitterSleep(cam.AzureJitterConfig)
 	url := fmt.Sprintf("%s/beta/cam/azureSubscriptions/%s", c.Client.HostURL, subscriptionID)
 	jsonData, err := json.Marshal(data)
 	if err != nil {
@@ -193,6 +196,7 @@ func (c *CamClient) UpdateSubscription(subscriptionID string, data *ModifySubscr
 }
 
 func (c *CamClient) DeleteSubscription(subscriptionID string) error {
+	cam.JitterSleep(cam.AzureJitterConfig)
 	url := fmt.Sprintf("%s/beta/cam/azureSubscriptions/%s", c.Client.HostURL, subscriptionID)
 
 	req, err := http.NewRequest("DELETE", url, http.NoBody)
