@@ -424,6 +424,7 @@ func (r *ServiceAccountIntegration) Create(ctx context.Context, req resource.Cre
 
 	// Bind all roles to all target projects
 	for _, targetProjectID := range targetProjects {
+		tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Create] Adding service account %s as principal to project: %s", sa.Email, targetProjectID))
 		projectBound := false
 		for _, roleName := range roleNames {
 			actualRoleName := roleName
@@ -460,6 +461,7 @@ func (r *ServiceAccountIntegration) Create(ctx context.Context, req resource.Cre
 		}
 		if projectBound {
 			boundProjectIds = append(boundProjectIds, targetProjectID)
+			tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Create] Successfully added service account as principal to project: %s", targetProjectID))
 		}
 	}
 
@@ -581,6 +583,7 @@ func (r *ServiceAccountIntegration) Read(ctx context.Context, req resource.ReadR
 
 	member := fmt.Sprintf("serviceAccount:%s", sa.Email)
 	for p, projectID := range stateBoundProjects {
+		tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Read] Checking service account principal bindings in project: %s (%d/%d)", projectID, p+1, len(stateBoundProjects)))
 		getReq := &cloudresourcemanager.GetIamPolicyRequest{}
 		policy, policyErr := gcpClients.CRMClient.Projects.GetIamPolicy(projectID, getReq).Context(ctx).Do()
 		if policyErr != nil {
@@ -753,7 +756,7 @@ func (r *ServiceAccountIntegration) Update(ctx context.Context, req resource.Upd
 		// Remove all role bindings from projects that are no longer in scope
 		for _, proj := range oldBoundProjects {
 			if !newProjectsMap[proj] {
-				tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Update] Removing bindings from project: %s", proj))
+				tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Update] Removing service account principal from project: %s", proj))
 				for _, roleName := range roleNames {
 					if err := RemoveIAMBinding(ctx, gcpClients, proj, member, roleName); err != nil {
 						tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Update] Failed to remove binding for role %s from project %s: %s", roleName, proj, err.Error()))
@@ -765,7 +768,7 @@ func (r *ServiceAccountIntegration) Update(ctx context.Context, req resource.Upd
 		// Add all role bindings to new projects
 		for _, proj := range newTargetProjects {
 			if !oldProjectsMap[proj] {
-				tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Update] Adding bindings to project: %s", proj))
+				tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Update] Adding service account principal to project: %s", proj))
 				for _, roleName := range roleNames {
 					if err := AddIAMBinding(ctx, gcpClients, proj, member, roleName); err != nil {
 						tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Update] Failed to add binding for role %s to project %s: %s", roleName, proj, err.Error()))
@@ -893,6 +896,7 @@ func (r *ServiceAccountIntegration) Delete(ctx context.Context, req resource.Del
 
 	// Remove all role bindings from all target projects
 	for _, projectID := range currentTargetProjects {
+		tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Delete] Removing service account principal from project: %s", projectID))
 		for _, roleName := range roleNames {
 			actualRoleName := roleName
 

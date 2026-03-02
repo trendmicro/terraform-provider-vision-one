@@ -76,6 +76,7 @@ type ProjectResponse struct {
 }
 
 func (c *CamClient) CreateProject(data *CreateProjectRequest) error {
+	cam.JitterSleep(cam.GCPJitterConfig)
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return err
@@ -159,7 +160,8 @@ func (c *CamClient) CreateProject(data *CreateProjectRequest) error {
 }
 
 func (c *CamClient) ReadProject(projectNumber string) (*ProjectResponse, error) {
-	url := fmt.Sprintf("%s/beta/cam/gcpProjects/%s", c.Client.HostURL, projectNumber)
+	cam.JitterSleep(cam.GCPJitterConfig)
+	url := fmt.Sprintf("%s/beta/cam/gcpProjects/%s?excludeCloudAssets=true", c.Client.HostURL, projectNumber)
 
 	req, err := http.NewRequest("GET", url, http.NoBody)
 	if err != nil {
@@ -187,6 +189,7 @@ func (c *CamClient) ReadProject(projectNumber string) (*ProjectResponse, error) 
 }
 
 func (c *CamClient) UpdateProject(projectNumber string, data *ModifyProjectRequest) error {
+	cam.JitterSleep(cam.GCPJitterConfig)
 	url := fmt.Sprintf("%s/beta/cam/gcpProjects/%s", c.Client.HostURL, projectNumber)
 	jsonData, err := json.Marshal(data)
 	if err != nil {
@@ -209,6 +212,7 @@ func (c *CamClient) UpdateProject(projectNumber string, data *ModifyProjectReque
 }
 
 func (c *CamClient) DeleteProject(projectNumber string) error {
+	cam.JitterSleep(cam.GCPJitterConfig)
 	url := fmt.Sprintf("%s/beta/cam/gcpProjects/%s", c.Client.HostURL, projectNumber)
 
 	req, err := http.NewRequest("DELETE", url, http.NoBody)

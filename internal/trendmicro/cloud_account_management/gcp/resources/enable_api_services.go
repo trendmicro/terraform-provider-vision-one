@@ -2,7 +2,9 @@ package resources
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"terraform-provider-vision-one/internal/trendmicro"
@@ -117,8 +119,9 @@ func (r *EnableAPIServices) Create(ctx context.Context, req resource.CreateReque
 		"services":   services,
 	})
 
-	// Create Service Usage client
-	serviceUsageClient, err := serviceusage.NewService(ctx, option.WithCredentials(gcpClients.Credential))
+	// Create Service Usage client with rate-limited HTTP client
+	rateLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpClients.Credential)
+	serviceUsageClient, err := serviceusage.NewService(ctx, option.WithHTTPClient(rateLimitedClient))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[Enable API Services][Create]",
@@ -128,8 +131,18 @@ func (r *EnableAPIServices) Create(ctx context.Context, req resource.CreateReque
 	}
 
 	// Enable each service
+	var billingWarnings []string
 	for _, service := range services {
 		if err := r.enableService(ctx, serviceUsageClient, gcpClients.ProjectID, service); err != nil {
+			var be *billingError
+			if errors.As(err, &be) {
+				tflog.Warn(ctx, "Skipping service enable due to missing billing account", map[string]interface{}{
+					"service":    service,
+					"project_id": gcpClients.ProjectID,
+				})
+				billingWarnings = append(billingWarnings, service)
+				continue
+			}
 			resp.Diagnostics.AddError(
 				"[Enable API Services][Create]",
 				fmt.Sprintf("Failed to enable service %s in project %s: %s", service, gcpClients.ProjectID, err),
@@ -139,6 +152,16 @@ func (r *EnableAPIServices) Create(ctx context.Context, req resource.CreateReque
 		tflog.Debug(ctx, "Successfully enabled service", map[string]interface{}{
 			"service": service,
 		})
+	}
+
+	if len(billingWarnings) > 0 {
+		resp.Diagnostics.AddWarning(
+			"[Enable API Services][Create] Billing not enabled",
+			fmt.Sprintf("Project '%s' does not have a billing account linked. "+
+				"The following services could not be enabled: %s. "+
+				"Please link a billing account to the project and re-run, or enable these services manually in the GCP Console.",
+				gcpClients.ProjectID, strings.Join(billingWarnings, ", ")),
+		)
 	}
 
 	tflog.Info(ctx, "Successfully enabled all API services", map[string]interface{}{
@@ -181,8 +204,9 @@ func (r *EnableAPIServices) Read(ctx context.Context, req resource.ReadRequest, 
 		"services":   services,
 	})
 
-	// Create Service Usage client
-	serviceUsageClient, err := serviceusage.NewService(ctx, option.WithCredentials(gcpClients.Credential))
+	// Create Service Usage client with rate-limited HTTP client
+	rateLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpClients.Credential)
+	serviceUsageClient, err := serviceusage.NewService(ctx, option.WithHTTPClient(rateLimitedClient))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[Enable API Services][Read]",
@@ -250,8 +274,9 @@ func (r *EnableAPIServices) Update(ctx context.Context, req resource.UpdateReque
 		"services":   services,
 	})
 
-	// Create Service Usage client
-	serviceUsageClient, err := serviceusage.NewService(ctx, option.WithCredentials(gcpClients.Credential))
+	// Create Service Usage client with rate-limited HTTP client
+	rateLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpClients.Credential)
+	serviceUsageClient, err := serviceusage.NewService(ctx, option.WithHTTPClient(rateLimitedClient))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[Enable API Services][Update]",
@@ -261,8 +286,18 @@ func (r *EnableAPIServices) Update(ctx context.Context, req resource.UpdateReque
 	}
 
 	// Enable each service
+	var billingWarnings []string
 	for _, service := range services {
 		if err := r.enableService(ctx, serviceUsageClient, gcpClients.ProjectID, service); err != nil {
+			var be *billingError
+			if errors.As(err, &be) {
+				tflog.Warn(ctx, "Skipping service enable due to missing billing account", map[string]interface{}{
+					"service":    service,
+					"project_id": gcpClients.ProjectID,
+				})
+				billingWarnings = append(billingWarnings, service)
+				continue
+			}
 			resp.Diagnostics.AddError(
 				"[Enable API Services][Update]",
 				fmt.Sprintf("Failed to enable service %s in project %s: %s", service, gcpClients.ProjectID, err),
@@ -272,6 +307,16 @@ func (r *EnableAPIServices) Update(ctx context.Context, req resource.UpdateReque
 		tflog.Debug(ctx, "Successfully enabled service", map[string]interface{}{
 			"service": service,
 		})
+	}
+
+	if len(billingWarnings) > 0 {
+		resp.Diagnostics.AddWarning(
+			"[Enable API Services][Update] Billing not enabled",
+			fmt.Sprintf("Project '%s' does not have a billing account linked. "+
+				"The following services could not be enabled: %s. "+
+				"Please link a billing account to the project and re-run, or enable these services manually in the GCP Console.",
+				gcpClients.ProjectID, strings.Join(billingWarnings, ", ")),
+		)
 	}
 
 	tflog.Info(ctx, "Successfully updated API services", map[string]interface{}{
@@ -308,7 +353,9 @@ func (r *EnableAPIServices) ImportState(ctx context.Context, req resource.Import
 	resource.ImportStatePassthroughID(ctx, path.Root("project_id"), req, resp)
 }
 
-// enableService enables a GCP API service and waits for the operation to complete
+// enableService enables a GCP API service and waits for the operation to complete.
+// It retries with exponential backoff on 429 rate limit errors.
+// Returns a sentinel error for billing-related failures so callers can handle them gracefully.
 func (r *EnableAPIServices) enableService(ctx context.Context, client *serviceusage.Service, projectID, serviceName string) error {
 	parent := fmt.Sprintf("projects/%s", projectID)
 	servicePath := fmt.Sprintf("%s/services/%s", parent, serviceName)
@@ -317,9 +364,52 @@ func (r *EnableAPIServices) enableService(ctx context.Context, client *serviceus
 		"service_path": servicePath,
 	})
 
-	// Enable the service
-	operation, err := client.Services.Enable(servicePath, &serviceusage.EnableServiceRequest{}).Context(ctx).Do()
-	if err != nil {
+	// Pre-check: skip enable if the service is already enabled.
+	// This avoids billing precondition errors when the customer has already
+	// enabled the service via the GCP Console UI.
+	alreadyEnabled, checkErr := r.isServiceEnabled(ctx, client, projectID, serviceName)
+	if checkErr == nil && alreadyEnabled {
+		tflog.Debug(ctx, "Service already enabled, skipping enable call", map[string]interface{}{
+			"service": serviceName,
+		})
+		return nil
+	}
+
+	// Retry loop for 429 rate limit errors
+	maxEnableRetries := 5
+	baseBackoff := 5 * time.Second
+	var operation *serviceusage.Operation
+	var err error
+
+	for attempt := 0; attempt <= maxEnableRetries; attempt++ {
+		operation, err = client.Services.Enable(servicePath, &serviceusage.EnableServiceRequest{}).Context(ctx).Do()
+		if err == nil {
+			break
+		}
+
+		// Check if it's a billing precondition error — not retryable
+		if isBillingError(err) {
+			return &billingError{ProjectID: projectID, Err: err}
+		}
+
+		// Check if it's a rate limit error (429)
+		if strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "rateLimitExceeded") || strings.Contains(err.Error(), "RATE_LIMIT_EXCEEDED") {
+			if attempt < maxEnableRetries {
+				backoff := baseBackoff * time.Duration(1<<attempt)
+				if backoff > 2*time.Minute {
+					backoff = 2 * time.Minute
+				}
+				tflog.Info(ctx, fmt.Sprintf("Rate limit hit for service %s, retrying in %v (attempt %d/%d)",
+					serviceName, backoff, attempt+1, maxEnableRetries))
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(backoff):
+					continue
+				}
+			}
+		}
+
 		return fmt.Errorf("failed to initiate enable operation: %w", err)
 	}
 
@@ -374,4 +464,30 @@ func (r *EnableAPIServices) isServiceEnabled(ctx context.Context, client *servic
 	}
 
 	return service.State == "ENABLED", nil
+}
+
+// billingError represents a billing precondition failure when enabling GCP API services.
+type billingError struct {
+	ProjectID string
+	Err       error
+}
+
+func (e *billingError) Error() string {
+	return fmt.Sprintf("billing account for project '%s' is not found: %v", e.ProjectID, e.Err)
+}
+
+func (e *billingError) Unwrap() error {
+	return e.Err
+}
+
+// isBillingError checks if the error is a GCP billing precondition failure.
+func isBillingError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := err.Error()
+	return strings.Contains(errMsg, "UREQ_PROJECT_BILLING_NOT_FOUND") ||
+		strings.Contains(errMsg, "billing-enabled") ||
+		strings.Contains(errMsg, "Billing must be enabled") ||
+		strings.Contains(errMsg, "Billing account for project")
 }
