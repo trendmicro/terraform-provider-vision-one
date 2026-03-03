@@ -96,16 +96,11 @@ func (c *CamClient) CreateProject(data *CreateProjectRequest) error {
 	var postRequestErr error
 	// Handle different scenarios based on project existence and sources
 	// - If project exists with no sources (common connector): modify it
-	// - If project exists with sources (Bridge/Legacy account): modify it to add TF provider
+	// - If project exists with sources (Bridge/Legacy account): add it as new project
 	// - If project doesn't exist: create new project
-	if describeResp != nil && describeResp.ServiceAccountID != "" {
-		// Project already exists (either common connector or Bridge/Legacy account)
-		// We modify it to update/add TF provider deployment
-		if len(describeResp.Sources) > 0 {
-			fmt.Printf("Project already connected via sources %v, modifying to add TF provider: %s\n", describeResp.Sources, data.ProjectNumber)
-		} else {
-			fmt.Printf("Project already exists (common connector), modifying Project: %s\n", data.ProjectNumber)
-		}
+	if describeResp != nil && len(describeResp.Sources) == 0 {
+		// Project already exists as common connector — modify it
+		fmt.Printf("Project already exists (common connector), modifying Project: %s\n", data.ProjectNumber)
 		url := fmt.Sprintf("%s/beta/cam/gcpProjects/%s", c.Client.HostURL, data.ProjectNumber)
 		modifyJsonData, err := json.Marshal(data)
 		if err != nil {
@@ -123,7 +118,11 @@ func (c *CamClient) CreateProject(data *CreateProjectRequest) error {
 
 		defer resp.Body.Close()
 	} else {
-		fmt.Printf("Creating new project: %s\n", data.ProjectNumber)
+		if describeResp != nil && len(describeResp.Sources) > 0 {
+			fmt.Printf("Project exists with sources (Bridge/Legacy account), adding as new project: %s\n", data.ProjectNumber)
+		} else {
+			fmt.Printf("Project not found, creating new project: %s\n", data.ProjectNumber)
+		}
 		// Retry logic for creating a new project in case of transient errors, such as the project not being fully provisioned yet
 		// This will retry up to 3 times with exponential backoff
 		// to handle potential transient issues
