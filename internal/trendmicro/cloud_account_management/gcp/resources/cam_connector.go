@@ -422,13 +422,19 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 
 		err = r.client.CreateProject(body)
 		if err != nil {
-			resp.Diagnostics.AddError(
-				"[CAM Connector GCP][Read] Error Adding Project",
-				fmt.Sprintf("[CAM Connector GCP][Read] Failed to add project: %s", err),
-			)
-			return
+			if strings.Contains(err.Error(), "account-exist") {
+				tflog.Info(ctx, fmt.Sprintf("[CAM Connector GCP][Read] Project %s already exists, adopting existing resource",
+					state.ProjectNumber.ValueString()))
+			} else {
+				resp.Diagnostics.AddError(
+					"[CAM Connector GCP][Read] Error Adding Project",
+					fmt.Sprintf("[CAM Connector GCP][Read] Failed to add project: %s", err),
+				)
+				return
+			}
 		}
-	} else {
+	} else if res != nil && len(res.Sources) == 0 {
+		// Project exists with no sources (common connector) — modify it
 		// Convert organization details if provided
 		organization, convertDiags := r.convertOrganizationDetailsToAPI(ctx, state.Organization)
 		resp.Diagnostics.Append(convertDiags...)
@@ -472,6 +478,52 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 				fmt.Sprintf("[CAM Connector GCP][Read] Failed to update project: %s", err),
 			)
 			return
+		}
+	} else {
+		// Project exists with sources (Bridge/Legacy account) — add as new project
+		tflog.Info(ctx, fmt.Sprintf("[CAM Connector GCP][Read] Project %s exists with sources (Bridge/Legacy account), adding as new project",
+			state.ProjectNumber.ValueString()))
+
+		// Convert organization details if provided
+		organization, convertDiags := r.convertOrganizationDetailsToAPI(ctx, state.Organization)
+		resp.Diagnostics.Append(convertDiags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		// Convert folder details if provided
+		folder, folderDiags := r.convertFolderDetailsToAPI(ctx, state.Folder)
+		resp.Diagnostics.Append(folderDiags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		body := &api.CreateProjectRequest{
+			CamDeployedRegion:         state.CamDeployedRegion.ValueString(),
+			ConnectedSecurityServices: connectedServices,
+			Description:               state.Description.ValueString(),
+			Folder:                    folder,
+			IsCAMCloudASRMEnabled:     state.IsCAMCloudASRMEnabled.ValueBool(),
+			IsTFProviderDeployed:      true,
+			Name:                      state.Name.ValueString(),
+			Organization:              organization,
+			ProjectNumber:             state.ProjectNumber.ValueString(),
+			ServiceAccountId:          state.ServiceAccountID.ValueString(),
+			ServiceAccountKey:         state.ServiceAccountKey.ValueString(),
+		}
+
+		err = r.client.CreateProject(body)
+		if err != nil {
+			if strings.Contains(err.Error(), "account-exist") {
+				tflog.Info(ctx, fmt.Sprintf("[CAM Connector GCP][Read] Project %s already exists, adopting existing resource",
+					state.ProjectNumber.ValueString()))
+			} else {
+				resp.Diagnostics.AddError(
+					"[CAM Connector GCP][Read] Error Adding Project",
+					fmt.Sprintf("[CAM Connector GCP][Read] Failed to add project: %s", err),
+				)
+				return
+			}
 		}
 	}
 
