@@ -189,9 +189,10 @@ func DetectCustomRole(ctx context.Context, subscriptionID string) (*LegacyCustom
 		return nil, fmt.Errorf("failed to get Azure clients: %v", diags)
 	}
 
-	// List role definitions with filter
+	// List role definitions with OData filter (Azure requires "roleName eq '{value}'" syntax)
+	filter := fmt.Sprintf("roleName eq '%s'", roleName)
 	pager := azureClient.RoleClient.NewListPager(scope, &armauthorization.RoleDefinitionsClientListOptions{
-		Filter: &roleName,
+		Filter: &filter,
 	})
 
 	var foundRole *armauthorization.RoleDefinition

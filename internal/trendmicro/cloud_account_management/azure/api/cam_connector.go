@@ -24,6 +24,8 @@ type CreateSubscriptionRequest struct {
 	IsSharedApplication       bool                           `json:"isSharedApplication,omitempty"`
 	CamDeployedRegion         string                         `json:"camDeployedRegion,omitempty"`
 	IsTFProviderDeployed      bool                           `json:"isTFProviderDeployed"`
+	Features                  []Feature                      `json:"features,omitempty"`
+	FeaturesConfigFilePath    string                         `json:"featuresConfigFilePath,omitempty"`
 }
 
 type ModifySubscriptionRequest struct {
@@ -38,6 +40,8 @@ type ModifySubscriptionRequest struct {
 	IsSharedApplication       bool                           `json:"isSharedApplication,omitempty"`
 	CamDeployedRegion         string                         `json:"camDeployedRegion,omitempty"`
 	IsTFProviderDeployed      bool                           `json:"isTFProviderDeployed"`
+	Features                  []Feature                      `json:"features,omitempty"`
+	FeaturesConfigFilePath    string                         `json:"featuresConfigFilePath,omitempty"`
 }
 
 type SubscriptionResponse struct {
@@ -57,12 +61,19 @@ type SubscriptionResponse struct {
 	SubscriptionID            string                         `json:"id"`
 	TenantID                  string                         `json:"tenantId"`
 	UpdatedDateTime           string                         `json:"updatedDateTime"`
+	Features                  []Feature                      `json:"features,omitempty"`
+	FeaturesConfigFilePath    string                         `json:"featuresConfigFilePath,omitempty"`
 }
 
 type ManagementGroupDetails struct {
 	ID                    string `json:"id,omitempty"`
 	DisplayName           string `json:"displayName,omitempty"`
 	ExcludedSubscriptions string `json:"excludedSubscriptions,omitempty"`
+}
+
+type Feature struct {
+	ID      string   `json:"id"`
+	Regions []string `json:"regions,omitempty"`
 }
 
 func (c *CamClient) CreateSubscription(data *CreateSubscriptionRequest) error {
@@ -206,7 +217,7 @@ func (c *CamClient) DeleteSubscription(subscriptionID string) error {
 
 	resp, err := c.Client.DoRequestWithFullResponse(req)
 	if err != nil {
-		if resp.StatusCode == http.StatusNotFound {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
 			return nil
 		}
 		return err
