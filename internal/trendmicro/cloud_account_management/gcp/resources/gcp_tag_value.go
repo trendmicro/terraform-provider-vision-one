@@ -149,9 +149,8 @@ func (r *GCPTagValueResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
-	// Create Cloud Resource Manager v3 client for tags with rate-limited HTTP client
-	ratLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpCred)
-	crmService, err := cloudresourcemanager.NewService(ctx, option.WithHTTPClient(ratLimitedClient))
+	// Create Cloud Resource Manager v3 client for tags
+	crmService, err := cloudresourcemanager.NewService(ctx, option.WithCredentials(gcpCred))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[GCP Tag Value][Create]",
@@ -313,9 +312,8 @@ func (r *GCPTagValueResource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
-	// Create Cloud Resource Manager v3 client with rate-limited HTTP client
-	ratLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpCred)
-	crmService, err := cloudresourcemanager.NewService(ctx, option.WithHTTPClient(ratLimitedClient))
+	// Create Cloud Resource Manager v3 client
+	crmService, err := cloudresourcemanager.NewService(ctx, option.WithCredentials(gcpCred))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[GCP Tag Value][Read]",
@@ -376,9 +374,8 @@ func (r *GCPTagValueResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
-	// Create Cloud Resource Manager v3 client with rate-limited HTTP client
-	ratLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpCred)
-	crmService, err := cloudresourcemanager.NewService(ctx, option.WithHTTPClient(ratLimitedClient))
+	// Create Cloud Resource Manager v3 client
+	crmService, err := cloudresourcemanager.NewService(ctx, option.WithCredentials(gcpCred))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[GCP Tag Value][Update]",
@@ -476,9 +473,8 @@ func (r *GCPTagValueResource) Delete(ctx context.Context, req resource.DeleteReq
 		return
 	}
 
-	// Create Cloud Resource Manager v3 client with rate-limited HTTP client
-	ratLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpCred)
-	crmService, err := cloudresourcemanager.NewService(ctx, option.WithHTTPClient(ratLimitedClient))
+	// Create Cloud Resource Manager v3 client
+	crmService, err := cloudresourcemanager.NewService(ctx, option.WithCredentials(gcpCred))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[GCP Tag Value][Delete]",
@@ -569,12 +565,14 @@ func (r *GCPTagValueResource) updateExistingTagValue(ctx context.Context, crmSer
 	if err != nil {
 		return nil, fmt.Errorf("failed to update tag value description: %w", err)
 	}
-	finalOp, err := WaitForTagOperation(ctx, crmService, operation.Name)
-	if err != nil {
-		return nil, fmt.Errorf("failed waiting for tag value update: %w", err)
-	}
-	if finalOp.Error != nil {
-		return nil, fmt.Errorf("tag value update failed: %s", finalOp.Error.Message)
+	if operation.Name != "" {
+		finalOp, waitErr := WaitForTagOperation(ctx, crmService, operation.Name)
+		if waitErr != nil {
+			return nil, fmt.Errorf("failed waiting for tag value update: %w", waitErr)
+		}
+		if finalOp.Error != nil {
+			return nil, fmt.Errorf("tag value update failed: %s", finalOp.Error.Message)
+		}
 	}
 	updated, err := crmService.TagValues.Get(tagValueName).Context(ctx).Do()
 	if err != nil {

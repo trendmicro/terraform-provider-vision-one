@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"terraform-provider-vision-one/internal/trendmicro"
+	cam "terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/api"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/resources/config"
 
@@ -345,7 +347,6 @@ func (r *ServiceAccountIntegration) Create(ctx context.Context, req resource.Cre
 	tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Create] Discovered %d target projects", len(targetProjects)))
 
 	member := fmt.Sprintf("serviceAccount:%s", sa.Email)
-	var boundProjectIds []string
 
 	// Replicate project-scoped custom roles to all target projects
 	// GCP limitation: project-level custom roles can only be used in their own project
@@ -422,48 +423,64 @@ func (r *ServiceAccountIntegration) Create(ctx context.Context, req resource.Cre
 		}
 	}
 
-	// Bind all roles to all target projects
+	// Bind all roles to all target projects concurrently (per project)
+	var (
+		bindMu          sync.Mutex
+		bindWg          sync.WaitGroup
+		boundProjectIds []string
+	)
+	sem := cam.GCPServiceAccountSem
 	for _, targetProjectID := range targetProjects {
-		tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Create] Adding service account %s as principal to project: %s", sa.Email, targetProjectID))
-		projectBound := false
-		for _, roleName := range roleNames {
-			actualRoleName := roleName
+		bindWg.Add(1)
+		go func(projID string) {
+			defer bindWg.Done()
+			sem <- struct{}{}        // acquire slot
+			defer func() { <-sem }() // release slot
 
-			// Organization-level roles can be bound directly to any project
-			if strings.HasPrefix(roleName, "organizations/") {
-				tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Create] Using organization-level custom role %s for project %s", roleName, targetProjectID))
-				// actualRoleName is already correct, proceed to binding
-			} else if strings.HasPrefix(roleName, "projects/") {
-				// If this is a project-scoped custom role, use the replicated version for other projects
-				parts := strings.Split(roleName, "/")
-				if len(parts) >= 2 {
-					sourceProjectID := parts[1]
-					if sourceProjectID != targetProjectID {
-						// Use the replicated role name if available
-						if replicatedName, exists := customRoleReplicaMap[targetProjectID][roleName]; exists {
-							actualRoleName = replicatedName
-							tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Create] Using replicated custom role %s for project %s", actualRoleName, targetProjectID))
-						} else {
-							tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Create] Custom role was not replicated to project %s, skipping binding", targetProjectID))
-							continue
+			tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Create] Adding service account %s as principal to project: %s", sa.Email, projID))
+			projectBound := false
+			for _, roleName := range roleNames {
+				actualRoleName := roleName
+
+				// Organization-level roles can be bound directly to any project
+				if strings.HasPrefix(roleName, "organizations/") {
+					tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Create] Using organization-level custom role %s for project %s", roleName, projID))
+					// actualRoleName is already correct, proceed to binding
+				} else if strings.HasPrefix(roleName, "projects/") {
+					// If this is a project-scoped custom role, use the replicated version for other projects
+					parts := strings.Split(roleName, "/")
+					if len(parts) >= 2 {
+						sourceProjectID := parts[1]
+						if sourceProjectID != projID {
+							// Use the replicated role name if available
+							if replicatedName, exists := customRoleReplicaMap[projID][roleName]; exists {
+								actualRoleName = replicatedName
+								tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Create] Using replicated custom role %s for project %s", actualRoleName, projID))
+							} else {
+								tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Create] Custom role was not replicated to project %s, skipping binding", projID))
+								continue
+							}
 						}
 					}
 				}
-			}
 
-			bindErr := AddIAMBinding(ctx, gcpClients, targetProjectID, member, actualRoleName)
-			if bindErr != nil {
-				tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Create] Failed to add IAM binding for role %s to project %s: %s", actualRoleName, targetProjectID, bindErr.Error()))
-				continue
+				bindErr := AddIAMBinding(ctx, gcpClients, projID, member, actualRoleName)
+				if bindErr != nil {
+					tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Create] Failed to add IAM binding for role %s to project %s: %s", actualRoleName, projID, bindErr.Error()))
+					continue
+				}
+				projectBound = true
+				tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Create] IAM binding for role %s added to project: %s", actualRoleName, projID))
 			}
-			projectBound = true
-			tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Create] IAM binding for role %s added to project: %s", actualRoleName, targetProjectID))
-		}
-		if projectBound {
-			boundProjectIds = append(boundProjectIds, targetProjectID)
-			tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Create] Successfully added service account as principal to project: %s", targetProjectID))
-		}
+			if projectBound {
+				bindMu.Lock()
+				boundProjectIds = append(boundProjectIds, projID)
+				bindMu.Unlock()
+				tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Create] Successfully added service account as principal to project: %s", projID))
+			}
+		}(targetProjectID)
 	}
+	bindWg.Wait()
 
 	tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Create] IAM bindings created in %d projects for service account: %s", len(boundProjectIds), sa.Email))
 
@@ -582,50 +599,73 @@ func (r *ServiceAccountIntegration) Read(ctx context.Context, req resource.ReadR
 	}
 
 	member := fmt.Sprintf("serviceAccount:%s", sa.Email)
+
+	// Check IAM policy per project concurrently
+	type projectCheckResult struct {
+		projectID     string
+		projectNumber string
+		bound         bool
+	}
+	checkResults := make([]projectCheckResult, len(stateBoundProjects))
+	var readWg sync.WaitGroup
+	sem := cam.GCPServiceAccountSem
 	for p, projectID := range stateBoundProjects {
-		tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Read] Checking service account principal bindings in project: %s (%d/%d)", projectID, p+1, len(stateBoundProjects)))
-		getReq := &cloudresourcemanager.GetIamPolicyRequest{}
-		policy, policyErr := gcpClients.CRMClient.Projects.GetIamPolicy(projectID, getReq).Context(ctx).Do()
-		if policyErr != nil {
-			tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Read] Failed to get IAM policy for project %s: %s", projectID, policyErr.Error()))
-			continue
-		}
+		readWg.Add(1)
+		go func(idx int, projID string) {
+			defer readWg.Done()
+			sem <- struct{}{}        // acquire slot
+			defer func() { <-sem }() // release slot
 
-		// Check if all roles are bound to this project
-		allRolesBound := true
-		for _, roleName := range roleNames {
-			actualRoleName := roleName
+			tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Read] Checking service account principal bindings in project: %s (%d/%d)", projID, idx+1, len(stateBoundProjects)))
+			getReq := &cloudresourcemanager.GetIamPolicyRequest{}
+			policy, policyErr := gcpClients.CRMClient.Projects.GetIamPolicy(projID, getReq).Context(ctx).Do()
+			if policyErr != nil {
+				tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Read] Failed to get IAM policy for project %s: %s", projID, policyErr.Error()))
+				return
+			}
 
-			// Organization-level roles can be bound directly to any project
-			if strings.HasPrefix(roleName, "organizations/") {
-				tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Read] Checking organization-level custom role %s for project %s", roleName, projectID))
-				// actualRoleName is already correct
-			} else if strings.HasPrefix(roleName, "projects/") {
-				// If this is a project-scoped custom role, use the replicated version for other projects
-				parts := strings.Split(roleName, "/")
-				if len(parts) >= 4 {
-					sourceProjectID := parts[1]
-					roleID := parts[3]
+			// Check if all roles are bound to this project
+			allRolesBound := true
+			for _, roleName := range roleNames {
+				actualRoleName := roleName
 
-					if sourceProjectID != projectID {
-						// Use the replicated role name
-						actualRoleName = fmt.Sprintf("projects/%s/roles/%s", projectID, roleID)
-						tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Read] Checking replicated custom role %s for project %s", actualRoleName, projectID))
+				// Organization-level roles can be bound directly to any project
+				if strings.HasPrefix(roleName, "organizations/") {
+					tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Read] Checking organization-level custom role %s for project %s", roleName, projID))
+				} else if strings.HasPrefix(roleName, "projects/") {
+					parts := strings.Split(roleName, "/")
+					if len(parts) >= 4 {
+						sourceProjectID := parts[1]
+						roleID := parts[3]
+
+						if sourceProjectID != projID {
+							actualRoleName = fmt.Sprintf("projects/%s/roles/%s", projID, roleID)
+							tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Read] Checking replicated custom role %s for project %s", actualRoleName, projID))
+						}
 					}
+				}
+
+				if !HasRoleBinding(policy, actualRoleName, member) {
+					allRolesBound = false
+					tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Read] Drift detected: IAM binding for role %s missing in project %s", actualRoleName, projID))
+					break
 				}
 			}
 
-			if !HasRoleBinding(policy, actualRoleName, member) {
-				allRolesBound = false
-				tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Read] Drift detected: IAM binding for role %s missing in project %s", actualRoleName, projectID))
-				break
+			var projNum string
+			if idx < len(stateBoundProjectNumbers) {
+				projNum = stateBoundProjectNumbers[idx]
 			}
-		}
+			checkResults[idx] = projectCheckResult{projectID: projID, projectNumber: projNum, bound: allRolesBound}
+		}(p, projectID)
+	}
+	readWg.Wait()
 
-		if allRolesBound {
-			currentBoundProjects = append(currentBoundProjects, projectID)
-			if p < len(stateBoundProjectNumbers) {
-				currentBoundProjectNumbers = append(currentBoundProjectNumbers, stateBoundProjectNumbers[p])
+	for _, result := range checkResults {
+		if result.bound {
+			currentBoundProjects = append(currentBoundProjects, result.projectID)
+			if result.projectNumber != "" {
+				currentBoundProjectNumbers = append(currentBoundProjectNumbers, result.projectNumber)
 			}
 		}
 	}
@@ -753,28 +793,52 @@ func (r *ServiceAccountIntegration) Update(ctx context.Context, req resource.Upd
 			return
 		}
 
-		// Remove all role bindings from projects that are no longer in scope
-		for _, proj := range oldBoundProjects {
-			if !newProjectsMap[proj] {
-				tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Update] Removing service account principal from project: %s", proj))
-				for _, roleName := range roleNames {
-					if err := RemoveIAMBinding(ctx, gcpClients, proj, member, roleName); err != nil {
-						tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Update] Failed to remove binding for role %s from project %s: %s", roleName, proj, err.Error()))
-					}
+		// Remove all role bindings from projects that are no longer in scope (concurrent)
+		{
+			var updateRemoveWg sync.WaitGroup
+			sem := cam.GCPServiceAccountSem
+			for _, proj := range oldBoundProjects {
+				if !newProjectsMap[proj] {
+					updateRemoveWg.Add(1)
+					go func(projID string) {
+						defer updateRemoveWg.Done()
+						sem <- struct{}{}        // acquire slot
+						defer func() { <-sem }() // release slot
+
+						tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Update] Removing service account principal from project: %s", projID))
+						for _, roleName := range roleNames {
+							if err := RemoveIAMBinding(ctx, gcpClients, projID, member, roleName); err != nil {
+								tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Update] Failed to remove binding for role %s from project %s: %s", roleName, projID, err.Error()))
+							}
+						}
+					}(proj)
 				}
 			}
+			updateRemoveWg.Wait()
 		}
 
-		// Add all role bindings to new projects
-		for _, proj := range newTargetProjects {
-			if !oldProjectsMap[proj] {
-				tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Update] Adding service account principal to project: %s", proj))
-				for _, roleName := range roleNames {
-					if err := AddIAMBinding(ctx, gcpClients, proj, member, roleName); err != nil {
-						tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Update] Failed to add binding for role %s to project %s: %s", roleName, proj, err.Error()))
-					}
+		// Add all role bindings to new projects (concurrent)
+		{
+			var updateAddWg sync.WaitGroup
+			sem := cam.GCPServiceAccountSem
+			for _, proj := range newTargetProjects {
+				if !oldProjectsMap[proj] {
+					updateAddWg.Add(1)
+					go func(projID string) {
+						defer updateAddWg.Done()
+						sem <- struct{}{}        // acquire slot
+						defer func() { <-sem }() // release slot
+
+						tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Update] Adding service account principal to project: %s", projID))
+						for _, roleName := range roleNames {
+							if err := AddIAMBinding(ctx, gcpClients, projID, member, roleName); err != nil {
+								tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Update] Failed to add binding for role %s to project %s: %s", roleName, projID, err.Error()))
+							}
+						}
+					}(proj)
 				}
 			}
+			updateAddWg.Wait()
 		}
 
 		boundProjectsList, diags := types.ListValueFrom(ctx, types.StringType, newTargetProjects)
@@ -894,77 +958,94 @@ func (r *ServiceAccountIntegration) Delete(ctx context.Context, req resource.Del
 		return
 	}
 
-	// Remove all role bindings from all target projects
-	for _, projectID := range currentTargetProjects {
-		tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Delete] Removing service account principal from project: %s", projectID))
-		for _, roleName := range roleNames {
-			actualRoleName := roleName
+	// Remove all role bindings from all target projects (concurrent)
+	{
+		var deleteBindWg sync.WaitGroup
+		sem := cam.GCPServiceAccountSem
+		for _, projectID := range currentTargetProjects {
+			deleteBindWg.Add(1)
+			go func(projID string) {
+				defer deleteBindWg.Done()
+				sem <- struct{}{}        // acquire slot
+				defer func() { <-sem }() // release slot
 
-			// For project-scoped custom roles, use the replicated role name in non-source projects
+				tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Delete] Removing service account principal from project: %s", projID))
+				for _, roleName := range roleNames {
+					actualRoleName := roleName
+
+					if strings.HasPrefix(roleName, "projects/") {
+						parts := strings.Split(roleName, "/")
+						if len(parts) >= 4 {
+							sourceProjectID := parts[1]
+							roleID := parts[3]
+
+							if projID != sourceProjectID {
+								actualRoleName = fmt.Sprintf("projects/%s/roles/%s", projID, roleID)
+								tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Using replicated role name for removal: %s", actualRoleName))
+							}
+						}
+					}
+
+					removeErr := RemoveIAMBinding(ctx, gcpClients, projID, member, actualRoleName)
+					if removeErr != nil {
+						tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Delete] Failed to remove IAM binding for role %s from project %s: %s", actualRoleName, projID, removeErr.Error()))
+					} else {
+						tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] IAM binding for role %s removed from project: %s", actualRoleName, projID))
+					}
+				}
+			}(projectID)
+		}
+		deleteBindWg.Wait()
+	}
+
+	// Delete replicated custom roles from all bound projects (concurrent)
+	// Organization-level custom roles are not replicated, so we only need to clean up project-scoped custom roles
+	{
+		var deleteRoleWg sync.WaitGroup
+		sem := cam.GCPServiceAccountSem
+		for _, roleName := range roleNames {
+			if strings.HasPrefix(roleName, "organizations/") {
+				tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Skipping organization-level custom role: %s (not replicated)", roleName))
+				continue
+			}
+
 			if strings.HasPrefix(roleName, "projects/") {
 				parts := strings.Split(roleName, "/")
 				if len(parts) >= 4 {
 					sourceProjectID := parts[1]
 					roleID := parts[3]
 
-					// If this is not the source project, use the replicated role name
-					if projectID != sourceProjectID {
-						actualRoleName = fmt.Sprintf("projects/%s/roles/%s", projectID, roleID)
-						tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Using replicated role name for removal: %s", actualRoleName))
-					}
-				}
-			}
-
-			removeErr := RemoveIAMBinding(ctx, gcpClients, projectID, member, actualRoleName)
-			if removeErr != nil {
-				tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Delete] Failed to remove IAM binding for role %s from project %s: %s", actualRoleName, projectID, removeErr.Error()))
-			} else {
-				tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] IAM binding for role %s removed from project: %s", actualRoleName, projectID))
-			}
-		}
-	}
-
-	// Delete replicated custom roles from all bound projects
-	// Organization-level custom roles are not replicated, so we only need to clean up project-scoped custom roles
-	for _, roleName := range roleNames {
-		// Skip organization-level roles (they were not replicated)
-		if strings.HasPrefix(roleName, "organizations/") {
-			tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Skipping organization-level custom role: %s (not replicated)", roleName))
-			continue
-		}
-
-		// Only delete replicated project-scoped custom roles
-		if strings.HasPrefix(roleName, "projects/") {
-			parts := strings.Split(roleName, "/")
-			if len(parts) >= 4 {
-				sourceProjectID := parts[1]
-				roleID := parts[3]
-
-				// Delete the replicated custom role from each target project (except the source project)
-				for _, projectID := range currentTargetProjects {
-					if projectID == sourceProjectID {
-						// Skip the source project - the custom role resource itself will handle deletion
-						tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Skipping custom role deletion in source project: %s", projectID))
-						continue
-					}
-
-					// Try to delete the replicated custom role
-					replicatedRoleName := fmt.Sprintf("projects/%s/roles/%s", projectID, roleID)
-					tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Attempting to delete replicated custom role: %s", replicatedRoleName))
-
-					_, deleteErr := gcpClients.IAMClient.Projects.Roles.Delete(replicatedRoleName).Context(ctx).Do()
-					if deleteErr != nil {
-						if strings.Contains(deleteErr.Error(), "404") || strings.Contains(deleteErr.Error(), "not found") {
-							tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Replicated custom role already deleted: %s", replicatedRoleName))
-						} else {
-							tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Delete] Failed to delete replicated custom role %s: %s", replicatedRoleName, deleteErr.Error()))
+					for _, projectID := range currentTargetProjects {
+						if projectID == sourceProjectID {
+							tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Skipping custom role deletion in source project: %s", projectID))
+							continue
 						}
-					} else {
-						tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Delete] Successfully deleted replicated custom role: %s", replicatedRoleName))
+
+						deleteRoleWg.Add(1)
+						go func(projID, rID string) {
+							defer deleteRoleWg.Done()
+							sem <- struct{}{}        // acquire slot
+							defer func() { <-sem }() // release slot
+
+							replicatedRoleName := fmt.Sprintf("projects/%s/roles/%s", projID, rID)
+							tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Attempting to delete replicated custom role: %s", replicatedRoleName))
+
+							_, deleteErr := gcpClients.IAMClient.Projects.Roles.Delete(replicatedRoleName).Context(ctx).Do()
+							if deleteErr != nil {
+								if strings.Contains(deleteErr.Error(), "404") || strings.Contains(deleteErr.Error(), "not found") {
+									tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Replicated custom role already deleted: %s", replicatedRoleName))
+								} else {
+									tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Delete] Failed to delete replicated custom role %s: %s", replicatedRoleName, deleteErr.Error()))
+								}
+							} else {
+								tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Delete] Successfully deleted replicated custom role: %s", replicatedRoleName))
+							}
+						}(projectID, roleID)
 					}
 				}
 			}
 		}
+		deleteRoleWg.Wait()
 	}
 
 	_, err = gcpClients.IAMClient.Projects.ServiceAccounts.Delete(state.ServiceAccountName.ValueString()).Context(ctx).Do()
@@ -1160,13 +1241,26 @@ func (r *ServiceAccountIntegration) discoverTargetProjects(
 // resolveProjectNumbers looks up the GCP project number for each project ID.
 func (r *ServiceAccountIntegration) resolveProjectNumbers(ctx context.Context, gcpClients *api.GCPClients, projectIDs []string) map[string]string {
 	result := make(map[string]string)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := cam.GCPServiceAccountSem
 	for _, pid := range projectIDs {
-		proj, err := gcpClients.CRMClient.Projects.Get(pid).Context(ctx).Do()
-		if err != nil {
-			tflog.Warn(ctx, fmt.Sprintf("[Service Account Key] Failed to get project number for %s: %s", pid, err.Error()))
-			continue
-		}
-		result[pid] = fmt.Sprintf("%d", proj.ProjectNumber)
+		wg.Add(1)
+		go func(projectID string) {
+			defer wg.Done()
+			sem <- struct{}{}        // acquire slot
+			defer func() { <-sem }() // release slot
+
+			proj, err := gcpClients.CRMClient.Projects.Get(projectID).Context(ctx).Do()
+			if err != nil {
+				tflog.Warn(ctx, fmt.Sprintf("[Service Account Key] Failed to get project number for %s: %s", projectID, err.Error()))
+				return
+			}
+			mu.Lock()
+			result[projectID] = fmt.Sprintf("%d", proj.ProjectNumber)
+			mu.Unlock()
+		}(pid)
 	}
+	wg.Wait()
 	return result
 }

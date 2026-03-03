@@ -433,6 +433,9 @@ func DeleteServiceAccountKey(
 // ===== Tag Operation Utilities =====
 // WaitForTagOperation waits for a long-running tag operation to complete.
 func WaitForTagOperation(ctx context.Context, service *cloudresourcemanagerv3.Service, operationName string) (*cloudresourcemanagerv3.Operation, error) {
+	if operationName == "" {
+		return nil, fmt.Errorf("operation name is empty, cannot poll operation status")
+	}
 	maxRetries := 60 // Maximum 2 minutes (60 * 2s)
 	retryInterval := 2 * time.Second
 

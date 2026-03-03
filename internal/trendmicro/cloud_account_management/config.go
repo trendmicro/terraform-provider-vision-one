@@ -21,3 +21,28 @@ var (
 		MaxDelayMs: 1000,
 	}
 )
+
+const (
+	// GCPMaxServiceUsageConcurrency limits concurrent GCP Service Usage API calls
+	// across all EnableAPIServices resource instances.
+	GCPMaxServiceUsageConcurrency = 4
+
+	// GCPMaxTagKeyConcurrency limits concurrent GCP Tag Key API calls
+	// across all GCPTagKeyResource resource instances.
+	GCPMaxTagKeyConcurrency = 4
+
+	// GCPMaxServiceAccountConcurrency limits concurrent GCP IAM/CRM API calls
+	// across all ServiceAccountIntegration resource instances.
+	GCPMaxServiceAccountConcurrency = 6
+)
+
+var (
+	// GCPServiceUsageSem is a global semaphore for EnableAPIServices.
+	GCPServiceUsageSem = make(chan struct{}, GCPMaxServiceUsageConcurrency)
+
+	// GCPTagKeySem is a global semaphore for GCPTagKeyResource.
+	GCPTagKeySem = make(chan struct{}, GCPMaxTagKeyConcurrency)
+
+	// GCPServiceAccountSem is a global semaphore for ServiceAccountIntegration.
+	GCPServiceAccountSem = make(chan struct{}, GCPMaxServiceAccountConcurrency)
+)
