@@ -12,6 +12,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
@@ -23,13 +24,19 @@ import (
 )
 
 var (
-	_ resource.Resource              = &CAMConnectorResource{}
-	_ resource.ResourceWithConfigure = &CAMConnectorResource{}
+	_ resource.Resource                     = &CAMConnectorResource{}
+	_ resource.ResourceWithConfigure        = &CAMConnectorResource{}
+	_ resource.ResourceWithConfigValidators = &CAMConnectorResource{}
 )
 
 type SecurityServiceModel struct {
 	Name        types.String `tfsdk:"name"`
 	InstanceIds types.List   `tfsdk:"instance_ids"`
+}
+
+type AzureFeatureModel struct {
+	ID      types.String `tfsdk:"id"`
+	Regions types.List   `tfsdk:"regions"`
 }
 
 func NewCAMConnectorResource() resource.Resource {
@@ -56,6 +63,8 @@ type CAMConnectorResourceModel struct {
 	ManagementGroupDetails    ManagementGroupDetailsModel `tfsdk:"management_group_details"`
 	IsSharedApplication       types.Bool                  `tfsdk:"is_shared_application"`
 	CamDeployedRegion         types.String                `tfsdk:"cam_deployed_region"`
+	Features                  types.List                  `tfsdk:"features"`
+	FeaturesConfigFilePath    types.String                `tfsdk:"features_config_file_path"`
 }
 
 type ManagementGroupDetailsModel struct {
@@ -197,6 +206,27 @@ func (r *CAMConnectorResource) Schema(ctx context.Context, req resource.SchemaRe
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
+			"features": schema.ListNestedAttribute{
+				Optional:            true,
+				MarkdownDescription: "List of features to enable for the connector",
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"id": schema.StringAttribute{
+							Required:            true,
+							MarkdownDescription: "Feature identifier",
+						},
+						"regions": schema.ListAttribute{
+							ElementType:         types.StringType,
+							Optional:            true,
+							MarkdownDescription: "List of regions to enable the feature in",
+						},
+					},
+				},
+			},
+			"features_config_file_path": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Path to the features configuration file",
+			},
 		},
 	}
 }
@@ -219,6 +249,41 @@ func (r *CAMConnectorResource) Configure(ctx context.Context, req resource.Confi
 		Client: client,
 	}
 	tflog.Debug(ctx, "[CAM Connector] CAM Connector resource configured successfully")
+}
+
+func (r *CAMConnectorResource) ConfigValidators(_ context.Context) []resource.ConfigValidator {
+	return []resource.ConfigValidator{
+		featuresConfigFilePathRequiresFeaturesValidator{},
+	}
+}
+
+type featuresConfigFilePathRequiresFeaturesValidator struct{}
+
+func (v featuresConfigFilePathRequiresFeaturesValidator) Description(_ context.Context) string {
+	return "features_config_file_path requires features to also be set"
+}
+
+func (v featuresConfigFilePathRequiresFeaturesValidator) MarkdownDescription(_ context.Context) string {
+	return "`features_config_file_path` requires `features` to also be set"
+}
+
+func (v featuresConfigFilePathRequiresFeaturesValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data CAMConnectorResourceModel
+	diags := req.Config.Get(ctx, &data)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !data.FeaturesConfigFilePath.IsNull() && !data.FeaturesConfigFilePath.IsUnknown() && data.FeaturesConfigFilePath.ValueString() != "" {
+		if data.Features.IsNull() || data.Features.IsUnknown() {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("features_config_file_path"),
+				"Invalid Attribute Combination",
+				"features_config_file_path cannot be set without features.",
+			)
+		}
+	}
 }
 
 func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -264,6 +329,12 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 
+	features, featureDiags := extractFeatures(ctx, plan.Features)
+	resp.Diagnostics.Append(featureDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	body := &api.CreateSubscriptionRequest{
 		ApplicationID:             plan.ApplicationID.ValueString(),
 		ConnectedSecurityServices: connectedServices,
@@ -276,6 +347,8 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		IsSharedApplication:       plan.IsSharedApplication.ValueBool(),
 		CamDeployedRegion:         plan.CamDeployedRegion.ValueString(),
 		IsTFProviderDeployed:      true,
+		Features:                  features,
+		FeaturesConfigFilePath:    plan.FeaturesConfigFilePath.ValueString(),
 	}
 
 	createErr := r.client.CreateSubscription(body)
@@ -330,6 +403,20 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 				},
 			})
 		}
+
+		// Set features from API response only if plan did not specify any features.
+		// The API may return additional default features not present in the plan, which
+		// would cause "provider produced inconsistent result after apply" errors for
+		// Optional (non-Computed) attributes.
+		if plan.Features.IsNull() && len(res.Features) > 0 {
+			featuresList, featuresDiags := convertAPIFeaturesToTerraform(ctx, res.Features)
+			resp.Diagnostics.Append(featuresDiags...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+			plan.Features = featuresList
+		}
+		// Preserve FeaturesConfigFilePath from plan since API does not return it
 	}
 
 	diags = resp.State.Set(ctx, &plan)
@@ -382,6 +469,12 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 			return
 		}
 
+		stateFeatures, featureDiags := extractFeatures(ctx, state.Features)
+		resp.Diagnostics.Append(featureDiags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
 		body := &api.CreateSubscriptionRequest{
 			ApplicationID:             state.ApplicationID.ValueString(),
 			ConnectedSecurityServices: connectedServices,
@@ -394,6 +487,8 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 			IsSharedApplication:       state.IsSharedApplication.ValueBool(),
 			CamDeployedRegion:         state.CamDeployedRegion.ValueString(),
 			IsTFProviderDeployed:      true,
+			Features:                  stateFeatures,
+			FeaturesConfigFilePath:    state.FeaturesConfigFilePath.ValueString(),
 		}
 
 		err = r.client.CreateSubscription(body)
@@ -412,6 +507,12 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 			return
 		}
 
+		stateFeatures, featureDiags := extractFeatures(ctx, state.Features)
+		resp.Diagnostics.Append(featureDiags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
 		body := &api.ModifySubscriptionRequest{
 			ApplicationID:             state.ApplicationID.ValueString(),
 			ConnectedSecurityServices: connectedServices,
@@ -424,6 +525,8 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 			IsSharedApplication:       state.IsSharedApplication.ValueBool(),
 			CamDeployedRegion:         state.CamDeployedRegion.ValueString(),
 			IsTFProviderDeployed:      true,
+			Features:                  stateFeatures,
+			FeaturesConfigFilePath:    state.FeaturesConfigFilePath.ValueString(),
 		}
 
 		err = r.client.UpdateSubscription(res.SubscriptionID, body)
@@ -489,6 +592,19 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 				},
 			})
 		}
+
+		// Set features from API response only if state did not have explicit features.
+		// The API may return additional default features not in the original config, which
+		// would cause drift on subsequent plans for Optional (non-Computed) attributes.
+		if state.Features.IsNull() && len(res.Features) > 0 {
+			featuresList, featuresDiags := convertAPIFeaturesToTerraform(ctx, res.Features)
+			resp.Diagnostics.Append(featuresDiags...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+			state.Features = featuresList
+		}
+		// Preserve FeaturesConfigFilePath from state since API does not return it
 	}
 
 	diags = resp.State.Set(ctx, &state)
@@ -568,6 +684,12 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		return
 	}
 
+	features, featureDiags := extractFeatures(ctx, plan.Features)
+	resp.Diagnostics.Append(featureDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	body := &api.ModifySubscriptionRequest{
 		ApplicationID:             applicationID,
 		ConnectedSecurityServices: connectedServices,
@@ -580,6 +702,8 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		IsSharedApplication:       plan.IsSharedApplication.ValueBool(),
 		CamDeployedRegion:         plan.CamDeployedRegion.ValueString(),
 		IsTFProviderDeployed:      true,
+		Features:                  features,
+		FeaturesConfigFilePath:    plan.FeaturesConfigFilePath.ValueString(),
 	}
 
 	err := r.client.UpdateSubscription(subscriptionID, body)
@@ -636,6 +760,22 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 				},
 			})
 		}
+
+		// Use plan features if specified; otherwise fall back to API response features.
+		// The API may return additional default features not in the plan, which would
+		// cause drift on subsequent plans for Optional (non-Computed) attributes.
+		if !plan.Features.IsNull() {
+			state.Features = plan.Features
+		} else if len(res.Features) > 0 {
+			featuresList, featuresDiags := convertAPIFeaturesToTerraform(ctx, res.Features)
+			resp.Diagnostics.Append(featuresDiags...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+			state.Features = featuresList
+		}
+		// Preserve FeaturesConfigFilePath from plan since API does not return it
+		state.FeaturesConfigFilePath = plan.FeaturesConfigFilePath
 	}
 
 	resp.State.Set(ctx, &state)
@@ -684,6 +824,77 @@ func convertManagementGroupDetailsToAPI(ctx context.Context, mgmtGroup *Manageme
 	}
 
 	return managementGroup, diags
+}
+
+func extractFeatures(ctx context.Context, featuresList types.List) ([]api.Feature, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	if featuresList.IsNull() || featuresList.IsUnknown() {
+		return nil, diags
+	}
+
+	var featureModels []AzureFeatureModel
+	extractDiags := featuresList.ElementsAs(ctx, &featureModels, false)
+	diags.Append(extractDiags...)
+	if diags.HasError() {
+		return nil, diags
+	}
+
+	features := make([]api.Feature, 0, len(featureModels))
+	for _, model := range featureModels {
+		var regions []string
+		if !model.Regions.IsNull() && !model.Regions.IsUnknown() {
+			regionDiags := model.Regions.ElementsAs(ctx, &regions, false)
+			diags.Append(regionDiags...)
+			if diags.HasError() {
+				return nil, diags
+			}
+		}
+		features = append(features, api.Feature{
+			ID:      model.ID.ValueString(),
+			Regions: regions,
+		})
+	}
+
+	return features, diags
+}
+
+func convertAPIFeaturesToTerraform(ctx context.Context, apiFeatures []api.Feature) (types.List, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	objectType := types.ObjectType{
+		AttrTypes: map[string]attr.Type{
+			"id":      types.StringType,
+			"regions": types.ListType{ElemType: types.StringType},
+		},
+	}
+
+	if len(apiFeatures) == 0 {
+		emptyList, listDiags := types.ListValue(objectType, []attr.Value{})
+		diags.Append(listDiags...)
+		return emptyList, diags
+	}
+
+	var featureModels []AzureFeatureModel
+	for _, apiFeature := range apiFeatures {
+		regions := apiFeature.Regions
+		if regions == nil {
+			regions = []string{}
+		}
+		regionsList, regionDiags := types.ListValueFrom(ctx, types.StringType, regions)
+		diags.Append(regionDiags...)
+		if diags.HasError() {
+			return types.List{}, diags
+		}
+		featureModels = append(featureModels, AzureFeatureModel{
+			ID:      types.StringValue(apiFeature.ID),
+			Regions: regionsList,
+		})
+	}
+
+	resultList, listDiags := types.ListValueFrom(ctx, objectType, featureModels)
+	diags.Append(listDiags...)
+	return resultList, diags
 }
 
 func convertAPISecurityServicesToTerraform(ctx context.Context, apiServices []cam.ConnectedSecurityService) (types.List, diag.Diagnostics) {

@@ -66,6 +66,7 @@ output "cam_configuration_main_subscription" {
 
 - `cam_deployed_region` (String, Deprecated) **Deprecated**: Use `vision_one_region_code` instead. This field is kept for backwards compatibility and will be removed in a future version.
 - `federated_identity_name` (String) Name of the Federated Identity.
+- `issuer_url` (String) Issuer URL for the federated identity credential. If not specified, the issuer URL will be automatically derived from the `vision_one_region_code`. This allows advanced users to specify custom issuer URLs for testing or specialized deployments.
 - `vision_one_region_code` (String) Vision One region code for the federated identity credential. If not specified, the region code will be automatically extracted from the provider's `regional_fqdn` configuration. The supported region codes are `au`, `sg`, `us`, `in`, `jp`, `eu`, `mea`, `ca`, `uk`. Defaults to `us` if no region can be determined.
 
 ### Read-Only

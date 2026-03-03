@@ -69,6 +69,46 @@ resource "visionone_cam_connector_azure" "cam_connector_with_security_services" 
 }
 ```
 
+### Example with Features
+
+```terraform
+# Example with Features
+resource "visionone_cam_connector_azure" "cam_connector_with_features" {
+  application_id            = "aaaaaaaa-pppp-pppp-iiii-dddddddddddd"
+  name                      = "CAM Connector with Features"
+  subscription_id           = "ssssssss-uuuu-bbbb-iiii-dddddddddddd"
+  tenant_id                 = "tttttttt-eeee-nnnn-aaaa-nantid123456"
+  description               = "CAM connector with feature configuration"
+  is_cam_cloud_asrm_enabled = true
+
+  features = [
+    {
+      id      = "cloud-sentry"
+      regions = ["centralus"]
+    }
+  ]
+}
+
+# Example with Features and a config file path
+# Note: features_config_file_path requires features to also be set
+resource "visionone_cam_connector_azure" "cam_connector_with_features_config" {
+  application_id            = "aaaaaaaa-pppp-pppp-iiii-dddddddddddd"
+  name                      = "CAM Connector with Features Config File"
+  subscription_id           = "ssssssss-uuuu-bbbb-iiii-dddddddddddd"
+  tenant_id                 = "tttttttt-eeee-nnnn-aaaa-nantid123456"
+  description               = "CAM connector with features configuration file"
+  is_cam_cloud_asrm_enabled = true
+
+  features = [
+    {
+      id      = "cloud-sentry"
+      regions = ["centralus"]
+    }
+  ]
+  features_config_file_path = "/path/to/features-config.json"
+}
+```
+
 ### Example Detailed Usage
 - Use the existing CAM App Registration to connect multiple Azure subscriptions.
 <details>
@@ -123,6 +163,42 @@ resource "visionone_cam_connector_azure" "cam_connector_with_security_services" 
     }
   ]
 }
+
+# Example: Connector with Features
+resource "visionone_cam_connector_azure" "cam_connector_with_features" {
+  application_id            = "aaaaaaaa-pppp-pppp-iiii-dddddddddddd"
+  name                      = "CAM Connector with Features"
+  subscription_id           = "ssssssss-uuuu-bbbb-iiii-dddddddddddd"
+  tenant_id                 = "tttttttt-eeee-nnnn-aaaa-nantid123456"
+  description               = "CAM connector with feature configuration"
+  is_cam_cloud_asrm_enabled = true
+
+  features = [
+    {
+      id      = "cloud-sentry"
+      regions = ["centralus"]
+    }
+  ]
+}
+
+# Example: Connector with Features and Config File Path
+# Note: features_config_file_path requires features to also be set
+resource "visionone_cam_connector_azure" "cam_connector_with_features_config" {
+  application_id            = "aaaaaaaa-pppp-pppp-iiii-dddddddddddd"
+  name                      = "CAM Connector with Features Config File"
+  subscription_id           = "ssssssss-uuuu-bbbb-iiii-dddddddddddd"
+  tenant_id                 = "tttttttt-eeee-nnnn-aaaa-nantid123456"
+  description               = "CAM connector with features configuration file"
+  is_cam_cloud_asrm_enabled = true
+
+  features = [
+    {
+      id      = "cloud-sentry"
+      regions = ["centralus"]
+    }
+  ]
+  features_config_file_path = "/path/to/features-config.json"
+}
 ```
 
 </details>
@@ -143,6 +219,8 @@ resource "visionone_cam_connector_azure" "cam_connector_with_security_services" 
 - `cam_deployed_region` (String) Region where CAM is deployed for this connector
 - `connected_security_services` (Attributes List) List of connected security services for the connector (see [below for nested schema](#nestedatt--connected_security_services))
 - `description` (String) Description of the connector
+- `features` (Attributes List) List of features to enable for the connector (see [below for nested schema](#nestedatt--features))
+- `features_config_file_path` (String) Path to the features configuration file
 - `is_shared_application` (Boolean) Whether the application is shared across multiple connectors
 - `management_group_details` (Attributes) Azure management group details for the connector (see [below for nested schema](#nestedatt--management_group_details))
 
@@ -160,6 +238,18 @@ Required:
 
 - `instance_ids` (List of String) List of instance IDs for the security service
 - `name` (String) Name of the security service
+
+
+<a id="nestedatt--features"></a>
+### Nested Schema for `features`
+
+Required:
+
+- `id` (String) Feature identifier
+
+Optional:
+
+- `regions` (List of String) List of regions to enable the feature in
 
 
 <a id="nestedatt--management_group_details"></a>
