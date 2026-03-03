@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"terraform-provider-vision-one/internal/trendmicro"
+	cam "terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/api"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/resources/config"
 
@@ -150,9 +152,8 @@ func (r *GCPTagKeyResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
-	// Create Cloud Resource Manager v3 client for tags with rate-limited HTTP client
-	ratLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpCred)
-	crmService, err := cloudresourcemanager.NewService(ctx, option.WithHTTPClient(ratLimitedClient))
+	// Create Cloud Resource Manager v3 client for tags
+	crmService, err := cloudresourcemanager.NewService(ctx, option.WithCredentials(gcpCred))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[GCP Tag Key][Create]",
@@ -314,9 +315,8 @@ func (r *GCPTagKeyResource) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 
-	// Create Cloud Resource Manager v3 client with rate-limited HTTP client
-	ratLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpCred)
-	crmService, err := cloudresourcemanager.NewService(ctx, option.WithHTTPClient(ratLimitedClient))
+	// Create Cloud Resource Manager v3 client
+	crmService, err := cloudresourcemanager.NewService(ctx, option.WithCredentials(gcpCred))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[GCP Tag Key][Read]",
@@ -377,9 +377,8 @@ func (r *GCPTagKeyResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	// Create Cloud Resource Manager v3 client with rate-limited HTTP client
-	ratLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpCred)
-	crmService, err := cloudresourcemanager.NewService(ctx, option.WithHTTPClient(ratLimitedClient))
+	// Create Cloud Resource Manager v3 client
+	crmService, err := cloudresourcemanager.NewService(ctx, option.WithCredentials(gcpCred))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[GCP Tag Key][Update]",
@@ -477,9 +476,8 @@ func (r *GCPTagKeyResource) Delete(ctx context.Context, req resource.DeleteReque
 		return
 	}
 
-	// Create Cloud Resource Manager v3 client with rate-limited HTTP client
-	ratLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpCred)
-	crmService, err := cloudresourcemanager.NewService(ctx, option.WithHTTPClient(ratLimitedClient))
+	// Create Cloud Resource Manager v3 client
+	crmService, err := cloudresourcemanager.NewService(ctx, option.WithCredentials(gcpCred))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[GCP Tag Key][Delete]",
@@ -503,37 +501,57 @@ func (r *GCPTagKeyResource) Delete(ctx context.Context, req resource.DeleteReque
 			return
 		}
 	} else {
+		// Delete child tag values concurrently
+		var (
+			mu       sync.Mutex
+			wg       sync.WaitGroup
+			tvErrors []string
+		)
+		sem := cam.GCPTagKeySem
 		for _, tv := range tagValuesResp.TagValues {
-			tflog.Info(ctx, "Deleting child tag value before tag key deletion", map[string]interface{}{
-				"tag_value_name": tv.Name,
-				"tag_key_name":   state.Name.ValueString(),
-			})
-			tvOp, tvErr := crmService.TagValues.Delete(tv.Name).Context(ctx).Do()
-			if tvErr != nil {
-				if strings.Contains(tvErr.Error(), "404") || strings.Contains(tvErr.Error(), "not found") {
-					continue
+			wg.Add(1)
+			go func(tvName string) {
+				defer wg.Done()
+				sem <- struct{}{}        // acquire slot
+				defer func() { <-sem }() // release slot
+
+				tflog.Info(ctx, "Deleting child tag value before tag key deletion", map[string]interface{}{
+					"tag_value_name": tvName,
+					"tag_key_name":   state.Name.ValueString(),
+				})
+				tvOp, tvErr := crmService.TagValues.Delete(tvName).Context(ctx).Do()
+				if tvErr != nil {
+					if strings.Contains(tvErr.Error(), "404") || strings.Contains(tvErr.Error(), "not found") {
+						return
+					}
+					mu.Lock()
+					tvErrors = append(tvErrors, fmt.Sprintf("Error deleting child tag value '%s': %s", tvName, tvErr.Error()))
+					mu.Unlock()
+					return
 				}
-				resp.Diagnostics.AddError(
-					"[GCP Tag Key][Delete]",
-					fmt.Sprintf("Error deleting child tag value '%s': %s", tv.Name, tvErr.Error()),
-				)
-				return
-			}
-			finalTvOp, tvWaitErr := WaitForTagOperation(ctx, crmService, tvOp.Name)
-			if tvWaitErr != nil {
-				resp.Diagnostics.AddError(
-					"[GCP Tag Key][Delete]",
-					fmt.Sprintf("Error waiting for child tag value deletion '%s': %s", tv.Name, tvWaitErr.Error()),
-				)
-				return
-			}
-			if finalTvOp.Error != nil {
-				resp.Diagnostics.AddError(
-					"[GCP Tag Key][Delete]",
-					fmt.Sprintf("Child tag value deletion failed '%s': %s", tv.Name, finalTvOp.Error.Message),
-				)
-				return
-			}
+				finalTvOp, tvWaitErr := WaitForTagOperation(ctx, crmService, tvOp.Name)
+				if tvWaitErr != nil {
+					mu.Lock()
+					tvErrors = append(tvErrors, fmt.Sprintf("Error waiting for child tag value deletion '%s': %s", tvName, tvWaitErr.Error()))
+					mu.Unlock()
+					return
+				}
+				if finalTvOp.Error != nil {
+					mu.Lock()
+					tvErrors = append(tvErrors, fmt.Sprintf("Child tag value deletion failed '%s': %s", tvName, finalTvOp.Error.Message))
+					mu.Unlock()
+					return
+				}
+			}(tv.Name)
+		}
+		wg.Wait()
+
+		if len(tvErrors) > 0 {
+			resp.Diagnostics.AddError(
+				"[GCP Tag Key][Delete]",
+				strings.Join(tvErrors, "; "),
+			)
+			return
 		}
 	}
 

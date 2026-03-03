@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"terraform-provider-vision-one/internal/trendmicro"
@@ -119,9 +120,8 @@ func (r *EnableAPIServices) Create(ctx context.Context, req resource.CreateReque
 		"services":   services,
 	})
 
-	// Create Service Usage client with rate-limited HTTP client
-	rateLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpClients.Credential)
-	serviceUsageClient, err := serviceusage.NewService(ctx, option.WithHTTPClient(rateLimitedClient))
+	// Create Service Usage client
+	serviceUsageClient, err := serviceusage.NewService(ctx, option.WithCredentials(gcpClients.Credential))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[Enable API Services][Create]",
@@ -130,28 +130,51 @@ func (r *EnableAPIServices) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
-	// Enable each service
-	var billingWarnings []string
+	// Enable each service concurrently
+	var (
+		mu              sync.Mutex
+		wg              sync.WaitGroup
+		billingWarnings []string
+		enableErrors    []string
+	)
+
+	sem := cam.GCPServiceUsageSem
 	for _, service := range services {
-		if err := r.enableService(ctx, serviceUsageClient, gcpClients.ProjectID, service); err != nil {
-			var be *billingError
-			if errors.As(err, &be) {
-				tflog.Warn(ctx, "Skipping service enable due to missing billing account", map[string]interface{}{
-					"service":    service,
-					"project_id": gcpClients.ProjectID,
-				})
-				billingWarnings = append(billingWarnings, service)
-				continue
+		wg.Add(1)
+		go func(svc string) {
+			defer wg.Done()
+			sem <- struct{}{}        // acquire slot
+			defer func() { <-sem }() // release slot
+			if err := r.enableService(ctx, serviceUsageClient, gcpClients.ProjectID, svc); err != nil {
+				var be *billingError
+				if errors.As(err, &be) {
+					tflog.Warn(ctx, "Skipping service enable due to missing billing account", map[string]interface{}{
+						"service":    svc,
+						"project_id": gcpClients.ProjectID,
+					})
+					mu.Lock()
+					billingWarnings = append(billingWarnings, svc)
+					mu.Unlock()
+					return
+				}
+				mu.Lock()
+				enableErrors = append(enableErrors, fmt.Sprintf("Failed to enable service %s in project %s: %s", svc, gcpClients.ProjectID, err))
+				mu.Unlock()
+				return
 			}
-			resp.Diagnostics.AddError(
-				"[Enable API Services][Create]",
-				fmt.Sprintf("Failed to enable service %s in project %s: %s", service, gcpClients.ProjectID, err),
-			)
-			return
-		}
-		tflog.Debug(ctx, "Successfully enabled service", map[string]interface{}{
-			"service": service,
-		})
+			tflog.Debug(ctx, "Successfully enabled service", map[string]interface{}{
+				"service": svc,
+			})
+		}(service)
+	}
+	wg.Wait()
+
+	if len(enableErrors) > 0 {
+		resp.Diagnostics.AddError(
+			"[Enable API Services][Create]",
+			strings.Join(enableErrors, "; "),
+		)
+		return
 	}
 
 	if len(billingWarnings) > 0 {
@@ -204,9 +227,8 @@ func (r *EnableAPIServices) Read(ctx context.Context, req resource.ReadRequest, 
 		"services":   services,
 	})
 
-	// Create Service Usage client with rate-limited HTTP client
-	rateLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpClients.Credential)
-	serviceUsageClient, err := serviceusage.NewService(ctx, option.WithHTTPClient(rateLimitedClient))
+	// Create Service Usage client
+	serviceUsageClient, err := serviceusage.NewService(ctx, option.WithCredentials(gcpClients.Credential))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[Enable API Services][Read]",
@@ -215,22 +237,41 @@ func (r *EnableAPIServices) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 
-	// Check if services are still enabled
+	// Check if services are still enabled concurrently
+	type serviceStatus struct {
+		service string
+		enabled bool
+		err     error
+	}
+
+	statusResults := make([]serviceStatus, len(services))
+	var wg sync.WaitGroup
+	sem := cam.GCPServiceUsageSem
+	for i, service := range services {
+		wg.Add(1)
+		go func(idx int, svc string) {
+			defer wg.Done()
+			sem <- struct{}{}        // acquire slot
+			defer func() { <-sem }() // release slot
+			enabled, err := r.isServiceEnabled(ctx, serviceUsageClient, gcpClients.ProjectID, svc)
+			statusResults[idx] = serviceStatus{service: svc, enabled: enabled, err: err}
+		}(i, service)
+	}
+	wg.Wait()
+
 	allEnabled := true
-	for _, service := range services {
-		enabled, err := r.isServiceEnabled(ctx, serviceUsageClient, gcpClients.ProjectID, service)
-		if err != nil {
+	for _, result := range statusResults {
+		if result.err != nil {
 			tflog.Warn(ctx, "Failed to check service status", map[string]interface{}{
-				"service": service,
-				"error":   err.Error(),
+				"service": result.service,
+				"error":   result.err.Error(),
 			})
 			continue
 		}
-
-		if !enabled {
+		if !result.enabled {
 			allEnabled = false
 			tflog.Warn(ctx, "Service is not enabled", map[string]interface{}{
-				"service": service,
+				"service": result.service,
 			})
 		}
 	}
@@ -274,9 +315,8 @@ func (r *EnableAPIServices) Update(ctx context.Context, req resource.UpdateReque
 		"services":   services,
 	})
 
-	// Create Service Usage client with rate-limited HTTP client
-	rateLimitedClient := api.NewRateLimitedHTTPClientWithCredentials(ctx, gcpClients.Credential)
-	serviceUsageClient, err := serviceusage.NewService(ctx, option.WithHTTPClient(rateLimitedClient))
+	// Create Service Usage client
+	serviceUsageClient, err := serviceusage.NewService(ctx, option.WithCredentials(gcpClients.Credential))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[Enable API Services][Update]",
@@ -285,28 +325,51 @@ func (r *EnableAPIServices) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	// Enable each service
-	var billingWarnings []string
+	// Enable each service concurrently
+	var (
+		mu              sync.Mutex
+		wg              sync.WaitGroup
+		billingWarnings []string
+		enableErrors    []string
+	)
+
+	sem := cam.GCPServiceUsageSem
 	for _, service := range services {
-		if err := r.enableService(ctx, serviceUsageClient, gcpClients.ProjectID, service); err != nil {
-			var be *billingError
-			if errors.As(err, &be) {
-				tflog.Warn(ctx, "Skipping service enable due to missing billing account", map[string]interface{}{
-					"service":    service,
-					"project_id": gcpClients.ProjectID,
-				})
-				billingWarnings = append(billingWarnings, service)
-				continue
+		wg.Add(1)
+		go func(svc string) {
+			defer wg.Done()
+			sem <- struct{}{}        // acquire slot
+			defer func() { <-sem }() // release slot
+			if err := r.enableService(ctx, serviceUsageClient, gcpClients.ProjectID, svc); err != nil {
+				var be *billingError
+				if errors.As(err, &be) {
+					tflog.Warn(ctx, "Skipping service enable due to missing billing account", map[string]interface{}{
+						"service":    svc,
+						"project_id": gcpClients.ProjectID,
+					})
+					mu.Lock()
+					billingWarnings = append(billingWarnings, svc)
+					mu.Unlock()
+					return
+				}
+				mu.Lock()
+				enableErrors = append(enableErrors, fmt.Sprintf("Failed to enable service %s in project %s: %s", svc, gcpClients.ProjectID, err))
+				mu.Unlock()
+				return
 			}
-			resp.Diagnostics.AddError(
-				"[Enable API Services][Update]",
-				fmt.Sprintf("Failed to enable service %s in project %s: %s", service, gcpClients.ProjectID, err),
-			)
-			return
-		}
-		tflog.Debug(ctx, "Successfully enabled service", map[string]interface{}{
-			"service": service,
-		})
+			tflog.Debug(ctx, "Successfully enabled service", map[string]interface{}{
+				"service": svc,
+			})
+		}(service)
+	}
+	wg.Wait()
+
+	if len(enableErrors) > 0 {
+		resp.Diagnostics.AddError(
+			"[Enable API Services][Update]",
+			strings.Join(enableErrors, "; "),
+		)
+		return
 	}
 
 	if len(billingWarnings) > 0 {

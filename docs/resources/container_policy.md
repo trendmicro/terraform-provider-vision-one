@@ -1,6 +1,6 @@
 ---
 page_title: "visionone_container_policy Resource - policy"
-subcategory: ""
+subcategory: "Container Security"
 description: |-
   The container_policy resource allows you to manage policies which define the rules that are used to control what is allowed to run in your Kubernetes cluster.
 ---

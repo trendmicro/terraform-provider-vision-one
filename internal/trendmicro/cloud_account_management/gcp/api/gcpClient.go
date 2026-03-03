@@ -38,23 +38,19 @@ func GetGCPClients(ctx context.Context, projectID string) (*GCPClients, diag.Dia
 		return nil, diags
 	}
 
-	// Use a rate-limited HTTP client with OAuth2 credentials to avoid hitting GCP API rate limits
-	rateLimitedClient := NewRateLimitedHTTPClientWithCredentials(ctx, cred)
-	httpClientOpt := option.WithHTTPClient(rateLimitedClient)
-
-	crmClient, err := cloudresourcemanager.NewService(ctx, httpClientOpt)
+	crmClient, err := cloudresourcemanager.NewService(ctx, option.WithCredentials(cred))
 	if err != nil {
 		diags.AddError("GCP Client Error", fmt.Sprintf("Failed to create Cloud Resource Manager client: %s", err))
 		return nil, diags
 	}
 
-	crmClientV2, err := cloudresourcemanagerv2.NewService(ctx, httpClientOpt)
+	crmClientV2, err := cloudresourcemanagerv2.NewService(ctx, option.WithCredentials(cred))
 	if err != nil {
 		diags.AddError("GCP Client Error", fmt.Sprintf("Failed to create Cloud Resource Manager v2 client: %s", err))
 		return nil, diags
 	}
 
-	iamClient, err := iam.NewService(ctx, httpClientOpt)
+	iamClient, err := iam.NewService(ctx, option.WithCredentials(cred))
 	if err != nil {
 		diags.AddError("IAM Client Error", fmt.Sprintf("Failed to create IAM client: %s", err))
 		return nil, diags
