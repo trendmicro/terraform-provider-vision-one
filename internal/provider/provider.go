@@ -184,6 +184,7 @@ func (p *TrendMicroProvider) Resources(ctx context.Context) []func() resource.Re
 		crmresources.NewGroupResource,
 		crmresources.NewCheckSuppressionResource,
 		crmresources.NewCustomRuleResource,
+		crmresources.NewReportConfigResource,
 		gcpresources.NewIAMCustomRole,
 		gcpresources.NewServiceAccountIntegration,
 		gcpresources.NewEnableAPIServices,
