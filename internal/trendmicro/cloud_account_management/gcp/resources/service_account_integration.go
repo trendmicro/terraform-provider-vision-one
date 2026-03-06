@@ -1143,6 +1143,12 @@ func (r *ServiceAccountIntegration) discoverTargetProjects(
 							continue
 						}
 
+						// Filter out system-created projects (sys-*)
+						if IsSystemProject(project) {
+							tflog.Debug(ctx, fmt.Sprintf("[Service Account Key] Excluding system project: %s", project.ProjectId))
+							continue
+						}
+
 						// Filter out free trial projects if requested
 						if plan.ExcludeFreeTrialProjects.ValueBool() {
 							if IsFreeTrialProject(project) {
@@ -1181,6 +1187,12 @@ func (r *ServiceAccountIntegration) discoverTargetProjects(
 							continue
 						}
 
+						// Filter out system-created projects (sys-*)
+						if IsSystemProject(project) {
+							tflog.Debug(ctx, fmt.Sprintf("[Service Account Key] Excluding system project: %s", project.ProjectId))
+							continue
+						}
+
 						// Filter out free trial projects if requested
 						if plan.ExcludeFreeTrialProjects.ValueBool() {
 							if IsFreeTrialProject(project) {
@@ -1205,6 +1217,12 @@ func (r *ServiceAccountIntegration) discoverTargetProjects(
 				for _, project := range resp.Projects {
 					// Filter out non-active projects
 					if project.LifecycleState != config.LIFECYCLE_STATE_ACTIVE {
+						continue
+					}
+
+					// Filter out system-created projects (sys-*)
+					if IsSystemProject(project) {
+						tflog.Debug(ctx, fmt.Sprintf("[Service Account Key] Excluding system project: %s", project.ProjectId))
 						continue
 					}
 

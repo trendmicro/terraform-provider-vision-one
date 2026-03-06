@@ -45,6 +45,17 @@ func ValidateDescription(description string) error {
 
 // ===== Project Utilities =====
 
+// IsSystemProject checks if a project is a GCP auto-created project that is not counted for billing.
+// Known patterns:
+//   - sys-*              : GCP system/infrastructure projects
+//   - apps-script-*      : Google Apps Script auto-created projects
+//   - google.com:*       : Legacy Google-owned cross-organization projects (e.g. google.com:api-project-*)
+func IsSystemProject(project *cloudresourcemanager.Project) bool {
+	return strings.HasPrefix(project.ProjectId, "sys-") ||
+		strings.HasPrefix(project.ProjectId, "apps-script-") ||
+		strings.HasPrefix(project.ProjectId, "google.com:")
+}
+
 // IsFreeTrialProject checks if a project is a free trial project.
 func IsFreeTrialProject(project *cloudresourcemanager.Project) bool {
 	// Check labels for free trial indicators
