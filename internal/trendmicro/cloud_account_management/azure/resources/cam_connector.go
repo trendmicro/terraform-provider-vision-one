@@ -513,12 +513,18 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 			return
 		}
 
+		targetName := state.Name.ValueString()
+		if res.Name != "" && res.Name != state.Name.ValueString() {
+			tflog.Info(ctx, fmt.Sprintf("[CAM Connector][Read] Backend name %q differs from state name %q, using backend name as target", res.Name, state.Name.ValueString()))
+			targetName = res.Name
+		}
+
 		body := &api.ModifySubscriptionRequest{
 			ApplicationID:             state.ApplicationID.ValueString(),
 			ConnectedSecurityServices: connectedServices,
 			Description:               state.Description.ValueString(),
 			IsCAMCloudASRMEnabled:     state.IsCAMCloudASRMEnabled.ValueBool(),
-			Name:                      state.Name.ValueString(),
+			Name:                      targetName,
 			SubscriptionID:            res.SubscriptionID,
 			TenantID:                  state.TenantID.ValueString(),
 			ManagementGroup:           managementGroup,
@@ -564,7 +570,12 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 			state.Description = types.StringValue(res.Description)
 		}
 		state.IsCAMCloudASRMEnabled = types.BoolValue(res.IsCAMCloudASRMEnabled)
-		state.Name = types.StringValue(res.Name)
+		// Preserve state name: if backend name differs from state, we already sent PATCH
+		// with backend name to avoid overwriting UI changes. Keep state name as-is so
+		// Terraform does not see drift and force replacement.
+		if res.Name != "" && res.Name == state.Name.ValueString() {
+			state.Name = types.StringValue(res.Name)
+		}
 		state.TenantID = types.StringValue(res.TenantID)
 		state.CreatedDateTime = types.StringValue(res.CreatedDateTime)
 		state.UpdatedDateTime = types.StringValue(res.UpdatedDateTime)
