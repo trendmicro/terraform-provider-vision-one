@@ -6,6 +6,7 @@ import (
 
 	cloud_risk_management_dto "terraform-provider-vision-one/pkg/dto/cloud_risk_management"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -13,10 +14,12 @@ import (
 // DTO to Model Converters (API Response -> Terraform State)
 // =============================================================================
 const (
-	multipleObjectValuesType        = "multiple-object-values"
-	choiceMultipleValueType         = "choice-multiple-value"
-	ttlType                         = "ttl"
-	numericTypeMultipleNumberValues = "multiple-number-values"
+	multipleObjectValuesType             = "multiple-object-values"
+	choiceMultipleValueType              = "choice-multiple-value"
+	choiceMultipleValueWithTagsType      = "choice-multiple-value-with-tags"
+	choiceMultipleValueWithRiskLevelType = "choice-multiple-value-with-risk-level"
+	ttlType                              = "ttl"
+	numericTypeMultipleNumberValues      = "multiple-number-values"
 )
 
 // UpdatePlanFromProfile updates the Terraform plan/state model with data from the API response.
@@ -144,6 +147,10 @@ func ConvertSingleSettingFromDTO(es *cloud_risk_management_dto.RuleExtraSetting,
 		result.ValueSet = nil
 	case choiceMultipleValueType:
 		result = convertChoiceMultipleValueFromDTO(es, origSetting)
+	case choiceMultipleValueWithTagsType:
+		result = convertChoiceMultipleValueFromDTO(es, origSetting)
+	case choiceMultipleValueWithRiskLevelType:
+		result = convertChoiceMultipleValueFromDTO(es, origSetting)
 	default:
 		result = convertDefaultTypeFromDTO(es, origSetting)
 	}
@@ -171,10 +178,12 @@ func convertMultipleObjectValuesFromDTO(es *cloud_risk_management_dto.RuleExtraS
 			}
 
 			valuesObj := ExtraSettingsValuesObjectModel{
-				// For multiple-object-values, all fields except value should be null/nil
-				Enabled:    types.BoolNull(),
-				VpcId:      types.StringNull(),
-				GatewayIds: nil,
+				// For multiple-object-values, all fields except value should be null/nil/empty
+				Enabled:             types.BoolNull(),
+				VpcId:               types.StringNull(),
+				GatewayIds:          nil,
+				CustomizedTags:      types.SetNull(types.StringType),
+				CustomizedRiskLevel: types.StringNull(),
 			}
 
 			// Convert pairs format from API back to JSON object string
@@ -235,7 +244,7 @@ func convertMultipleObjectValuesFromDTO(es *cloud_risk_management_dto.RuleExtraS
 	return result
 }
 
-// convertChoiceMultipleValueFromDTO handles the choice-multiple-value type conversion.
+// convertChoiceMultipleValueFromDTO handles the choice-multiple-value, choice-multiple-value-with-tags, and choice-multiple-value-with-risk-level type conversion.
 func convertChoiceMultipleValueFromDTO(es *cloud_risk_management_dto.RuleExtraSetting, origSetting *ExtraSettingModel) ExtraSettingModel {
 	result := ExtraSettingModel{
 		Name:     types.StringValue(es.Name),
@@ -271,20 +280,14 @@ func convertChoiceMultipleValueFromDTO(es *cloud_risk_management_dto.RuleExtraSe
 			// Look up original plan value for this entry
 			origValue := origValuesMap[valueStr]
 
-			// Get original field values or defaults
-			origEnabled := types.BoolNull()
-			if origValue != nil {
-				origEnabled = origValue.Enabled
-			}
-
 			valuesObj := ExtraSettingsValuesObjectModel{}
-			fields := convertValuesObjectFromMap(valMap, valueStr, origEnabled, types.StringNull(), nil)
+			fields := convertValuesObjectFromMap(valMap, valueStr, origValue, es.Type)
 			valuesObj.Value = fields.Value
 			valuesObj.Enabled = fields.Enabled
-
-			// For choice-multiple-value, vpc_id and gateway_ids are not used - set to null
 			valuesObj.VpcId = types.StringNull()
 			valuesObj.GatewayIds = nil
+			valuesObj.CustomizedTags = fields.CustomizedTags
+			valuesObj.CustomizedRiskLevel = fields.CustomizedRiskLevel
 
 			result.Values = append(result.Values, valuesObj)
 		}
@@ -346,28 +349,46 @@ func convertDefaultTypeFromDTO(es *cloud_risk_management_dto.RuleExtraSetting, o
 
 // valuesObjectFields holds the converted fields from a values object map.
 type valuesObjectFields struct {
-	Value      types.String
-	Enabled    types.Bool
-	VpcId      types.String
-	GatewayIds []types.String
+	Value               types.String
+	Enabled             types.Bool
+	VpcId               types.String
+	GatewayIds          []types.String
+	CustomizedTags      types.Set
+	CustomizedRiskLevel types.String
 }
 
-// convertValuesObjectFromMap is a generic helper that converts common fields from a map to populate fields.
-// It handles value, enabled, vpcId, and gatewayIds.
+// convertValuesObjectFromMap converts all fields from an API values map entry into the Terraform model fields.
+// settingType is used to gate type-specific fields:
+//   - customizedTags is only populated for choice-multiple-value-with-tags
+//   - customizedRiskLevel is only populated for choice-multiple-value-with-risk-level
+//   - vpcId and gatewayIds are only populated for multiple-vpc-gateway-mappings
 func convertValuesObjectFromMap(
 	valMap map[string]interface{},
 	valueStr string,
-	origEnabled types.Bool,
-	origVpcId types.String,
-	origGatewayIds []types.String,
+	origValue *ExtraSettingsValuesObjectModel,
+	settingType string,
 ) valuesObjectFields {
-	fields := valuesObjectFields{}
+	fields := valuesObjectFields{
+		CustomizedTags:      types.SetNull(types.StringType),
+		CustomizedRiskLevel: types.StringNull(),
+	}
 
 	// Value is already extracted - set to null if empty
 	if valueStr != "" {
 		fields.Value = types.StringValue(valueStr)
 	} else {
 		fields.Value = types.StringNull()
+	}
+
+	// Get defaults from origValue (or use nulls)
+	origEnabled := types.BoolNull()
+	origVpcId := types.StringNull()
+	var origGatewayIds []types.String
+
+	if origValue != nil {
+		origEnabled = origValue.Enabled
+		origVpcId = origValue.VpcId
+		origGatewayIds = origValue.GatewayIds
 	}
 
 	// Handle enabled field - use plan value if API doesn't return it
@@ -407,6 +428,28 @@ func convertValuesObjectFromMap(
 		}
 	} else {
 		fields.GatewayIds = origGatewayIds
+	}
+
+	// Type-gated fields: only populate for the specific type that uses them.
+	switch settingType {
+	case choiceMultipleValueWithTagsType:
+		if tagsVal, exists := valMap["customizedTags"]; exists {
+			if tagsSlice, ok := tagsVal.([]interface{}); ok {
+				elems := make([]attr.Value, 0, len(tagsSlice))
+				for _, tag := range tagsSlice {
+					if tagStr, ok := tag.(string); ok {
+						elems = append(elems, types.StringValue(tagStr))
+					}
+				}
+				fields.CustomizedTags = types.SetValueMust(types.StringType, elems)
+			}
+		}
+	case choiceMultipleValueWithRiskLevelType:
+		if riskVal, exists := valMap["customizedRiskLevel"]; exists {
+			if riskStr, ok := riskVal.(string); ok {
+				fields.CustomizedRiskLevel = types.StringValue(riskStr)
+			}
+		}
 	}
 
 	return fields
@@ -467,23 +510,14 @@ func convertValuesBlockFromDTO(es *cloud_risk_management_dto.RuleExtraSetting, o
 		// Look up original plan value for this entry
 		origValue := origValuesMap[lookupKey]
 
-		// Get original field values or defaults
-		origEnabled := types.BoolNull()
-		origVpcId := types.StringNull()
-		origGatewayIds := []types.String{}
-		if origValue != nil {
-			origEnabled = origValue.Enabled
-			origVpcId = origValue.VpcId
-			origGatewayIds = origValue.GatewayIds
-		}
-
 		valuesObj := ExtraSettingsValuesObjectModel{}
-		fields := convertValuesObjectFromMap(valMap, valueStr, origEnabled, origVpcId, origGatewayIds)
+		fields := convertValuesObjectFromMap(valMap, valueStr, origValue, es.Type)
 		valuesObj.Value = fields.Value
 		valuesObj.Enabled = fields.Enabled
 		valuesObj.VpcId = fields.VpcId
 		valuesObj.GatewayIds = fields.GatewayIds
-
+		valuesObj.CustomizedTags = fields.CustomizedTags
+		valuesObj.CustomizedRiskLevel = fields.CustomizedRiskLevel
 		result.Values = append(result.Values, valuesObj)
 	}
 
