@@ -95,6 +95,62 @@ resource "visionone_crm_profile" "with_rules" {
       }
     }
   }
+
+  # Type: choice-multiple-value-with-tags
+  scan_rule {
+    id         = "RG-001"
+    provider   = "aws"
+    enabled    = true
+    risk_level = "MEDIUM"
+
+    extra_settings {
+      name = "resourceTypes"
+      type = "choice-multiple-value-with-tags"
+
+      values {
+        value           = "apigateway-restapi"
+        enabled         = true
+        customized_tags = ["production", "web-server"]
+      }
+
+      values {
+        value           = "apigateway-stage"
+        enabled         = true
+        customized_tags = ["production", "apigw-stage"]
+      }
+    }
+  }
+
+  # Type: choice-multiple-value-with-risk-level
+  scan_rule {
+    id         = "IAM-054"
+    provider   = "aws"
+    enabled    = true
+    risk_level = "HIGH"
+
+    extra_settings {
+      name = "ConfigurationChanges"
+      type = "choice-multiple-value-with-risk-level"
+
+      values {
+        value                 = "CreateLoginProfile"
+        enabled               = true
+        customized_risk_level = "MEDIUM"
+      }
+
+      values {
+        value                 = "AddUserToGroup"
+        enabled               = true
+        customized_risk_level = "HIGH"
+      }
+
+      values {
+        value                 = "AttachUserPolicy"
+        enabled               = true
+        customized_risk_level = "NOT_CUSTOMIZED"
+      }
+    }
+  }
 }
 ```
 
@@ -329,7 +385,7 @@ Optional:
 Required:
 
 - `name` (String) The name of the setting.
-- `type` (String) The type of the setting. Allowed values: `multiple-string-values`, `multiple-object-values`, `choice-multiple-value`, `choice-single-value`, `countries`, `multiple-aws-account-values`, `multiple-ip-values`, `multiple-number-values`, `regions`, `ignored-regions`, `single-number-value`, `single-string-value`, `single-value-regex`, `ttl`, `multiple-vpc-gateway-mappings`, `tags`.
+- `type` (String) The type of the setting. Allowed values: `multiple-string-values`, `multiple-object-values`, `choice-multiple-value`, `choice-single-value`, `countries`, `multiple-aws-account-values`, `multiple-ip-values`, `multiple-number-values`, `regions`, `ignored-regions`, `single-number-value`, `single-string-value`, `single-value-regex`, `ttl`, `multiple-vpc-gateway-mappings`, `tags`, `choice-multiple-value-with-tags`, `choice-multiple-value-with-risk-level`.
 
 Optional:
 
@@ -342,6 +398,8 @@ Optional:
 
 Optional:
 
+- `customized_risk_level` (String) Customized risk level (only for choice-multiple-value-with-risk-level type). Allowed values: LOW, MEDIUM, HIGH, VERY_HIGH, EXTREME, NOT_CUSTOMIZED
+- `customized_tags` (Set of String) List of customized tags (only for choice-multiple-value-with-tags type).
 - `enabled` (Boolean) Enabled value for the setting.
 - `gateway_ids` (Set of String) List of gateway IDs (only for multiple-vpc-gateway-mappings type).
 - `value` (String) Value for the setting. For `multiple-object-values` type, use JSON string (or `jsonencode` function). For numeric types, values are automatically converted to numbers.

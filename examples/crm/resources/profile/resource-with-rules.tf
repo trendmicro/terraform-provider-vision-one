@@ -70,4 +70,60 @@ resource "visionone_crm_profile" "with_rules" {
       }
     }
   }
+
+  # Type: choice-multiple-value-with-tags
+  scan_rule {
+    id         = "RG-001"
+    provider   = "aws"
+    enabled    = true
+    risk_level = "MEDIUM"
+
+    extra_settings {
+      name = "resourceTypes"
+      type = "choice-multiple-value-with-tags"
+
+      values {
+        value           = "apigateway-restapi"
+        enabled         = true
+        customized_tags = ["production", "web-server"]
+      }
+
+      values {
+        value           = "apigateway-stage"
+        enabled         = true
+        customized_tags = ["production", "apigw-stage"]
+      }
+    }
+  }
+
+  # Type: choice-multiple-value-with-risk-level
+  scan_rule {
+    id         = "IAM-054"
+    provider   = "aws"
+    enabled    = true
+    risk_level = "HIGH"
+
+    extra_settings {
+      name = "ConfigurationChanges"
+      type = "choice-multiple-value-with-risk-level"
+
+      values {
+        value                 = "CreateLoginProfile"
+        enabled               = true
+        customized_risk_level = "MEDIUM"
+      }
+
+      values {
+        value                 = "AddUserToGroup"
+        enabled               = true
+        customized_risk_level = "HIGH"
+      }
+
+      values {
+        value                 = "AttachUserPolicy"
+        enabled               = true
+        customized_risk_level = "NOT_CUSTOMIZED"
+      }
+    }
+  }
 }

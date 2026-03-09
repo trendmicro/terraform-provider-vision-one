@@ -175,6 +175,10 @@ func ConvertExtraSettingToDTO(setting *ExtraSettingModel) (cloud_risk_management
 		convertMultipleObjectValuesToDTO(setting, &result)
 	case choiceMultipleValueType:
 		convertChoiceMultipleValueToDTO(setting, &result)
+	case choiceMultipleValueWithTagsType:
+		convertChoiceMultipleValueToDTO(setting, &result)
+	case choiceMultipleValueWithRiskLevelType:
+		convertChoiceMultipleValueToDTO(setting, &result)
 	default:
 		convertDefaultTypeToDTO(setting, settingType, &result)
 	}
@@ -256,7 +260,7 @@ func convertSettingValuesToDTO(
 	result := []any{}
 	for i := range valuesInput {
 		val := valuesInput[i]
-		valuesMap := convertValuesObjectToMap(val.Value, val.Enabled, val.VpcId, val.GatewayIds, settingType)
+		valuesMap := convertValuesObjectToMap(val.Value, val.Enabled, val.VpcId, val.GatewayIds, val.CustomizedTags, val.CustomizedRiskLevel, settingType)
 		result = append(result, valuesMap)
 	}
 
@@ -264,12 +268,16 @@ func convertSettingValuesToDTO(
 }
 
 // convertValuesObjectToMap converts common fields from a values object to a map.
-// Handles value, enabled, vpcId, and gatewayIds fields.
+// Handles value, enabled, vpcId, gatewayIds, customizedTags, and customizedRiskLevel fields.
+// customizedTags is only sent for choice-multiple-value-with-tags type.
+// customizedRiskLevel is only sent for choice-multiple-value-with-risk-level type.
 func convertValuesObjectToMap(
 	value types.String,
 	enabled types.Bool,
 	vpcId types.String,
 	gatewayIds []types.String,
+	customizedTags types.Set,
+	customizedRiskLevel types.String,
 	settingType string,
 ) map[string]any {
 	valuesMap := map[string]any{}
@@ -308,10 +316,27 @@ func convertValuesObjectToMap(
 		valuesMap["gatewayIds"] = gwIds
 	}
 
+	// Handle customized_tags field - only for choice-multiple-value-with-tags type
+	if settingType == choiceMultipleValueWithTagsType && !customizedTags.IsNull() && !customizedTags.IsUnknown() {
+		elems := customizedTags.Elements()
+		tags := make([]string, 0, len(elems))
+		for _, elem := range elems {
+			if strVal, ok := elem.(types.String); ok {
+				tags = append(tags, strVal.ValueString())
+			}
+		}
+		valuesMap["customizedTags"] = tags
+	}
+
+	// Handle customized_risk_level field - only for choice-multiple-value-with-risk-level type
+	if settingType == choiceMultipleValueWithRiskLevelType && !customizedRiskLevel.IsNull() && !customizedRiskLevel.IsUnknown() {
+		valuesMap["customizedRiskLevel"] = customizedRiskLevel.ValueString()
+	}
+
 	return valuesMap
 }
 
-// convertChoiceMultipleValueToDTO handles the choice-multiple-value type conversion.
+// convertChoiceMultipleValueToDTO handles the choice-multiple-value, choice-multiple-value-with-tags, and choice-multiple-value-with-risk-level type conversion.
 // Only includes enabled if explicitly specified (not null).
 func convertChoiceMultipleValueToDTO(setting *ExtraSettingModel, result *cloud_risk_management_dto.RuleExtraSetting) {
 	result.Values = convertSettingValuesToDTO(setting.Type.ValueString(), setting.ValueSet, setting.Values)

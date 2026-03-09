@@ -41,8 +41,10 @@ type ExtraSettingModel struct {
 
 // ExtraSettingsValuesObjectModel represents a value object within extra settings.
 type ExtraSettingsValuesObjectModel struct {
-	Value      types.String   `tfsdk:"value"`
-	Enabled    types.Bool     `tfsdk:"enabled"`
-	VpcId      types.String   `tfsdk:"vpc_id"`
-	GatewayIds []types.String `tfsdk:"gateway_ids"`
+	Value               types.String   `tfsdk:"value"`
+	Enabled             types.Bool     `tfsdk:"enabled"`
+	VpcId               types.String   `tfsdk:"vpc_id"`
+	GatewayIds          []types.String `tfsdk:"gateway_ids"`
+	CustomizedTags      types.Set      `tfsdk:"customized_tags"`
+	CustomizedRiskLevel types.String   `tfsdk:"customized_risk_level"`
 }

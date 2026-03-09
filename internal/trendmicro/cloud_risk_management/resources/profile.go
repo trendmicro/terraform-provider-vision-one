@@ -121,7 +121,7 @@ func (r *profileResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 										Required:            true,
 									},
 									"type": schema.StringAttribute{
-										MarkdownDescription: "The type of the setting. Allowed values: `multiple-string-values`, `multiple-object-values`, `choice-multiple-value`, `choice-single-value`, `countries`, `multiple-aws-account-values`, `multiple-ip-values`, `multiple-number-values`, `regions`, `ignored-regions`, `single-number-value`, `single-string-value`, `single-value-regex`, `ttl`, `multiple-vpc-gateway-mappings`, `tags`.",
+										MarkdownDescription: "The type of the setting. Allowed values: `multiple-string-values`, `multiple-object-values`, `choice-multiple-value`, `choice-single-value`, `countries`, `multiple-aws-account-values`, `multiple-ip-values`, `multiple-number-values`, `regions`, `ignored-regions`, `single-number-value`, `single-string-value`, `single-value-regex`, `ttl`, `multiple-vpc-gateway-mappings`, `tags`, `choice-multiple-value-with-tags`, `choice-multiple-value-with-risk-level`.",
 										Required:            true,
 										Validators: []validator.String{
 											stringvalidator.OneOf(
@@ -141,6 +141,8 @@ func (r *profileResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 												"ttl",
 												"multiple-vpc-gateway-mappings",
 												"tags",
+												"choice-multiple-value-with-tags",
+												"choice-multiple-value-with-risk-level",
 											),
 										},
 									},
@@ -175,6 +177,27 @@ func (r *profileResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 													ElementType:         types.StringType,
 													MarkdownDescription: "List of gateway IDs (only for multiple-vpc-gateway-mappings type).",
 													Optional:            true,
+												},
+												"customized_tags": schema.SetAttribute{
+													ElementType:         types.StringType,
+													MarkdownDescription: "List of customized tags (only for choice-multiple-value-with-tags type).",
+													Optional:            true,
+													Computed:            true,
+												},
+												"customized_risk_level": schema.StringAttribute{
+													MarkdownDescription: "Customized risk level (only for choice-multiple-value-with-risk-level type). Allowed values: LOW, MEDIUM, HIGH, VERY_HIGH, EXTREME, NOT_CUSTOMIZED",
+													Optional:            true,
+													Computed:            true,
+													Validators: []validator.String{
+														stringvalidator.OneOf(
+															"LOW",
+															"MEDIUM",
+															"HIGH",
+															"VERY_HIGH",
+															"EXTREME",
+															"NOT_CUSTOMIZED",
+														),
+													},
 												},
 											},
 										},
