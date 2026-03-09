@@ -116,7 +116,7 @@ resource "helm_release" "trendmicro" {
 
 ### Optional
 
-- `customizable_tags` (Attributes Set) The custom tags and platform tags associated with the cluster. To obtain custom tags, refer to the following URL: https://automation.trendmicro.com/xdr/api-v3/#tag/Attack-Surface-Discovery/paths/~1v3.0~1asrm~1attackSurfaceCustomTags/get. However, platform tags will be provided through an additional API in the future. The difference between custom tags and platform tags is that properties of platform tags are defined by Trend Micro, while properties and values of custom tags can be created and updated by users. (see [below for nested schema](#nestedatt--customizable_tags))
+- `customizable_tags` (Attributes Set) The custom tags and platform tags associated with the cluster. To obtain custom tags, refer to the following URL: https://portal.xdr.trendmicro.com/index.html#/admin/automation_center?goto=api&from=v3.0&tag=tag/Attack-Surface-Discovery/paths/~1v3.0~1asrm~1attackSurfaceCustomTags/get. However, platform tags will be provided through an additional API in the future. The difference between custom tags and platform tags is that properties of platform tags are defined by Trend Micro, while properties and values of custom tags can be created and updated by users. (see [below for nested schema](#nestedatt--customizable_tags))
 - `description` (String) The description of the cluster.
 - `malware_scan_enabled` (Boolean) Whether malware scan is enabled for the cluster.
 - `namespaces` (Set of String) The namespaces of kubernetes you want to exclude from scanning. 
@@ -144,7 +144,7 @@ Accepted values: `calico-system`, `istio-system`, `kube-system`, `openshift*` De
 
 Required:
 
-- `id` (String) The ID of the custom tag.
+- `id` (String) The tag ID of the custom tag. Note: this is not a plain text value but a tag ID obtained from the API.
 
 
 <a id="nestedatt--proxy"></a>

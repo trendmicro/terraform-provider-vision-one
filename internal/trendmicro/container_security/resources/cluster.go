@@ -215,12 +215,12 @@ func (r *clusterResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				},
 			},
 			"customizable_tags": schema.SetNestedAttribute{
-				MarkdownDescription: "The custom tags and platform tags associated with the cluster. To obtain custom tags, refer to the following URL: https://automation.trendmicro.com/xdr/api-v3/#tag/Attack-Surface-Discovery/paths/~1v3.0~1asrm~1attackSurfaceCustomTags/get. However, platform tags will be provided through an additional API in the future. The difference between custom tags and platform tags is that properties of platform tags are defined by Trend Micro, while properties and values of custom tags can be created and updated by users.",
+				MarkdownDescription: "The custom tags and platform tags associated with the cluster. To obtain custom tags, refer to the following URL: https://portal.xdr.trendmicro.com/index.html#/admin/automation_center?goto=api&from=v3.0&tag=tag/Attack-Surface-Discovery/paths/~1v3.0~1asrm~1attackSurfaceCustomTags/get. However, platform tags will be provided through an additional API in the future. The difference between custom tags and platform tags is that properties of platform tags are defined by Trend Micro, while properties and values of custom tags can be created and updated by users.",
 				Optional:            true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"id": schema.StringAttribute{
-							MarkdownDescription: "The ID of the custom tag.",
+							MarkdownDescription: "The tag ID of the custom tag. Note: this is not a plain text value but a tag ID obtained from the API.",
 							Required:            true,
 						},
 					},
