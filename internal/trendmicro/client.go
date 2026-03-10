@@ -78,7 +78,7 @@ func (c *Client) DoRequest(req *http.Request) (body []byte, err error) {
 	}
 
 	switch res.StatusCode {
-	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
+	case http.StatusOK, http.StatusCreated, http.StatusNoContent, http.StatusMultiStatus:
 		return body, nil
 	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, StatusVisionOneInnerError:
 		var out bytes.Buffer
@@ -104,7 +104,7 @@ func (c *Client) DoRequestWithFullResponse(req *http.Request) (*http.Response, e
 	}
 
 	switch res.StatusCode {
-	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
+	case http.StatusOK, http.StatusCreated, http.StatusNoContent, http.StatusMultiStatus:
 		return res, nil
 	case http.StatusNotFound, http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, StatusVisionOneInnerError:
 		defer res.Body.Close()
