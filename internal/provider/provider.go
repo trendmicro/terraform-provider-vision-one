@@ -200,6 +200,7 @@ func (p *TrendMicroProvider) DataSources(ctx context.Context) []func() datasourc
 		azurecamdatasources.NewCAMCloudAccountsDataSource,
 		gcpcamdatasources.NewCAMCloudAccountsDataSource,
 		crmdatasources.NewCRMAccountDataSource,
+		crmdatasources.NewApplyProfileDataSource,
 	}
 }
 
