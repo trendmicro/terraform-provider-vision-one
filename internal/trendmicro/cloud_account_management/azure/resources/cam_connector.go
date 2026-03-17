@@ -60,7 +60,7 @@ type CAMConnectorResourceModel struct {
 	State                     types.String                `tfsdk:"state"`
 	TenantID                  types.String                `tfsdk:"tenant_id"`
 	UpdatedDateTime           types.String                `tfsdk:"updated_date_time"`
-	ManagementGroupDetails    ManagementGroupDetailsModel `tfsdk:"management_group_details"`
+	ManagementGroupDetails    *ManagementGroupDetailsModel `tfsdk:"management_group_details"`
 	IsSharedApplication       types.Bool                  `tfsdk:"is_shared_application"`
 	CamDeployedRegion         types.String                `tfsdk:"cam_deployed_region"`
 	Features                  types.List                  `tfsdk:"features"`
@@ -323,7 +323,7 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		plan.Name.ValueString(), plan.SubscriptionID.ValueString(), plan.TenantID.ValueString()))
 
 	// Convert management group details if provided
-	managementGroup, convertDiags := convertManagementGroupDetailsToAPI(ctx, &plan.ManagementGroupDetails)
+	managementGroup, convertDiags := convertManagementGroupDetailsToAPI(ctx, plan.ManagementGroupDetails)
 	resp.Diagnostics.Append(convertDiags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -404,18 +404,9 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 			})
 		}
 
-		// Set features from API response only if plan did not specify any features.
-		// The API may return additional default features not present in the plan, which
-		// would cause "provider produced inconsistent result after apply" errors for
-		// Optional (non-Computed) attributes.
-		if plan.Features.IsNull() && len(res.Features) > 0 {
-			featuresList, featuresDiags := convertAPIFeaturesToTerraform(ctx, res.Features)
-			resp.Diagnostics.Append(featuresDiags...)
-			if resp.Diagnostics.HasError() {
-				return
-			}
-			plan.Features = featuresList
-		}
+		// Do not auto-populate features from API response when the user did not specify them.
+		// features has omitempty on the backend; keeping it null avoids sending stale or
+		// unsupported feature IDs on subsequent re-create operations in Read.
 		// Preserve FeaturesConfigFilePath from plan since API does not return it
 	}
 
@@ -463,7 +454,7 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 		})
 
 		// Convert management group details if provided
-		managementGroup, convertDiags := convertManagementGroupDetailsToAPI(ctx, &state.ManagementGroupDetails)
+		managementGroup, convertDiags := convertManagementGroupDetailsToAPI(ctx, state.ManagementGroupDetails)
 		resp.Diagnostics.Append(convertDiags...)
 		if resp.Diagnostics.HasError() {
 			return
@@ -501,7 +492,7 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 		}
 	} else {
 		// Convert management group details if provided
-		managementGroup, convertDiags := convertManagementGroupDetailsToAPI(ctx, &state.ManagementGroupDetails)
+		managementGroup, convertDiags := convertManagementGroupDetailsToAPI(ctx, state.ManagementGroupDetails)
 		resp.Diagnostics.Append(convertDiags...)
 		if resp.Diagnostics.HasError() {
 			return
@@ -604,17 +595,9 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 			})
 		}
 
-		// Set features from API response only if state did not have explicit features.
-		// The API may return additional default features not in the original config, which
-		// would cause drift on subsequent plans for Optional (non-Computed) attributes.
-		if state.Features.IsNull() && len(res.Features) > 0 {
-			featuresList, featuresDiags := convertAPIFeaturesToTerraform(ctx, res.Features)
-			resp.Diagnostics.Append(featuresDiags...)
-			if resp.Diagnostics.HasError() {
-				return
-			}
-			state.Features = featuresList
-		}
+		// Do not auto-populate features from API response when the user did not specify them.
+		// features has omitempty on the backend; keeping it null avoids sending stale or
+		// unsupported feature IDs on subsequent re-create operations in Read.
 		// Preserve FeaturesConfigFilePath from state since API does not return it
 	}
 
@@ -689,7 +672,7 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 	}
 
 	// Convert management group details if provided
-	managementGroup, convertDiags := convertManagementGroupDetailsToAPI(ctx, &plan.ManagementGroupDetails)
+	managementGroup, convertDiags := convertManagementGroupDetailsToAPI(ctx, plan.ManagementGroupDetails)
 	resp.Diagnostics.Append(convertDiags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -772,19 +755,10 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 			})
 		}
 
-		// Use plan features if specified; otherwise fall back to API response features.
-		// The API may return additional default features not in the plan, which would
-		// cause drift on subsequent plans for Optional (non-Computed) attributes.
-		if !plan.Features.IsNull() {
-			state.Features = plan.Features
-		} else if len(res.Features) > 0 {
-			featuresList, featuresDiags := convertAPIFeaturesToTerraform(ctx, res.Features)
-			resp.Diagnostics.Append(featuresDiags...)
-			if resp.Diagnostics.HasError() {
-				return
-			}
-			state.Features = featuresList
-		}
+		// Use plan features (null when user did not specify them).
+		// Do not fall back to API response features: features has omitempty on the backend
+		// and auto-populating from API can persist unsupported feature IDs into state.
+		state.Features = plan.Features
 		// Preserve FeaturesConfigFilePath from plan since API does not return it
 		state.FeaturesConfigFilePath = plan.FeaturesConfigFilePath
 	}
@@ -814,6 +788,10 @@ func (r *CAMConnectorResource) Delete(ctx context.Context, req resource.DeleteRe
 func convertManagementGroupDetailsToAPI(ctx context.Context, mgmtGroup *ManagementGroupDetailsModel) (api.ManagementGroupDetails, diag.Diagnostics) {
 	var diags diag.Diagnostics
 	var managementGroup api.ManagementGroupDetails
+
+	if mgmtGroup == nil {
+		return managementGroup, diags
+	}
 
 	if !mgmtGroup.ID.IsNull() {
 		var excludedSubsStr string
@@ -870,43 +848,6 @@ func extractFeatures(ctx context.Context, featuresList types.List) ([]api.Featur
 	return features, diags
 }
 
-func convertAPIFeaturesToTerraform(ctx context.Context, apiFeatures []api.Feature) (types.List, diag.Diagnostics) {
-	var diags diag.Diagnostics
-
-	objectType := types.ObjectType{
-		AttrTypes: map[string]attr.Type{
-			"id":      types.StringType,
-			"regions": types.ListType{ElemType: types.StringType},
-		},
-	}
-
-	if len(apiFeatures) == 0 {
-		emptyList, listDiags := types.ListValue(objectType, []attr.Value{})
-		diags.Append(listDiags...)
-		return emptyList, diags
-	}
-
-	var featureModels []AzureFeatureModel
-	for _, apiFeature := range apiFeatures {
-		regions := apiFeature.Regions
-		if regions == nil {
-			regions = []string{}
-		}
-		regionsList, regionDiags := types.ListValueFrom(ctx, types.StringType, regions)
-		diags.Append(regionDiags...)
-		if diags.HasError() {
-			return types.List{}, diags
-		}
-		featureModels = append(featureModels, AzureFeatureModel{
-			ID:      types.StringValue(apiFeature.ID),
-			Regions: regionsList,
-		})
-	}
-
-	resultList, listDiags := types.ListValueFrom(ctx, objectType, featureModels)
-	diags.Append(listDiags...)
-	return resultList, diags
-}
 
 func convertAPISecurityServicesToTerraform(ctx context.Context, apiServices []cam.ConnectedSecurityService) (types.List, diag.Diagnostics) {
 	var diags diag.Diagnostics
