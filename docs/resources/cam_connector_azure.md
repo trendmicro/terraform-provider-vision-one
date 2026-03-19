@@ -223,6 +223,7 @@ resource "visionone_cam_connector_azure" "cam_connector_with_features_config" {
 - `features_config_file_path` (String) Path to the features configuration file
 - `is_shared_application` (Boolean) Whether the application is shared across multiple connectors
 - `management_group_details` (Attributes) Azure management group details for the connector (see [below for nested schema](#nestedatt--management_group_details))
+- `prevent_destroy` (Boolean) When `true` (default), Terraform destroy will not call the CAM DELETE API, preserving the subscription in CAM. Set to `false` to allow the subscription to be removed from CAM on destroy.
 
 ### Read-Only
 
