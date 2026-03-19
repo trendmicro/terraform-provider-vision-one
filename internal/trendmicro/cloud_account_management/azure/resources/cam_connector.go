@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -65,6 +66,7 @@ type CAMConnectorResourceModel struct {
 	CamDeployedRegion         types.String                `tfsdk:"cam_deployed_region"`
 	Features                  types.List                  `tfsdk:"features"`
 	FeaturesConfigFilePath    types.String                `tfsdk:"features_config_file_path"`
+	PreventDestroy            types.Bool                  `tfsdk:"prevent_destroy"`
 }
 
 type ManagementGroupDetailsModel struct {
@@ -226,6 +228,12 @@ func (r *CAMConnectorResource) Schema(ctx context.Context, req resource.SchemaRe
 			"features_config_file_path": schema.StringAttribute{
 				Optional:            true,
 				MarkdownDescription: "Path to the features configuration file",
+			},
+			"prevent_destroy": schema.BoolAttribute{
+				Optional:            true,
+				Computed:            true,
+				MarkdownDescription: "When `true` (default), Terraform destroy will not call the CAM DELETE API, preserving the subscription in CAM. Set to `false` to allow the subscription to be removed from CAM on destroy.",
+				Default:             booldefault.StaticBool(true),
 			},
 		},
 	}
@@ -761,6 +769,8 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		state.Features = plan.Features
 		// Preserve FeaturesConfigFilePath from plan since API does not return it
 		state.FeaturesConfigFilePath = plan.FeaturesConfigFilePath
+		// Preserve prevent_destroy from plan since API does not return it
+		state.PreventDestroy = plan.PreventDestroy
 	}
 
 	resp.State.Set(ctx, &state)
@@ -772,6 +782,11 @@ func (r *CAMConnectorResource) Delete(ctx context.Context, req resource.DeleteRe
 	diags := req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if state.PreventDestroy.IsNull() || state.PreventDestroy.IsUnknown() || state.PreventDestroy.ValueBool() {
+		tflog.Info(ctx, fmt.Sprintf("[CAM Connector][Delete] prevent_destroy=true (or unset), skipping CAM DELETE for subscription %s", state.SubscriptionID.ValueString()))
 		return
 	}
 
