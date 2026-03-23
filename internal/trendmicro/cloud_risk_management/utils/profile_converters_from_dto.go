@@ -23,18 +23,10 @@ const (
 )
 
 // UpdatePlanFromProfile updates the Terraform plan/state model with data from the API response.
-// It preserves original plan values where the API doesn't return certain fields (like exceptions)
-// and maintains consistency between the user's configuration and the actual state.
 func UpdatePlanFromProfile(plan *ProfileResourceModel, profile *cloud_risk_management_dto.Profile) {
-	// Create a map of original plan's scan rules by ID for reference
-	originalExceptions := make(map[string]*RuleExceptionsModel)
 	// Create a map of original extra_settings by rule ID -> setting name
 	originalExtraSettings := make(map[string]map[string]*ExtraSettingModel)
 	for _, rule := range plan.ScanRules {
-		// Preserve exceptions to maintain user's config structure (even if empty)
-		if rule.Exceptions != nil {
-			originalExceptions[rule.ID.ValueString()] = rule.Exceptions
-		}
 		if len(rule.ExtraSettings) > 0 {
 			ruleID := rule.ID.ValueString()
 			originalExtraSettings[ruleID] = make(map[string]*ExtraSettingModel)
@@ -60,34 +52,39 @@ func UpdatePlanFromProfile(plan *ProfileResourceModel, profile *cloud_risk_manag
 				RiskLevel: types.StringValue(rule.RiskLevel),
 			}
 
-			// Convert exceptions: start with user's original (preserves nil vs empty), then override with API values
-			if originalExc := originalExceptions[rule.ID]; originalExc != nil {
-				plan.ScanRules[i].Exceptions = &RuleExceptionsModel{
-					FilterTags:  originalExc.FilterTags,
-					ResourceIds: originalExc.ResourceIds,
-				}
-			}
-			if rule.Exceptions != nil {
-				if plan.ScanRules[i].Exceptions == nil {
-					plan.ScanRules[i].Exceptions = &RuleExceptionsModel{}
-				}
+		// Convert exceptions directly from API response
+		if rule.Exceptions != nil {
+			plan.ScanRules[i].Exceptions = &RuleExceptionsModel{}
 
+			// Only set FilterTags if the API returned it (even if empty)
+			// nil means the field was not sent/returned, [] means it was sent as empty
+			if rule.Exceptions.FilterTags != nil {
 				if len(rule.Exceptions.FilterTags) > 0 {
 					filterTags := make([]types.String, len(rule.Exceptions.FilterTags))
 					for j, ft := range rule.Exceptions.FilterTags {
 						filterTags[j] = types.StringValue(ft)
 					}
 					plan.ScanRules[i].Exceptions.FilterTags = filterTags
+				} else {
+					// Empty array was explicitly sent/returned
+					plan.ScanRules[i].Exceptions.FilterTags = []types.String{}
 				}
+			}
 
+			// Only set ResourceIds if the API returned it (even if empty)
+			if rule.Exceptions.ResourceIds != nil {
 				if len(rule.Exceptions.ResourceIds) > 0 {
 					resourceIds := make([]types.String, len(rule.Exceptions.ResourceIds))
 					for j, rid := range rule.Exceptions.ResourceIds {
 						resourceIds[j] = types.StringValue(rid)
 					}
 					plan.ScanRules[i].Exceptions.ResourceIds = resourceIds
+				} else {
+					// Empty array was explicitly sent/returned
+					plan.ScanRules[i].Exceptions.ResourceIds = []types.String{}
 				}
 			}
+		}
 
 			// Convert extra settings - always convert to match plan structure
 			if len(rule.ExtraSettings) > 0 {

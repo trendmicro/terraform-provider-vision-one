@@ -92,11 +92,12 @@ func ConvertScanRulesToDTO(_ context.Context, rules []ScanRuleModel) ([]cloud_ri
 			RiskLevel: rule.RiskLevel.ValueString(),
 		}
 
-		// Convert exceptions - only create if there are actual values
-		if rule.Exceptions != nil && (len(rule.Exceptions.FilterTags) > 0 || len(rule.Exceptions.ResourceIds) > 0) {
+		// Convert exceptions - send to API if user specified them (even if empty)
+		if rule.Exceptions != nil {
 			result[i].Exceptions = &cloud_risk_management_dto.RuleExceptions{}
 
-			if len(rule.Exceptions.FilterTags) > 0 {
+			// Send FilterTags if it's not nil (user specified it)
+			if rule.Exceptions.FilterTags != nil {
 				filterTags := make([]string, len(rule.Exceptions.FilterTags))
 				for j, ft := range rule.Exceptions.FilterTags {
 					filterTags[j] = ft.ValueString()
@@ -104,7 +105,8 @@ func ConvertScanRulesToDTO(_ context.Context, rules []ScanRuleModel) ([]cloud_ri
 				result[i].Exceptions.FilterTags = filterTags
 			}
 
-			if len(rule.Exceptions.ResourceIds) > 0 {
+			// Send ResourceIds if it's not nil (user specified it)
+			if rule.Exceptions.ResourceIds != nil {
 				resourceIds := make([]string, len(rule.Exceptions.ResourceIds))
 				for j, rid := range rule.Exceptions.ResourceIds {
 					resourceIds[j] = rid.ValueString()

@@ -21,8 +21,8 @@ type ScanRule struct {
 
 // RuleExceptions represents exceptions for a scan rule
 type RuleExceptions struct {
-	FilterTags  []string `json:"tags,omitempty"`
-	ResourceIds []string `json:"resourceIds,omitempty"`
+	FilterTags  []string `json:"tags"`
+	ResourceIds []string `json:"resourceIds"`
 }
 
 // RuleExtraSetting represents additional configuration for a scan rule
