@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,8 +31,9 @@ type EnableAPIServices struct {
 }
 
 type enableAPIServicesResourceModel struct {
-	ProjectID types.String `tfsdk:"project_id"`
-	Services  types.List   `tfsdk:"services"`
+	ProjectID         types.String `tfsdk:"project_id"`
+	Services          types.List   `tfsdk:"services"`
+	EnabledByResource types.List   `tfsdk:"enabled_by_resource"`
 }
 
 func NewEnableAPIServices() resource.Resource {
@@ -48,7 +50,7 @@ func (r *EnableAPIServices) Schema(_ context.Context, _ resource.SchemaRequest, 
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "Enables required GCP API services for Trend Micro Vision One Cloud Account Management. " +
 			"This resource ensures that all necessary APIs are enabled in the specified GCP project. " +
-			"Please note that API services are not disabled when this resource is destroyed to prevent disruption to other resources.",
+			"Only services that were disabled before creation are enabled by this resource; those services will be disabled on destroy.",
 		Attributes: map[string]schema.Attribute{
 			"project_id": schema.StringAttribute{
 				MarkdownDescription: "The GCP project ID where API services will be enabled. If not specified, uses the project from provider configuration or default GCP credentials.",
@@ -66,7 +68,12 @@ func (r *EnableAPIServices) Schema(_ context.Context, _ resource.SchemaRequest, 
 					"Please note that this configuration can be extended when new features require additional API services.",
 				Optional: true,
 				Computed: true,
-				Default:  listdefault.StaticValue(cam.ConvertStringSliceToListValue(config.GCP_REQUIRED_ENABLE_API_AND_SERVICE)),
+				Default:  listdefault.StaticValue(cam.SortedListValue(config.GCP_REQUIRED_ENABLE_API_AND_SERVICE)),
+			},
+			"enabled_by_resource": schema.ListAttribute{
+				ElementType:         types.StringType,
+				MarkdownDescription: "List of GCP API service names that were disabled before this resource was created and were enabled by this resource. These services will be disabled when this resource is destroyed.",
+				Computed:            true,
 			},
 		},
 	}
@@ -114,13 +121,13 @@ func (r *EnableAPIServices) Create(ctx context.Context, req resource.CreateReque
 		resp.Diagnostics.Append(diagsList...)
 		return
 	}
+	sort.Strings(services)
 
 	tflog.Info(ctx, "Enabling GCP API services", map[string]interface{}{
 		"project_id": gcpClients.ProjectID,
 		"services":   services,
 	})
 
-	// Create Service Usage client
 	serviceUsageClient, err := serviceusage.NewService(ctx, option.WithCredentials(gcpClients.Credential))
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -130,44 +137,8 @@ func (r *EnableAPIServices) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
-	// Enable each service concurrently
-	var (
-		mu              sync.Mutex
-		wg              sync.WaitGroup
-		billingWarnings []string
-		enableErrors    []string
-	)
-
-	sem := cam.GCPServiceUsageSem
-	for _, service := range services {
-		wg.Add(1)
-		go func(svc string) {
-			defer wg.Done()
-			sem <- struct{}{}        // acquire slot
-			defer func() { <-sem }() // release slot
-			if err := r.enableService(ctx, serviceUsageClient, gcpClients.ProjectID, svc); err != nil {
-				var be *billingError
-				if errors.As(err, &be) {
-					tflog.Warn(ctx, "Skipping service enable due to missing billing account", map[string]interface{}{
-						"service":    svc,
-						"project_id": gcpClients.ProjectID,
-					})
-					mu.Lock()
-					billingWarnings = append(billingWarnings, svc)
-					mu.Unlock()
-					return
-				}
-				mu.Lock()
-				enableErrors = append(enableErrors, fmt.Sprintf("Failed to enable service %s in project %s: %s", svc, gcpClients.ProjectID, err))
-				mu.Unlock()
-				return
-			}
-			tflog.Debug(ctx, "Successfully enabled service", map[string]interface{}{
-				"service": svc,
-			})
-		}(service)
-	}
-	wg.Wait()
+	servicesToEnable := r.filterDisabledServices(ctx, serviceUsageClient, gcpClients.ProjectID, services)
+	enabledByUs, billingWarnings, enableErrors := r.runEnableServices(ctx, serviceUsageClient, gcpClients.ProjectID, servicesToEnable)
 
 	if len(enableErrors) > 0 {
 		resp.Diagnostics.AddError(
@@ -187,10 +158,14 @@ func (r *EnableAPIServices) Create(ctx context.Context, req resource.CreateReque
 		)
 	}
 
-	tflog.Info(ctx, "Successfully enabled all API services", map[string]interface{}{
-		"project_id": gcpClients.ProjectID,
-		"count":      len(services),
+	tflog.Info(ctx, "Successfully enabled API services", map[string]interface{}{
+		"project_id":          gcpClients.ProjectID,
+		"enabled_by_resource": enabledByUs,
 	})
+
+	sort.Strings(enabledByUs)
+	plan.Services = cam.ConvertStringSliceToListValue(services)
+	plan.EnabledByResource = cam.ConvertStringSliceToListValue(enabledByUs)
 
 	// Save state
 	if diags := resp.State.Set(ctx, plan); diags.HasError() {
@@ -221,6 +196,7 @@ func (r *EnableAPIServices) Read(ctx context.Context, req resource.ReadRequest, 
 		resp.Diagnostics.Append(diagsList...)
 		return
 	}
+	sort.Strings(services)
 
 	tflog.Debug(ctx, "Reading GCP API services state", map[string]interface{}{
 		"project_id": gcpClients.ProjectID,
@@ -289,13 +265,17 @@ func (r *EnableAPIServices) Read(ctx context.Context, req resource.ReadRequest, 
 
 func (r *EnableAPIServices) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan enableAPIServicesResourceModel
+	var state enableAPIServicesResourceModel
 
 	if diags := req.Plan.Get(ctx, &plan); diags.HasError() {
 		resp.Diagnostics.Append(diags...)
 		return
 	}
+	if diags := req.State.Get(ctx, &state); diags.HasError() {
+		resp.Diagnostics.Append(diags...)
+		return
+	}
 
-	// Get project ID
 	projectID := plan.ProjectID.ValueString()
 	gcpClients, diags := api.GetGCPClients(ctx, projectID)
 	if diags.HasError() {
@@ -303,19 +283,23 @@ func (r *EnableAPIServices) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	// Get services list
-	var services []string
-	if diagsList := plan.Services.ElementsAs(ctx, &services, false); diagsList.HasError() {
+	var newServices, oldServices, prevEnabledByResource []string
+	if diagsList := plan.Services.ElementsAs(ctx, &newServices, false); diagsList.HasError() {
 		resp.Diagnostics.Append(diagsList...)
 		return
 	}
+	if diagsList := state.Services.ElementsAs(ctx, &oldServices, false); diagsList.HasError() {
+		resp.Diagnostics.Append(diagsList...)
+		return
+	}
+	if diagsList := state.EnabledByResource.ElementsAs(ctx, &prevEnabledByResource, false); diagsList.HasError() {
+		resp.Diagnostics.Append(diagsList...)
+		return
+	}
+	sort.Strings(newServices)
 
-	tflog.Info(ctx, "Updating GCP API services", map[string]interface{}{
-		"project_id": gcpClients.ProjectID,
-		"services":   services,
-	})
+	addedServices, removedAndOwnedServices, newSet := computeServiceDiff(newServices, oldServices, prevEnabledByResource)
 
-	// Create Service Usage client
 	serviceUsageClient, err := serviceusage.NewService(ctx, option.WithCredentials(gcpClients.Credential))
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -325,49 +309,15 @@ func (r *EnableAPIServices) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	// Enable each service concurrently
-	var (
-		mu              sync.Mutex
-		wg              sync.WaitGroup
-		billingWarnings []string
-		enableErrors    []string
-	)
+	servicesToEnable := r.filterDisabledServices(ctx, serviceUsageClient, gcpClients.ProjectID, addedServices)
 
-	sem := cam.GCPServiceUsageSem
-	for _, service := range services {
-		wg.Add(1)
-		go func(svc string) {
-			defer wg.Done()
-			sem <- struct{}{}        // acquire slot
-			defer func() { <-sem }() // release slot
-			if err := r.enableService(ctx, serviceUsageClient, gcpClients.ProjectID, svc); err != nil {
-				var be *billingError
-				if errors.As(err, &be) {
-					tflog.Warn(ctx, "Skipping service enable due to missing billing account", map[string]interface{}{
-						"service":    svc,
-						"project_id": gcpClients.ProjectID,
-					})
-					mu.Lock()
-					billingWarnings = append(billingWarnings, svc)
-					mu.Unlock()
-					return
-				}
-				mu.Lock()
-				enableErrors = append(enableErrors, fmt.Sprintf("Failed to enable service %s in project %s: %s", svc, gcpClients.ProjectID, err))
-				mu.Unlock()
-				return
-			}
-			tflog.Debug(ctx, "Successfully enabled service", map[string]interface{}{
-				"service": svc,
-			})
-		}(service)
-	}
-	wg.Wait()
+	newlyEnabled, billingWarnings, enableErrors := r.runEnableServices(ctx, serviceUsageClient, gcpClients.ProjectID, servicesToEnable)
+	disableErrors := r.runDisableServices(ctx, serviceUsageClient, gcpClients.ProjectID, removedAndOwnedServices)
 
-	if len(enableErrors) > 0 {
+	if len(enableErrors) > 0 || len(disableErrors) > 0 {
 		resp.Diagnostics.AddError(
 			"[Enable API Services][Update]",
-			strings.Join(enableErrors, "; "),
+			strings.Join(append(enableErrors, disableErrors...), "; "),
 		)
 		return
 	}
@@ -382,16 +332,148 @@ func (r *EnableAPIServices) Update(ctx context.Context, req resource.UpdateReque
 		)
 	}
 
-	tflog.Info(ctx, "Successfully updated API services", map[string]interface{}{
-		"project_id": gcpClients.ProjectID,
-		"count":      len(services),
-	})
+	updatedEnabledByResource := make([]string, 0)
+	for _, s := range prevEnabledByResource {
+		if newSet[s] {
+			updatedEnabledByResource = append(updatedEnabledByResource, s)
+		}
+	}
+	updatedEnabledByResource = append(updatedEnabledByResource, newlyEnabled...)
+	sort.Strings(updatedEnabledByResource)
+	plan.Services = cam.ConvertStringSliceToListValue(newServices)
+	plan.EnabledByResource = cam.ConvertStringSliceToListValue(updatedEnabledByResource)
 
-	// Save state
 	if diags := resp.State.Set(ctx, plan); diags.HasError() {
 		resp.Diagnostics.Append(diags...)
 		return
 	}
+}
+
+// computeServiceDiff returns added services, removed-and-owned services, and the new services set.
+func computeServiceDiff(newServices, oldServices, prevEnabledByResource []string) (added, removedOwned []string, newSet map[string]bool) {
+	sort.Strings(oldServices)
+	sort.Strings(prevEnabledByResource)
+
+	oldSet := make(map[string]bool, len(oldServices))
+	for _, s := range oldServices {
+		oldSet[s] = true
+	}
+	newSet = make(map[string]bool, len(newServices))
+	for _, s := range newServices {
+		newSet[s] = true
+	}
+	prevEnabledSet := make(map[string]bool, len(prevEnabledByResource))
+	for _, s := range prevEnabledByResource {
+		prevEnabledSet[s] = true
+	}
+
+	for _, s := range newServices {
+		if !oldSet[s] {
+			added = append(added, s)
+		}
+	}
+	for _, s := range oldServices {
+		if !newSet[s] && prevEnabledSet[s] {
+			removedOwned = append(removedOwned, s)
+		}
+	}
+	return added, removedOwned, newSet
+}
+
+// filterDisabledServices returns only services from the input list that are currently disabled.
+func (r *EnableAPIServices) filterDisabledServices(ctx context.Context, client *serviceusage.Service, projectID string, services []string) []string {
+	if len(services) == 0 {
+		return nil
+	}
+	type checkResult struct {
+		service string
+		enabled bool
+		err     error
+	}
+	results := make([]checkResult, len(services))
+	var wg sync.WaitGroup
+	sem := cam.GCPServiceUsageSem
+	for i, svc := range services {
+		wg.Add(1)
+		go func(idx int, s string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			enabled, err := r.isServiceEnabled(ctx, client, projectID, s)
+			results[idx] = checkResult{service: s, enabled: enabled, err: err}
+		}(i, svc)
+	}
+	wg.Wait()
+
+	var disabled []string
+	for _, res := range results {
+		if res.err != nil || !res.enabled {
+			disabled = append(disabled, res.service)
+		}
+	}
+	return disabled
+}
+
+// runEnableServices concurrently enables services and returns (newlyEnabled, billingWarnings, errors).
+func (r *EnableAPIServices) runEnableServices(ctx context.Context, client *serviceusage.Service, projectID string, services []string) (enabled, billingWarnings, errs []string) {
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := cam.GCPServiceUsageSem
+	for _, service := range services {
+		wg.Add(1)
+		go func(svc string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if err := r.enableService(ctx, client, projectID, svc); err != nil {
+				var be *billingError
+				if errors.As(err, &be) {
+					tflog.Warn(ctx, "Skipping service enable due to missing billing account", map[string]interface{}{
+						"service": svc, "project_id": projectID,
+					})
+					mu.Lock()
+					billingWarnings = append(billingWarnings, svc)
+					mu.Unlock()
+					return
+				}
+				mu.Lock()
+				errs = append(errs, fmt.Sprintf("Failed to enable service %s: %s", svc, err))
+				mu.Unlock()
+				return
+			}
+			mu.Lock()
+			enabled = append(enabled, svc)
+			mu.Unlock()
+		}(service)
+	}
+	wg.Wait()
+	return enabled, billingWarnings, errs
+}
+
+// runDisableServices concurrently disables services and returns any errors.
+func (r *EnableAPIServices) runDisableServices(ctx context.Context, client *serviceusage.Service, projectID string, services []string) []string {
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var errs []string
+	sem := cam.GCPServiceUsageSem
+	for _, service := range services {
+		wg.Add(1)
+		go func(svc string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if err := r.disableService(ctx, client, projectID, svc); err != nil {
+				tflog.Warn(ctx, "Failed to disable removed service", map[string]interface{}{
+					"service": svc, "error": err.Error(),
+				})
+				mu.Lock()
+				errs = append(errs, fmt.Sprintf("Failed to disable service %s: %s", svc, err))
+				mu.Unlock()
+			}
+		}(service)
+	}
+	wg.Wait()
+	return errs
 }
 
 func (r *EnableAPIServices) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -402,13 +484,48 @@ func (r *EnableAPIServices) Delete(ctx context.Context, req resource.DeleteReque
 		return
 	}
 
-	tflog.Info(ctx, "Deleting enable_api_services resource (services will not be disabled)", map[string]interface{}{
+	// Only disable services that this resource originally enabled (not pre-existing ones)
+	var enabledByResource []string
+	if diagsList := state.EnabledByResource.ElementsAs(ctx, &enabledByResource, false); diagsList.HasError() {
+		resp.Diagnostics.Append(diagsList...)
+		return
+	}
+
+	if len(enabledByResource) == 0 {
+		tflog.Info(ctx, "No services were enabled by this resource, nothing to disable", map[string]interface{}{
+			"project_id": state.ProjectID.ValueString(),
+		})
+		return
+	}
+
+	tflog.Info(ctx, "Disabling GCP API services that were enabled by this resource", map[string]interface{}{
 		"project_id": state.ProjectID.ValueString(),
+		"services":   enabledByResource,
 	})
 
-	// We intentionally do NOT disable the API services on delete
-	// This matches the behavior of disable_on_destroy = false in the original template
-	// The services remain enabled to prevent disruption to other resources
+	projectID := state.ProjectID.ValueString()
+	gcpClients, diags := api.GetGCPClients(ctx, projectID)
+	if diags.HasError() {
+		resp.Diagnostics.Append(diags...)
+		return
+	}
+
+	serviceUsageClient, err := serviceusage.NewService(ctx, option.WithCredentials(gcpClients.Credential))
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"[Enable API Services][Delete]",
+			fmt.Sprintf("Failed to create Service Usage client: %s", err),
+		)
+		return
+	}
+
+	disableErrors := r.runDisableServices(ctx, serviceUsageClient, gcpClients.ProjectID, enabledByResource)
+	if len(disableErrors) > 0 {
+		resp.Diagnostics.AddError(
+			"[Enable API Services][Delete]",
+			strings.Join(disableErrors, "; "),
+		)
+	}
 }
 
 func (r *EnableAPIServices) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
@@ -485,7 +602,7 @@ func (r *EnableAPIServices) enableService(ctx context.Context, client *serviceus
 	}
 
 	// Poll for operation completion
-	maxRetries := 30
+	maxRetries := 15
 	retryInterval := 2 * time.Second
 
 	for i := 0; i < maxRetries; i++ {
@@ -514,6 +631,68 @@ func (r *EnableAPIServices) enableService(ctx context.Context, client *serviceus
 	}
 
 	return fmt.Errorf("operation did not complete within timeout period")
+}
+
+// disableService disables a GCP API service and waits for the operation to complete.
+// It retries with exponential backoff on 429 rate limit errors.
+func (r *EnableAPIServices) disableService(ctx context.Context, client *serviceusage.Service, projectID, serviceName string) error {
+	parent := fmt.Sprintf("projects/%s", projectID)
+	servicePath := fmt.Sprintf("%s/services/%s", parent, serviceName)
+
+	maxDisableRetries := 5
+	baseBackoff := 5 * time.Second
+	var operation *serviceusage.Operation
+	var err error
+
+	for attempt := 0; attempt <= maxDisableRetries; attempt++ {
+		operation, err = client.Services.Disable(servicePath, &serviceusage.DisableServiceRequest{
+			DisableDependentServices: true,
+		}).Context(ctx).Do()
+		if err == nil {
+			break
+		}
+
+		if strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "rateLimitExceeded") || strings.Contains(err.Error(), "RATE_LIMIT_EXCEEDED") {
+			if attempt < maxDisableRetries {
+				backoff := baseBackoff * time.Duration(1<<attempt)
+				if backoff > 2*time.Minute {
+					backoff = 2 * time.Minute
+				}
+				tflog.Info(ctx, fmt.Sprintf("Rate limit hit for service %s, retrying in %v (attempt %d/%d)",
+					serviceName, backoff, attempt+1, maxDisableRetries))
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(backoff):
+					continue
+				}
+			}
+		}
+
+		return fmt.Errorf("failed to initiate disable operation: %w", err)
+	}
+
+	if operation.Done {
+		return nil
+	}
+
+	maxRetries := 15
+	retryInterval := 2 * time.Second
+	for i := 0; i < maxRetries; i++ {
+		time.Sleep(retryInterval)
+		op, err := client.Operations.Get(operation.Name).Context(ctx).Do()
+		if err != nil {
+			return fmt.Errorf("failed to get operation status: %w", err)
+		}
+		if op.Done {
+			if op.Error != nil {
+				return fmt.Errorf("operation failed: %s", op.Error.Message)
+			}
+			return nil
+		}
+	}
+
+	return fmt.Errorf("disable operation did not complete within timeout period")
 }
 
 // isServiceEnabled checks if a GCP API service is enabled

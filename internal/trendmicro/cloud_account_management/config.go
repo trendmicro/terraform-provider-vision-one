@@ -25,7 +25,7 @@ var (
 const (
 	// GCPMaxServiceUsageConcurrency limits concurrent GCP Service Usage API calls
 	// across all EnableAPIServices resource instances.
-	GCPMaxServiceUsageConcurrency = 4
+	GCPMaxServiceUsageConcurrency = 6
 
 	// GCPMaxTagKeyConcurrency limits concurrent GCP Tag Key API calls
 	// across all GCPTagKeyResource resource instances.

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"sort"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -39,6 +40,14 @@ func GenerateRandomString(length int) string {
 	}
 
 	return string(result)
+}
+
+// SortedListValue converts a string slice to a sorted types.List
+func SortedListValue(services []string) types.List {
+	sorted := make([]string, len(services))
+	copy(sorted, services)
+	sort.Strings(sorted)
+	return ConvertStringSliceToListValue(sorted)
 }
 
 // ConvertStringSliceToListValue converts a string slice to a types.List
