@@ -652,9 +652,9 @@ resource "visionone_crm_report_config" "account_nist_gap_analysis" {
 
 Optional:
 
-- `categories` (Set of String) Filter by compliance categories.
+- `categories` (Set of String) Filter by compliance categories. Allowed values: security, cost-optimisation, reliability, performance-efficiency, operational-excellence, sustainability.
 - `compliance_standard_ids` (Set of String) Filter by compliance standard IDs (for GENERIC reports only).
-- `description` (String) Text search filter for check descriptions.
+- `description` (String) The filter for including checks in the report based on the description of a check.
 - `newer_than_days` (Number) Include checks from the last N days (max 365). Example: 5 includes checks from the last 5 days.
 - `older_than_days` (Number) Include checks older than N days (max 365). Example: 5 includes checks older than 5 days.
 - `providers` (Set of String) Filter by cloud providers.
@@ -665,8 +665,8 @@ Optional:
 - `risk_levels` (Set of String) Filter by risk levels.
 - `rule_ids` (Set of String) Filter by specific rule IDs (e.g., 'S3-001', 'IAM-045').
 - `services` (Set of String) Filter by cloud services.
-- `statuses` (Set of String) Filter by check statuses.
-- `suppressed` (Boolean) Whether to include suppressed checks. Default: true (both suppressed and regular checks are included).
+- `statuses` (Set of String) Filter by check statuses. Allowed values: SUCCESS, FAILURE.
+- `suppressed` (Boolean) Whether to include suppressed or regular checks only. If not provided, both suppressed and unsuppressed checks are included.
 - `tags` (Set of String) Filter by tags.
 
 

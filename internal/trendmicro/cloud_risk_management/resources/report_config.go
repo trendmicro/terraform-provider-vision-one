@@ -175,7 +175,7 @@ func (r *reportConfigResource) Schema(_ context.Context, _ resource.SchemaReques
 					Attributes: map[string]schema.Attribute{
 						"categories": schema.SetAttribute{
 							ElementType:         types.StringType,
-							MarkdownDescription: "Filter by compliance categories.",
+							MarkdownDescription: "Filter by compliance categories. Allowed values: security, cost-optimisation, reliability, performance-efficiency, operational-excellence, sustainability.",
 							Optional:            true,
 							Validators: []validator.Set{
 								setvalidator.ValueStringsAre(stringvalidator.OneOf("security", "cost-optimisation", "reliability", "performance-efficiency", "operational-excellence", "sustainability")),
@@ -192,7 +192,7 @@ func (r *reportConfigResource) Schema(_ context.Context, _ resource.SchemaReques
 							Optional:            true,
 						},
 						"description": schema.StringAttribute{
-							MarkdownDescription: "Text search filter for check descriptions.",
+							MarkdownDescription: "The filter for including checks in the report based on the description of a check.",
 							Optional:            true,
 						},
 						"newer_than_days": schema.Int64Attribute{
@@ -257,14 +257,14 @@ func (r *reportConfigResource) Schema(_ context.Context, _ resource.SchemaReques
 						},
 						"statuses": schema.SetAttribute{
 							ElementType:         types.StringType,
-							MarkdownDescription: "Filter by check statuses.",
+							MarkdownDescription: "Filter by check statuses. Allowed values: SUCCESS, FAILURE.",
 							Optional:            true,
 							Validators: []validator.Set{
 								setvalidator.ValueStringsAre(stringvalidator.OneOf("SUCCESS", "FAILURE")),
 							},
 						},
 						"suppressed": schema.BoolAttribute{
-							MarkdownDescription: "Whether to include suppressed checks. Default: true (both suppressed and regular checks are included).",
+							MarkdownDescription: "Whether to include suppressed or regular checks only. If not provided, both suppressed and unsuppressed checks are included.",
 							Optional:            true,
 						},
 					},
