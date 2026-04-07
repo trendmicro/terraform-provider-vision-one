@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"terraform-provider-vision-one/internal/trendmicro"
+	cam "terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/api"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/resources/config"
 
@@ -127,7 +128,7 @@ func (r *GCPTagValueResource) Configure(_ context.Context, req resource.Configur
 	}
 
 	r.client = &api.CamClient{
-		Client: client,
+		Client: client.WithTimeout(cam.CAMAPITimeout),
 	}
 }
 

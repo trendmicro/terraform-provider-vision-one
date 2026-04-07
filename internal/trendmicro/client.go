@@ -77,6 +77,8 @@ func (c *Client) DoRequest(req *http.Request) (body []byte, err error) {
 		return nil, err
 	}
 
+	fmt.Printf("HTTP %d response body: %s\n", res.StatusCode, string(body))
+
 	switch res.StatusCode {
 	case http.StatusOK, http.StatusCreated, http.StatusNoContent, http.StatusMultiStatus:
 		return body, nil
@@ -108,10 +110,13 @@ func (c *Client) DoRequestWithFullResponse(req *http.Request) (*http.Response, e
 		return res, nil
 	case http.StatusNotFound, http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, StatusVisionOneInnerError:
 		defer res.Body.Close()
-		body, err := io.ReadAll(res.Body)
+		var body []byte
+		body, err = io.ReadAll(res.Body)
 		if err != nil {
 			return nil, err
 		}
+
+		fmt.Printf("HTTP %d response body: %s\n", res.StatusCode, string(body))
 
 		var out bytes.Buffer
 		err = json.Indent(&out, body, "", "  ")
@@ -131,7 +136,8 @@ func (c *Client) Auth() (*AuthResponse, error) {
 		return nil, err
 	}
 
-	body, err := c.DoRequest(req)
+	var body []byte
+	body, err = c.DoRequest(req)
 	if err != nil {
 		return nil, err
 	}
@@ -150,6 +156,12 @@ func (c *Client) Auth() (*AuthResponse, error) {
 	}
 
 	return nil, nil
+}
+
+func (c *Client) WithTimeout(d time.Duration) *Client {
+	clientCopy := *c
+	clientCopy.HTTPClient = &http.Client{Timeout: d}
+	return &clientCopy
 }
 
 func (c *Client) ExtractIDFromLocationHeader(respHeader http.Header) (string, error) {

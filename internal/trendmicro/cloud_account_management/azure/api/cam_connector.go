@@ -24,7 +24,7 @@ type CreateSubscriptionRequest struct {
 	IsSharedApplication       bool                           `json:"isSharedApplication,omitempty"`
 	CamDeployedRegion         string                         `json:"camDeployedRegion,omitempty"`
 	IsTFProviderDeployed      bool                           `json:"isTFProviderDeployed"`
-	Features                  []Feature                      `json:"features,omitempty"`
+	Features                  *[]Feature                     `json:"features,omitempty"`
 	FeaturesConfigFilePath    string                         `json:"featuresConfigFilePath,omitempty"`
 }
 
@@ -40,7 +40,7 @@ type ModifySubscriptionRequest struct {
 	IsSharedApplication       bool                           `json:"isSharedApplication,omitempty"`
 	CamDeployedRegion         string                         `json:"camDeployedRegion,omitempty"`
 	IsTFProviderDeployed      bool                           `json:"isTFProviderDeployed"`
-	Features                  []Feature                      `json:"features,omitempty"`
+	Features                  *[]Feature                     `json:"features,omitempty"`
 	FeaturesConfigFilePath    string                         `json:"featuresConfigFilePath,omitempty"`
 }
 

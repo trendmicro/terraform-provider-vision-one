@@ -254,7 +254,7 @@ func (r *CAMConnectorResource) Configure(ctx context.Context, req resource.Confi
 	}
 
 	r.client = &api.CamClient{
-		Client: client,
+		Client: client.WithTimeout(cam.CAMAPITimeout),
 	}
 	tflog.Debug(ctx, "[CAM Connector] CAM Connector resource configured successfully")
 }
@@ -830,9 +830,10 @@ func convertManagementGroupDetailsToAPI(ctx context.Context, mgmtGroup *Manageme
 	return managementGroup, diags
 }
 
-func extractFeatures(ctx context.Context, featuresList types.List) ([]api.Feature, diag.Diagnostics) {
+func extractFeatures(ctx context.Context, featuresList types.List) (*[]api.Feature, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
+	// null means the user did not specify features — omit the field entirely from the request.
 	if featuresList.IsNull() || featuresList.IsUnknown() {
 		return nil, diags
 	}
@@ -844,6 +845,7 @@ func extractFeatures(ctx context.Context, featuresList types.List) ([]api.Featur
 		return nil, diags
 	}
 
+	// Empty list means the user explicitly cleared all features — send [] to the backend.
 	features := make([]api.Feature, 0, len(featureModels))
 	for _, model := range featureModels {
 		var regions []string
@@ -860,7 +862,7 @@ func extractFeatures(ctx context.Context, featuresList types.List) ([]api.Featur
 		})
 	}
 
-	return features, diags
+	return &features, diags
 }
 
 

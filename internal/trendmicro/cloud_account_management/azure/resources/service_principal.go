@@ -17,6 +17,7 @@ import (
 	"github.com/microsoftgraph/msgraph-sdk-go/serviceprincipals"
 
 	"terraform-provider-vision-one/internal/trendmicro"
+	cam "terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/api"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/resources/config"
 )
@@ -192,7 +193,8 @@ func (r *servicePrincipal) Read(ctx context.Context, req resource.ReadRequest, r
 
 	servicePrincipalList := servicePrincipals.GetValue()
 	if len(servicePrincipalList) == 0 {
-		resp.Diagnostics.AddError("[Service Principal][Read] Failed to find service principal", "Service principal not found")
+		tflog.Info(ctx, fmt.Sprintf("[Service Principal][Read] Service principal for appId %s not found, removing from state", *app.GetAppId()))
+		resp.State.RemoveResource(ctx)
 		return
 	}
 	servicePrincipal := servicePrincipalList[0]
@@ -310,16 +312,27 @@ func (r *servicePrincipal) Configure(ctx context.Context, req resource.Configure
 	}
 
 	r.client = &api.CamClient{
-		Client: client,
+		Client: client.WithTimeout(cam.CAMAPITimeout),
 	}
 	tflog.Debug(ctx, "[Service Principal] Service Principal resource configured successfully")
 }
 
 func (r *servicePrincipal) createServicePrincipal(ctx context.Context, client *msgraph.GraphServiceClient, applicationID, templateVersion *string) (*string, error) {
+	// Check if service principal already exists before creating (idempotency)
+	filter := fmt.Sprintf("appId eq '%s'", *applicationID)
+	existing, err := client.ServicePrincipals().Get(ctx, &serviceprincipals.ServicePrincipalsRequestBuilderGetRequestConfiguration{
+		QueryParameters: &serviceprincipals.ServicePrincipalsRequestBuilderGetQueryParameters{
+			Filter: &filter,
+		},
+	})
+	if err == nil && existing != nil && len(existing.GetValue()) > 0 {
+		tflog.Info(ctx, fmt.Sprintf("[Service Principal] Service principal for appId %s already exists, reusing existing", *applicationID))
+		return existing.GetValue()[0].GetId(), nil
+	}
+
 	sp := models.NewServicePrincipal()
 	sp.SetAppId(applicationID)
 	sp.SetAppRoleAssignmentRequired(toBoolPointer(true))
-	sp.SetServicePrincipalType(toStringPointer("Application"))
 	sp.SetTags([]string{*templateVersion})
 
 	createdSp, err := client.ServicePrincipals().Post(ctx, sp, nil)

@@ -130,7 +130,7 @@ func (r *GCPTagKeyResource) Configure(_ context.Context, req resource.ConfigureR
 	}
 
 	r.client = &api.CamClient{
-		Client: client,
+		Client: client.WithTimeout(cam.CAMAPITimeout),
 	}
 }
 

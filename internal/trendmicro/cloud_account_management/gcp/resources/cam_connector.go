@@ -267,7 +267,7 @@ func (r *CAMConnectorResource) Configure(ctx context.Context, req resource.Confi
 	}
 
 	r.client = &api.CamClient{
-		Client: client,
+		Client: client.WithTimeout(cam.CAMAPITimeout),
 	}
 	tflog.Debug(ctx, "[CAM Connector GCP] CAM Connector resource configured successfully")
 }

@@ -572,7 +572,7 @@ func (r *IAMCustomRole) Configure(ctx context.Context, req resource.ConfigureReq
 	}
 
 	r.client = &api.CamClient{
-		Client: client,
+		Client: client.WithTimeout(cam.CAMAPITimeout),
 	}
 	tflog.Debug(ctx, "[GCP Role Definition] resource configured successfully")
 }

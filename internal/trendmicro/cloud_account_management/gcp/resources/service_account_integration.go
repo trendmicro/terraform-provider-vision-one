@@ -230,7 +230,7 @@ func (r *ServiceAccountIntegration) Configure(ctx context.Context, req resource.
 	}
 
 	r.client = &api.CamClient{
-		Client: client,
+		Client: client.WithTimeout(cam.CAMAPITimeout),
 	}
 }
 

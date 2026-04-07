@@ -1,5 +1,7 @@
 package cloud_account_management
 
+import "time"
+
 // JitterConfig holds the randomized delay parameters for API call throttling.
 type JitterConfig struct {
 	// MinDelayMs is the minimum delay in milliseconds before each API call.
@@ -23,6 +25,10 @@ var (
 )
 
 const (
+	// CAMAPITimeout is the HTTP client timeout for Azure and GCP CAM API operations.
+	// These cloud provider APIs can be slow to respond, especially during initial setup.
+	CAMAPITimeout = 60 * time.Second
+
 	// GCPMaxServiceUsageConcurrency limits concurrent GCP Service Usage API calls
 	// across all EnableAPIServices resource instances.
 	GCPMaxServiceUsageConcurrency = 6
