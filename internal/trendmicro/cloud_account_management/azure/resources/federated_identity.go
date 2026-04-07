@@ -14,6 +14,7 @@ import (
 	"github.com/microsoftgraph/msgraph-sdk-go/models"
 
 	"terraform-provider-vision-one/internal/trendmicro"
+	cam "terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/api"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/resources/config"
 )
@@ -57,7 +58,7 @@ func (r *federatedIdentity) Schema(_ context.Context, _ resource.SchemaRequest, 
 				},
 			},
 			"vision_one_region_code": schema.StringAttribute{
-				MarkdownDescription: "Vision One region code for the federated identity credential. If not specified, the region code will be automatically extracted from the provider's `regional_fqdn` configuration. The supported region codes are `au`, `sg`, `us`, `in`, `jp`, `eu`, `mea`, `ca`, `uk`, `za`. Defaults to `us` if no region can be determined.",
+				MarkdownDescription: "Vision One region code for the federated identity credential. If not specified, the region code will be automatically extracted from the provider's `regional_fqdn` configuration. The supported region codes are `au`, `sg`, `us`, `in`, `jp`, `eu`, `mea`, `ca`, `uk`, `za`. . Defaults to `us` if no region can be determined.",
 				Optional:            true,
 				Computed:            true,
 				PlanModifiers: []planmodifier.String{
@@ -372,7 +373,7 @@ func (r *federatedIdentity) Configure(ctx context.Context, req resource.Configur
 	}
 
 	r.client = &api.CamClient{
-		Client: client,
+		Client: client.WithTimeout(cam.CAMAPITimeout),
 	}
 	tflog.Debug(ctx, "[Federated Identity] Federated Identity resource configured successfully")
 }
@@ -401,7 +402,7 @@ func extractRegionFromFQDN(fqdn string) string {
 		"api.sg.xdr.trendmicro.com":  "sg",                       // Singapore
 		"api.mea.xdr.trendmicro.com": "mea",                      // United Arab Emirates
 		"api.uk.xdr.trendmicro.com":  "uk",                       // United Kingdom
-		"api.za.xdr.trendmicro.com":  "za",                       // South Africa
+		"api.za.xdr.trendmicro.com":  "za",                       // United Kingdom
 		"api.xdr.trendmicro.com":     defaultVisionOneRegionCode, // United States
 	}
 

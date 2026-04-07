@@ -269,7 +269,7 @@ func (r *appRegistration) Configure(ctx context.Context, req resource.ConfigureR
 	}
 
 	r.client = &api.CamClient{
-		Client: client,
+		Client: client.WithTimeout(cam.CAMAPITimeout),
 	}
 	tflog.Debug(ctx, "[App Registration] App Registration resource configured successfully")
 }

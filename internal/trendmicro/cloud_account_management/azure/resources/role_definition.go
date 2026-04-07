@@ -360,7 +360,7 @@ func (r *RoleDefinition) Configure(ctx context.Context, req resource.ConfigureRe
 	}
 
 	r.client = &api.CamClient{
-		Client: client,
+		Client: client.WithTimeout(cam.CAMAPITimeout),
 	}
 	tflog.Debug(ctx, "[Role Definition] resource configured successfully")
 }
