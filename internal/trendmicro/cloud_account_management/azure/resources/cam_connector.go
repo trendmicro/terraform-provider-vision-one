@@ -155,9 +155,6 @@ func (r *CAMConnectorResource) Schema(ctx context.Context, req resource.SchemaRe
 			"state": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "Current state of the connector",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
 			},
 			"tenant_id": schema.StringAttribute{
 				Required:            true,
