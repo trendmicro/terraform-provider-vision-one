@@ -237,12 +237,11 @@ func (r *servicePrincipal) Update(ctx context.Context, req resource.UpdateReques
 	}
 
 	displayName := getDisplayName(plan.DisplayName, subscriptionID)
-	var tags []string
+	tags := plan.Tags
 	if len(tags) == 0 {
 		tags = state.Tags
 	} else {
 		tflog.Info(ctx, fmt.Sprintf("[Service Principal] Using provided barebone version: %s", plan.Tags[0]))
-		tags = plan.Tags
 	}
 	app := models.NewApplication()
 	app.SetDisplayName(&displayName)
@@ -254,11 +253,12 @@ func (r *servicePrincipal) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
-	state.ClientID = types.StringValue(*app.GetAppId())
+	state.ClientID = types.StringValue(state.ClientID.ValueString())
 	state.DisplayName = types.StringValue(displayName)
-	state.ObjectID = types.StringValue(*app.GetId())
+	state.ObjectID = types.StringValue(state.ObjectID.ValueString())
 	state.PrincipalID = types.StringValue(state.PrincipalID.ValueString())
 	state.SubscriptionID = plan.SubscriptionID
+	state.Tags = tags
 
 	diags = resp.State.Set(ctx, &state)
 	resp.Diagnostics.Append(diags...)
