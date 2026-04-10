@@ -364,7 +364,7 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		)
 		return
 	}
-	res, err := r.client.ReadSubscription(plan.SubscriptionID.ValueString())
+	res, err := r.client.ReadSubscription(plan.SubscriptionID.ValueString(), true)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[CAM Connector][Create] Error Describing Subscription",
@@ -452,7 +452,7 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 		}
 	}
 
-	res, err := r.client.ReadSubscription(state.SubscriptionID.ValueString())
+	res, err := r.client.ReadSubscription(state.SubscriptionID.ValueString(), true)
 	if err != nil {
 		tflog.Warn(ctx, "[CAM Connector][Read] Failed to describe subscription, will attempt to create it", map[string]any{
 			"error": err.Error(),
@@ -549,7 +549,7 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 		}
 	}
 
-	res, err = r.client.ReadSubscription(state.SubscriptionID.ValueString())
+	res, err = r.client.ReadSubscription(state.SubscriptionID.ValueString(), true)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[CAM Connector][Read] Error Describing Subscription",
@@ -714,7 +714,7 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		return
 	}
 
-	res, err := r.client.ReadSubscription(plan.SubscriptionID.ValueString())
+	res, err := r.client.ReadSubscription(plan.SubscriptionID.ValueString(), true)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[CAM Connector][Update] Error Describing Subscription",
