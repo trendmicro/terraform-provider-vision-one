@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"terraform-provider-vision-one/internal/trendmicro"
 	cam "terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
@@ -188,7 +190,7 @@ func (r *GCPTagValueResource) Create(ctx context.Context, req resource.CreateReq
 				)
 				return
 			}
-			updatedTagValue, updateErr := r.updateExistingTagValue(ctx, crmService, existingTagValue.Name, &plan)
+			updatedTagValue, updateErr := r.updateExistingTagValue(ctx, crmService, existingTagValue, &plan)
 			if updateErr != nil {
 				resp.Diagnostics.AddError(
 					"[GCP Tag Value][Create]",
@@ -232,7 +234,7 @@ func (r *GCPTagValueResource) Create(ctx context.Context, req resource.CreateReq
 				)
 				return
 			}
-			updatedTagValue, updateErr := r.updateExistingTagValue(ctx, crmService, existingTagValue.Name, &plan)
+			updatedTagValue, updateErr := r.updateExistingTagValue(ctx, crmService, existingTagValue, &plan)
 			if updateErr != nil {
 				resp.Diagnostics.AddError(
 					"[GCP Tag Value][Create]",
@@ -484,46 +486,152 @@ func (r *GCPTagValueResource) Delete(ctx context.Context, req resource.DeleteReq
 		return
 	}
 
+	tagValueName := state.Name.ValueString()
+
 	tflog.Info(ctx, "Deleting GCP tag value", map[string]interface{}{
-		"tag_value_name": state.Name.ValueString(),
+		"tag_value_name": tagValueName,
 	})
 
-	// Delete tag value
-	operation, err := crmService.TagValues.Delete(state.Name.ValueString()).Context(ctx).Do()
-	if err != nil {
-		if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "not found") ||
-			strings.Contains(err.Error(), "403") || strings.Contains(err.Error(), "PERMISSION_DENIED") {
-			// Already deleted or no longer accessible
-			tflog.Info(ctx, "Tag value already deleted or not accessible")
+	// GCP returns FAILED_PRECONDITION (lock) if any TagHold exists on the tag value.
+	var allHolds []*cloudresourcemanager.TagHold
+	holdListErr := crmService.TagValues.TagHolds.List(tagValueName).Context(ctx).Pages(ctx,
+		func(page *cloudresourcemanager.ListTagHoldsResponse) error {
+			allHolds = append(allHolds, page.TagHolds...)
+			return nil
+		})
+	if holdListErr != nil {
+		if !strings.Contains(holdListErr.Error(), "404") && !strings.Contains(holdListErr.Error(), "not found") {
+			resp.Diagnostics.AddError(
+				"[GCP Tag Value][Delete]",
+				fmt.Sprintf("Error listing tag holds for '%s': %s", tagValueName, holdListErr.Error()),
+			)
 			return
 		}
-		resp.Diagnostics.AddError(
-			"[GCP Tag Value][Delete]",
-			fmt.Sprintf("Error deleting tag value '%s': %s", state.Name.ValueString(), err.Error()),
+	} else if len(allHolds) > 0 {
+		var (
+			mu       sync.Mutex
+			wg       sync.WaitGroup
+			thErrors []string
 		)
-		return
+		sem := cam.GCPTagKeySem
+		for _, hold := range allHolds {
+			wg.Add(1)
+			go func(holdName string) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+
+				tflog.Info(ctx, "Deleting tag hold before tag value deletion", map[string]interface{}{
+					"hold_name":      holdName,
+					"tag_value_name": tagValueName,
+				})
+				holdOp, holdErr := crmService.TagValues.TagHolds.Delete(holdName).Context(ctx).Do()
+				if holdErr != nil {
+					if strings.Contains(holdErr.Error(), "404") || strings.Contains(holdErr.Error(), "not found") {
+						return
+					}
+					mu.Lock()
+					thErrors = append(thErrors, fmt.Sprintf("Error deleting tag hold '%s': %s", holdName, holdErr.Error()))
+					mu.Unlock()
+					return
+				}
+				finalHoldOp, waitErr := WaitForTagOperation(ctx, crmService, holdOp.Name)
+				if waitErr != nil {
+					mu.Lock()
+					thErrors = append(thErrors, fmt.Sprintf("Error waiting for tag hold deletion '%s': %s", holdName, waitErr.Error()))
+					mu.Unlock()
+					return
+				}
+				if finalHoldOp.Error != nil {
+					mu.Lock()
+					thErrors = append(thErrors, fmt.Sprintf("Tag hold deletion failed '%s': %s", holdName, finalHoldOp.Error.Message))
+					mu.Unlock()
+				}
+			}(hold.Name)
+		}
+		wg.Wait()
+
+		if len(thErrors) > 0 {
+			resp.Diagnostics.AddError(
+				"[GCP Tag Value][Delete]",
+				strings.Join(thErrors, "; "),
+			)
+			return
+		}
 	}
 
-	// Wait for operation to complete
-	finalOp, err := WaitForTagOperation(ctx, crmService, operation.Name)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"[GCP Tag Value][Delete]",
-			fmt.Sprintf("Error waiting for tag value deletion operation: %s", err.Error()),
-		)
-		return
-	}
+	// Even after all TagHolds are removed, GCP's CAM backend can hold a short-lived
+	// internal lock on the tag value while it processes propagation (unrelated to TagHolds).
+	// This causes FAILED_PRECONDITION on delete; retry with capped exponential backoff.
+	const maxDeleteRetries = 10
+	const maxRetryInterval = 30 * time.Second
+	retryInterval := 5 * time.Second
+	var lastErrMsg string
+	for attempt := 0; attempt < maxDeleteRetries; attempt++ {
+		if attempt > 0 {
+			tflog.Info(ctx, "Retrying tag value deletion due to lock", map[string]interface{}{
+				"tag_value_name": tagValueName,
+				"attempt":        attempt + 1,
+			})
+			select {
+			case <-ctx.Done():
+				resp.Diagnostics.AddError("[GCP Tag Value][Delete]", "Context cancelled while retrying tag value deletion")
+				return
+			case <-time.After(retryInterval):
+			}
+			retryInterval *= 2
+			if retryInterval > maxRetryInterval {
+				retryInterval = maxRetryInterval
+			}
+		}
 
-	if finalOp.Error != nil {
-		resp.Diagnostics.AddError(
-			"[GCP Tag Value][Delete]",
-			fmt.Sprintf("Tag value deletion operation failed: %s", finalOp.Error.Message),
-		)
-		return
+		operation, delErr := crmService.TagValues.Delete(tagValueName).Context(ctx).Do()
+		if delErr != nil {
+			if strings.Contains(delErr.Error(), "404") || strings.Contains(delErr.Error(), "not found") ||
+				strings.Contains(delErr.Error(), "403") || strings.Contains(delErr.Error(), "PERMISSION_DENIED") {
+				tflog.Info(ctx, "Tag value already deleted or not accessible")
+				return
+			}
+			resp.Diagnostics.AddError(
+				"[GCP Tag Value][Delete]",
+				fmt.Sprintf("Error deleting tag value '%s': %s", tagValueName, delErr.Error()),
+			)
+			return
+		}
+
+		finalOp, waitErr := WaitForTagOperation(ctx, crmService, operation.Name)
+		if waitErr != nil {
+			resp.Diagnostics.AddError(
+				"[GCP Tag Value][Delete]",
+				fmt.Sprintf("Error waiting for tag value deletion operation: %s", waitErr.Error()),
+			)
+			return
+		}
+
+		if finalOp.Error == nil {
+			break
+		}
+
+		lastErrMsg = finalOp.Error.Message
+		if !strings.Contains(lastErrMsg, "FAILED_PRECONDITION") && !strings.Contains(lastErrMsg, "lock") {
+			resp.Diagnostics.AddError(
+				"[GCP Tag Value][Delete]",
+				fmt.Sprintf("Tag value deletion operation failed: %s", lastErrMsg),
+			)
+			return
+		}
+
+		if attempt == maxDeleteRetries-1 {
+			resp.Diagnostics.AddError(
+				"[GCP Tag Value][Delete]",
+				fmt.Sprintf("Tag value deletion failed after %d attempts due to lock: %s", maxDeleteRetries, lastErrMsg),
+			)
+			return
+		}
 	}
 
 	tflog.Info(ctx, "Tag value deleted successfully", map[string]interface{}{
-		"tag_value_name": state.Name.ValueString(),
+		"tag_value_name": tagValueName,
 	})
 }
 
@@ -558,11 +666,16 @@ func (r *GCPTagValueResource) adoptExistingTagValue(tagValue *cloudresourcemanag
 }
 
 // updateExistingTagValue patches the description of an existing tag value to match the plan.
-func (r *GCPTagValueResource) updateExistingTagValue(ctx context.Context, crmService *cloudresourcemanager.Service, tagValueName string, plan *gcpTagValueResourceModel) (*cloudresourcemanager.TagValue, error) {
-	patchBody := &cloudresourcemanager.TagValue{
-		Description: plan.Description.ValueString(),
+func (r *GCPTagValueResource) updateExistingTagValue(ctx context.Context, crmService *cloudresourcemanager.Service, existing *cloudresourcemanager.TagValue, plan *gcpTagValueResourceModel) (*cloudresourcemanager.TagValue, error) {
+	planDescription := plan.Description.ValueString()
+	if existing.Description == planDescription {
+		return existing, nil
 	}
-	operation, err := crmService.TagValues.Patch(tagValueName, patchBody).UpdateMask("description").Context(ctx).Do()
+
+	patchBody := &cloudresourcemanager.TagValue{
+		Description: planDescription,
+	}
+	operation, err := crmService.TagValues.Patch(existing.Name, patchBody).UpdateMask("description").Context(ctx).Do()
 	if err != nil {
 		return nil, fmt.Errorf("failed to update tag value description: %w", err)
 	}
@@ -575,7 +688,7 @@ func (r *GCPTagValueResource) updateExistingTagValue(ctx context.Context, crmSer
 			return nil, fmt.Errorf("tag value update failed: %s", finalOp.Error.Message)
 		}
 	}
-	updated, err := crmService.TagValues.Get(tagValueName).Context(ctx).Do()
+	updated, err := crmService.TagValues.Get(existing.Name).Context(ctx).Do()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read updated tag value: %w", err)
 	}

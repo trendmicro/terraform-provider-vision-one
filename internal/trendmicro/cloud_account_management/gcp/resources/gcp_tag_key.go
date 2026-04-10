@@ -190,7 +190,7 @@ func (r *GCPTagKeyResource) Create(ctx context.Context, req resource.CreateReque
 				)
 				return
 			}
-			updatedTagKey, updateErr := r.updateExistingTagKey(ctx, crmService, existingTagKey.Name, &plan)
+			updatedTagKey, updateErr := r.updateExistingTagKey(ctx, crmService, existingTagKey, &plan)
 			if updateErr != nil {
 				resp.Diagnostics.AddError(
 					"[GCP Tag Key][Create]",
@@ -234,7 +234,7 @@ func (r *GCPTagKeyResource) Create(ctx context.Context, req resource.CreateReque
 				)
 				return
 			}
-			updatedTagKey, updateErr := r.updateExistingTagKey(ctx, crmService, existingTagKey.Name, &plan)
+			updatedTagKey, updateErr := r.updateExistingTagKey(ctx, crmService, existingTagKey, &plan)
 			if updateErr != nil {
 				resp.Diagnostics.AddError(
 					"[GCP Tag Key][Create]",
@@ -658,22 +658,29 @@ func (r *GCPTagKeyResource) adoptExistingTagKey(tagKey *cloudresourcemanager.Tag
 }
 
 // updateExistingTagKey patches the description of an existing tag key to match the plan.
-func (r *GCPTagKeyResource) updateExistingTagKey(ctx context.Context, crmService *cloudresourcemanager.Service, tagKeyName string, plan *gcpTagKeyResourceModel) (*cloudresourcemanager.TagKey, error) {
-	patchBody := &cloudresourcemanager.TagKey{
-		Description: plan.Description.ValueString(),
+func (r *GCPTagKeyResource) updateExistingTagKey(ctx context.Context, crmService *cloudresourcemanager.Service, existing *cloudresourcemanager.TagKey, plan *gcpTagKeyResourceModel) (*cloudresourcemanager.TagKey, error) {
+	planDescription := plan.Description.ValueString()
+	if existing.Description == planDescription {
+		return existing, nil
 	}
-	operation, err := crmService.TagKeys.Patch(tagKeyName, patchBody).UpdateMask("description").Context(ctx).Do()
+
+	patchBody := &cloudresourcemanager.TagKey{
+		Description: planDescription,
+	}
+	operation, err := crmService.TagKeys.Patch(existing.Name, patchBody).UpdateMask("description").Context(ctx).Do()
 	if err != nil {
 		return nil, fmt.Errorf("failed to update tag key description: %w", err)
 	}
-	finalOp, err := WaitForTagOperation(ctx, crmService, operation.Name)
-	if err != nil {
-		return nil, fmt.Errorf("failed waiting for tag key update: %w", err)
+	if operation.Name != "" {
+		finalOp, waitErr := WaitForTagOperation(ctx, crmService, operation.Name)
+		if waitErr != nil {
+			return nil, fmt.Errorf("failed waiting for tag key update: %w", waitErr)
+		}
+		if finalOp.Error != nil {
+			return nil, fmt.Errorf("tag key update failed: %s", finalOp.Error.Message)
+		}
 	}
-	if finalOp.Error != nil {
-		return nil, fmt.Errorf("tag key update failed: %s", finalOp.Error.Message)
-	}
-	updated, err := crmService.TagKeys.Get(tagKeyName).Context(ctx).Do()
+	updated, err := crmService.TagKeys.Get(existing.Name).Context(ctx).Do()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read updated tag key: %w", err)
 	}

@@ -67,8 +67,14 @@ resource "visionone_cam_service_account_integration" "single_project" {
   display_name = "Vision One CAM Service Account"
   description  = "Service account for Trend Micro Vision One Cloud Account Management"
 
-  # Use predefined viewer role for read-only access
+  # roles/viewer is bound to all projects (including sub-projects in multi-project mode)
   roles = [
+    "roles/viewer",
+  ]
+
+  # primary_project_roles are bound only to the primary project (where the service account lives)
+  # This follows least-privilege: elevated permissions are not replicated to sub-projects
+  primary_project_roles = [
     "roles/viewer",
     visionone_cam_iam_custom_role.cam_role.name,
   ]
@@ -163,8 +169,14 @@ resource "visionone_cam_service_account_integration" "folder_level" {
   display_name = "Vision One CAM Service Account - Folder Level"
   description  = "Service account for monitoring all projects in the folder"
 
-  # Use both predefined viewer role and custom role
+  # roles/viewer is bound to all projects in the folder (sub-projects + primary project)
   roles = [
+    "roles/viewer",
+  ]
+
+  # primary_project_roles are bound only to the primary project (where the service account lives)
+  # This follows least-privilege: elevated permissions are not replicated to sub-projects
+  primary_project_roles = [
     "roles/viewer",
     visionone_cam_iam_custom_role.cam_role.name,
   ]
@@ -294,9 +306,14 @@ resource "visionone_cam_service_account_integration" "organization_level" {
   display_name = "Vision One CAM Service Account - Organization Level"
   description  = "Service account for monitoring all projects in the organization"
 
-  # Use both predefined viewer role and custom role
-  # Remove custom role line if you only want to use roles/viewer
+  # roles/viewer is bound to all projects in the organization (sub-projects + primary project)
   roles = [
+    "roles/viewer",
+  ]
+
+  # primary_project_roles are bound only to the primary project (where the service account lives)
+  # This follows least-privilege: elevated permissions are not replicated to sub-projects
+  primary_project_roles = [
     "roles/viewer",
     visionone_cam_iam_custom_role.cam_role.name,
   ]
@@ -575,6 +592,7 @@ resource "visionone_cam_connector_gcp" "connectors" {
 - `display_name` (String) Display name for the service account. If not specified, defaults to 'Vision One CAM Service Account'.
 - `exclude_free_trial_projects` (Boolean) If true, exclude free trial projects when applying IAM bindings across multiple projects. Only applies when using central_management_project_id_in_folder or central_management_project_id_in_org.
 - `exclude_projects` (List of String) List of project IDs to exclude from IAM bindings. Only applies when using central_management_project_id_in_folder or central_management_project_id_in_org.
+- `primary_project_roles` (List of String) List of IAM role resource names to bind ONLY to the primary project (the service account's home project). These roles will NOT be replicated to sub-projects. Typically used for roles containing elevated permissions such as service account key management (e.g., iam.serviceAccountKeys.create/delete, iam.serviceAccounts.getAccessToken).
 - `project_id` (String) The GCP project where the service account will be created. Defaults to provider project configuration.
 - `rotation_time` (String) RFC3339 timestamp from time_rotating resource to trigger key rotation. When this value changes, the old key is deleted and a new key is created. Use with time_rotating resource's rotation_rfc3339 output.
 

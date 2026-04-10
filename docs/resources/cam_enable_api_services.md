@@ -2,12 +2,12 @@
 page_title: "visionone_cam_enable_api_services Resource - visionone"
 subcategory: "GCP"
 description: |-
-  Enables required GCP API services for Trend Micro Vision One Cloud Account Management. This resource ensures that all necessary APIs are enabled in the specified GCP project. Please note that API services are not disabled when this resource is destroyed to prevent disruption to other resources.
+  Enables required GCP API services for Trend Micro Vision One Cloud Account Management. This resource ensures that all necessary APIs are enabled in the specified GCP project. Only services that were disabled before creation are enabled by this resource; those services will be disabled on destroy.
 ---
 
 # visionone_cam_enable_api_services (Resource)
 
-Enables required GCP API services for Trend Micro Vision One Cloud Account Management. This resource ensures that all necessary APIs are enabled in the specified GCP project. Please note that API services are not disabled when this resource is destroyed to prevent disruption to other resources.
+Enables required GCP API services for Trend Micro Vision One Cloud Account Management. This resource ensures that all necessary APIs are enabled in the specified GCP project. Only services that were disabled before creation are enabled by this resource; those services will be disabled on destroy.
 
 ## Overview
 

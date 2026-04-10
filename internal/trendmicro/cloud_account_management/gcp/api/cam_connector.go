@@ -221,7 +221,7 @@ func (c *CamClient) DeleteProject(projectNumber string) error {
 
 	resp, err := c.Client.DoRequestWithFullResponse(req)
 	if err != nil {
-		if resp.StatusCode == http.StatusNotFound {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
 			return nil
 		}
 		return err
