@@ -86,7 +86,7 @@ func (c *CamClient) CreateSubscription(data *CreateSubscriptionRequest) error {
 	fmt.Printf("Preparing to create subscription with data: %s\n", string(jsonData))
 
 	// Attempt to read the subscription to determine if it already exists
-	describeResp, err := c.ReadSubscription(data.SubscriptionID)
+	describeResp, err := c.ReadSubscription(data.SubscriptionID, true)
 	if err != nil {
 		if !strings.Contains(err.Error(), `"code": "NotFound"`) {
 			return fmt.Errorf("failed to verify subscription existence: %w", err)
@@ -154,9 +154,12 @@ func (c *CamClient) CreateSubscription(data *CreateSubscriptionRequest) error {
 	return nil
 }
 
-func (c *CamClient) ReadSubscription(subscriptionID string) (*SubscriptionResponse, error) {
+func (c *CamClient) ReadSubscription(subscriptionID string, excludeCloudAssets bool) (*SubscriptionResponse, error) {
 	cam.JitterSleep(cam.AzureJitterConfig)
 	url := fmt.Sprintf("%s/beta/cam/azureSubscriptions/%s", c.Client.HostURL, subscriptionID)
+	if excludeCloudAssets {
+		url += "?excludeCloudAssets=true"
+	}
 
 	req, err := http.NewRequest("GET", url, http.NoBody)
 	if err != nil {
