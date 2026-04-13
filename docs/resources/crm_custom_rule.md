@@ -46,7 +46,7 @@ resource "visionone_crm_custom_rule" "s3_versioning_check" {
         operator = "equal"
         fact     = "bucketVersioning"
         path     = "$.Status"
-        value    = "Enabled"
+        value    = jsonencode("Enabled")
       }
     }
   }
@@ -144,6 +144,63 @@ resource "visionone_crm_custom_rule" "s3_comprehensive_security" {
       }
     }
   }
+
+  # Event rule checking different `value` types
+  event_rule {
+    description = "Ensure all public access is blocked"
+
+    conditions {
+      operator = "all"
+
+      # Event rule checking `string` type
+      condition {
+        operator = "equal"
+        fact     = "bucketPublicAccess"
+        path     = "$.BlockPublicAcls"
+        value    = jsonencode("string")
+      }
+
+      # Event rule checking `number` type
+      condition {
+        operator = "equal"
+        fact     = "bucketPublicAccess"
+        path     = "$.BlockPublicPolicy"
+        value    = jsonencode(123)
+      }
+
+      # Event rule checking `boolean` type
+      condition {
+        operator = "equal"
+        fact     = "bucketPublicAccess"
+        path     = "$.IgnorePublicAcls"
+        value    = jsonencode(true)
+      }
+
+      # Event rule checking `object` type
+      condition {
+        operator = "equal"
+        fact     = "bucketPublicAccess"
+        path     = "$.RestrictPublicBuckets"
+        value    = jsonencode({ days = 7, operator = "within" })
+      }
+
+      # Event rule checking `array of numbers` type
+      condition {
+        operator = "equal"
+        fact     = "bucketPublicAccess"
+        path     = "$.RestrictPublicBuckets"
+        value    = jsonencode([1, 2, 3])
+      }
+
+      # Event rule checking `array of strings` type
+      condition {
+        operator = "equal"
+        fact     = "bucketPublicAccess"
+        path     = "$.RestrictPublicBuckets"
+        value    = jsonencode(["one", "two"])
+      }
+    }
+  }
 }
 ```
 
@@ -179,14 +236,14 @@ resource "visionone_crm_custom_rule" "s3_encryption_any_method" {
         operator = "equal"
         fact     = "bucketEncryption"
         path     = "$.ServerSideEncryptionConfiguration.Rules[0].ApplyServerSideEncryptionByDefault.SSEAlgorithm"
-        value    = "AES256"
+        value    = jsonencode("AES256")
       }
 
       condition {
         operator = "equal"
         fact     = "bucketEncryption"
         path     = "$.ServerSideEncryptionConfiguration.Rules[0].ApplyServerSideEncryptionByDefault.SSEAlgorithm"
-        value    = "aws:kms"
+        value    = jsonencode("aws:kms")
       }
     }
   }
@@ -199,18 +256,18 @@ resource "visionone_crm_custom_rule" "s3_encryption_any_method" {
 ### Required
 
 - `categories` (List of String) Categories of the custom rule. Allowed values: security, cost-optimisation, reliability, performance-efficiency, operational-excellence, sustainability.
-- `cloud_provider` (String) The cloud provider. Allowed values: aws, azure, gcp, oci, alibabaCloud
+- `cloud_provider` (String) The cloud provider. Allowed values: aws, azure, gcp.
 - `description` (String) The custom rule description (max 255 characters).
 - `enabled` (Boolean) Whether the rule is enabled or not.
 - `name` (String) The custom rule name (max 255 characters).
 - `resource_type` (String) The type of resource this custom rule applies to (max 100 characters).
 - `risk_level` (String) The risk level. Allowed values: LOW, MEDIUM, HIGH, VERY_HIGH, EXTREME.
 - `service` (String) The cloud service ID.
-- `attribute` (Block List) The attributes of the resource data to be evaluated. (see [below for nested schema](#nestedblock--attribute))
-- `event_rule` (Block List) The events to be evaluated by the custom rule. (see [below for nested schema](#nestedblock--event_rule))
 
 ### Optional
 
+- `attribute` (Block List) The attributes of the resource data to be evaluated. (see [below for nested schema](#nestedblock--attribute))
+- `event_rule` (Block List) The events to be evaluated by the custom rule. (see [below for nested schema](#nestedblock--event_rule))
 - `remediation_note` (String) The remediation notes for the custom rule (max 1000 characters).
 - `resolution_reference_link` (String) A reference link for resolution guidance.
 - `slug` (String) The slug of the custom rule. The system uses the slug to form the rule ID (max 200 characters).
@@ -235,6 +292,9 @@ Required:
 Required:
 
 - `description` (String) The description of the event rule.
+
+Optional:
+
 - `conditions` (Block, Optional) The conditions for event evaluation. (see [below for nested schema](#nestedblock--event_rule--conditions))
 
 <a id="nestedblock--event_rule--conditions"></a>
@@ -250,9 +310,18 @@ Optional:
 
 Required:
 
-- `operator` (String) Comparison operator.
 - `fact` (String) The fact name for event rule conditions.
-- `value` (String) The value to compare against (JSON encoded).
+- `operator` (String) The operator to evaluate the input of the condition.
+
+Available operators by category:
+- Regex: pattern
+- String: equal, notEqual, lessThan, lessThanInclusive, greaterThan, greaterThanInclusive
+- Array: in, notIn, contains, doesNotContain
+- Nullish: isNullOrUndefined
+- Date: dateComparison
+
+Enum: [pattern, equal, notEqual, lessThan, lessThanInclusive, greaterThan, greaterThanInclusive, in, notIn, contains, doesNotContain, isNullOrUndefined, dateComparison]
+- `value` (String) The value to compare against. Accepts a string or a jsonencode value (string, number, boolean, object, or array).
 
 Optional:
 

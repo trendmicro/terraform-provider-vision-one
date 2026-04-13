@@ -47,7 +47,8 @@ type serviceAccountIntegrationResourceModel struct {
 	ExcludeProjects                  types.List   `tfsdk:"exclude_projects"`
 
 	// Role Configuration
-	Roles types.List `tfsdk:"roles"`
+	Roles               types.List `tfsdk:"roles"`
+	PrimaryProjectRoles types.List `tfsdk:"primary_project_roles"`
 
 	// Key Rotation
 	RotationTime types.String `tfsdk:"rotation_time"`
@@ -151,6 +152,14 @@ func (r *ServiceAccountIntegration) Schema(_ context.Context, _ resource.SchemaR
 				ElementType:         types.StringType,
 				MarkdownDescription: "List of IAM role resource names to bind to the service account. Each role will be bound to the service account across all target projects. Supports both custom roles (e.g., projects/{project}/roles/{role_id}) and predefined roles (e.g., roles/viewer). At least one role is required.",
 				Required:            true,
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.RequiresReplace(),
+				},
+			},
+			"primary_project_roles": schema.ListAttribute{
+				ElementType:         types.StringType,
+				MarkdownDescription: "List of IAM role resource names to bind ONLY to the primary project (the service account's home project). These roles will NOT be replicated to sub-projects. Typically used for roles containing elevated permissions such as service account key management (e.g., iam.serviceAccountKeys.create/delete, iam.serviceAccounts.getAccessToken).",
+				Optional:            true,
 				PlanModifiers: []planmodifier.List{
 					listplanmodifier.RequiresReplace(),
 				},
@@ -333,6 +342,29 @@ func (r *ServiceAccountIntegration) Create(ctx context.Context, req resource.Cre
 		}
 	}
 
+	var primaryRoleNames []string
+	if !plan.PrimaryProjectRoles.IsNull() {
+		if roleDiags := plan.PrimaryProjectRoles.ElementsAs(ctx, &primaryRoleNames, false); roleDiags.HasError() {
+			resp.Diagnostics.Append(roleDiags...)
+			return
+		}
+		for _, roleName := range primaryRoleNames {
+			_, err = gcpClients.IAMClient.Projects.Roles.Get(roleName).Context(ctx).Do()
+			if err != nil {
+				if strings.Contains(roleName, "projects/") && (strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "not found")) {
+					resp.Diagnostics.AddError(
+						"[Service Account Key][Create] Primary project custom role not found",
+						fmt.Sprintf("The specified primary project custom role %s does not exist. Please create it first using visionone_cam_iam_custom_role resource.", roleName),
+					)
+					return
+				}
+				tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Create] Could not validate primary role (this is normal for predefined roles): %s", roleName))
+			} else {
+				tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Create] Validated primary project custom role exists: %s", roleName))
+			}
+		}
+	}
+
 	tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Create] Binding %d role(s) to service account", len(roleNames)))
 
 	targetProjects, err := r.discoverTargetProjects(ctx, gcpClients, &plan, projectID)
@@ -482,6 +514,16 @@ func (r *ServiceAccountIntegration) Create(ctx context.Context, req resource.Cre
 	}
 	bindWg.Wait()
 
+	// Bind primary project roles to the primary project only (serial, no replication)
+	for _, primaryRoleName := range primaryRoleNames {
+		bindErr := AddIAMBinding(ctx, gcpClients, projectID, member, primaryRoleName)
+		if bindErr != nil {
+			tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Create] Failed to add primary project IAM binding for role %s to project %s: %s", primaryRoleName, projectID, bindErr.Error()))
+		} else {
+			tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Create] Primary project IAM binding for role %s added to project: %s", primaryRoleName, projectID))
+		}
+	}
+
 	tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Create] IAM bindings created in %d projects for service account: %s", len(boundProjectIds), sa.Email))
 
 	boundProjectsList, diags := types.ListValueFrom(ctx, types.StringType, boundProjectIds)
@@ -573,6 +615,15 @@ func (r *ServiceAccountIntegration) Read(ctx context.Context, req resource.ReadR
 		return
 	}
 
+	// Get primary project roles from state
+	var primaryRoleNames []string
+	if !state.PrimaryProjectRoles.IsNull() {
+		if roleDiags := state.PrimaryProjectRoles.ElementsAs(ctx, &primaryRoleNames, false); roleDiags.HasError() {
+			resp.Diagnostics.Append(roleDiags...)
+			return
+		}
+	}
+
 	// Validate all roles still exist
 	for _, roleName := range roleNames {
 		_, err = gcpClients.IAMClient.Projects.Roles.Get(roleName).Context(ctx).Do()
@@ -599,6 +650,7 @@ func (r *ServiceAccountIntegration) Read(ctx context.Context, req resource.ReadR
 	}
 
 	member := fmt.Sprintf("serviceAccount:%s", sa.Email)
+	primaryProjectID := state.ProjectID.ValueString()
 
 	// Check IAM policy per project concurrently
 	type projectCheckResult struct {
@@ -649,6 +701,17 @@ func (r *ServiceAccountIntegration) Read(ctx context.Context, req resource.ReadR
 					allRolesBound = false
 					tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Read] Drift detected: IAM binding for role %s missing in project %s", actualRoleName, projID))
 					break
+				}
+			}
+
+			// Check primary project roles for the primary project only
+			if allRolesBound && projID == primaryProjectID {
+				for _, primaryRoleName := range primaryRoleNames {
+					if !HasRoleBinding(policy, primaryRoleName, member) {
+						allRolesBound = false
+						tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Read] Drift detected: primary project IAM binding for role %s missing in project %s", primaryRoleName, projID))
+						break
+					}
 				}
 			}
 
@@ -958,6 +1021,17 @@ func (r *ServiceAccountIntegration) Delete(ctx context.Context, req resource.Del
 		return
 	}
 
+	// Get primary project roles from state
+	var primaryRoleNames []string
+	if !state.PrimaryProjectRoles.IsNull() {
+		if roleDiags := state.PrimaryProjectRoles.ElementsAs(ctx, &primaryRoleNames, false); roleDiags.HasError() {
+			resp.Diagnostics.Append(roleDiags...)
+			return
+		}
+	}
+
+	primaryProjectID := state.ProjectID.ValueString()
+
 	// Remove all role bindings from all target projects (concurrent)
 	{
 		var deleteBindWg sync.WaitGroup
@@ -991,6 +1065,18 @@ func (r *ServiceAccountIntegration) Delete(ctx context.Context, req resource.Del
 						tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Delete] Failed to remove IAM binding for role %s from project %s: %s", actualRoleName, projID, removeErr.Error()))
 					} else {
 						tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] IAM binding for role %s removed from project: %s", actualRoleName, projID))
+					}
+				}
+
+				// Remove primary project roles from the primary project only
+				if projID == primaryProjectID {
+					for _, primaryRoleName := range primaryRoleNames {
+						removeErr := RemoveIAMBinding(ctx, gcpClients, projID, member, primaryRoleName)
+						if removeErr != nil {
+							tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Delete] Failed to remove primary project IAM binding for role %s from project %s: %s", primaryRoleName, projID, removeErr.Error()))
+						} else {
+							tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Primary project IAM binding for role %s removed from project: %s", primaryRoleName, projID))
+						}
 					}
 				}
 			}(projectID)
