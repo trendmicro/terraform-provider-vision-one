@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
@@ -14,12 +15,35 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	msgraph "github.com/microsoftgraph/msgraph-sdk-go"
 	"github.com/microsoftgraph/msgraph-sdk-go/models"
+	"github.com/microsoftgraph/msgraph-sdk-go/oauth2permissiongrants"
 	"github.com/microsoftgraph/msgraph-sdk-go/serviceprincipals"
 
 	"terraform-provider-vision-one/internal/trendmicro"
 	cam "terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/api"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/resources/config"
+)
+
+// Well-known Microsoft first-party app IDs (same across all tenants).
+const (
+	// microsoftGraphAppID is the app ID for Microsoft Graph.
+	microsoftGraphAppID = "00000003-0000-0000-c000-000000000000"
+)
+
+// Required app role IDs (Application permissions) to be granted via appRoleAssignedTo on Microsoft Graph.
+const (
+	// graphDirectoryReadAllRoleID grants Directory.Read.All on Microsoft Graph.
+	graphDirectoryReadAllRoleID = "7ab1d382-f21e-4acd-a863-ba3e13f7da61"
+	// graphUserReadAllRoleID grants User.Read.All (application) on Microsoft Graph.
+	graphUserReadAllRoleID = "df021288-bdef-4463-88db-98f22de89214"
+	// graphPolicyReadAllRoleID grants Policy.Read.All (application) on Microsoft Graph.
+	graphPolicyReadAllRoleID = "246dd0d5-5bd0-4def-940b-0421030a5b68"
+)
+
+// Required delegated permission scopes to be granted via oauth2PermissionGrants on Microsoft Graph.
+const (
+	// microsoftGraphDelegatedScopes are the delegated scopes that require admin consent on Microsoft Graph.
+	microsoftGraphDelegatedScopes = "User.Read.All"
 )
 
 type servicePrincipal struct {
@@ -73,7 +97,7 @@ func (r *servicePrincipal) Schema(_ context.Context, _ resource.SchemaRequest, r
 				MarkdownDescription: "Display name of the Azure App Registration.",
 				Computed:            true,
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"principal_id": schema.StringAttribute{
@@ -87,7 +111,7 @@ func (r *servicePrincipal) Schema(_ context.Context, _ resource.SchemaRequest, r
 				MarkdownDescription: "Azure Subscription ID that will be connected to Trend Vision One.",
 				Computed:            true,
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 		},
@@ -144,6 +168,11 @@ func (r *servicePrincipal) Create(ctx context.Context, req resource.CreateReques
 	plan.ObjectID = types.StringValue(plan.ObjectID.ValueString())
 	plan.PrincipalID = types.StringValue(*servicePrincipalID)
 	plan.SubscriptionID = types.StringValue(subscriptionID)
+
+	if err := grantAdminConsent(ctx, client.GraphClient, *servicePrincipalID); err != nil {
+		resp.Diagnostics.AddError("[Service Principal][Create] Failed to grant admin consent", err.Error())
+		return
+	}
 
 	diags = resp.State.Set(ctx, &plan)
 	resp.Diagnostics.Append(diags...)
@@ -253,6 +282,11 @@ func (r *servicePrincipal) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
+	if err := grantAdminConsent(ctx, client.GraphClient, state.PrincipalID.ValueString()); err != nil {
+		resp.Diagnostics.AddError("[Service Principal][Update] Failed to grant admin consent", err.Error())
+		return
+	}
+
 	state.ClientID = types.StringValue(state.ClientID.ValueString())
 	state.DisplayName = types.StringValue(displayName)
 	state.ObjectID = types.StringValue(state.ObjectID.ValueString())
@@ -341,4 +375,188 @@ func (r *servicePrincipal) createServicePrincipal(ctx context.Context, client *m
 	}
 
 	return createdSp.GetId(), nil
+}
+
+// grantAdminConsent grants admin consent for API permissions required by the service principal.
+// It mirrors the shell script's grant_admin_consent_00000002_* and grant_admin_consent_00000003_* functions.
+// It checks whether all permissions are already in place and skips the entire operation if so,
+// avoiding unnecessary Graph API mutations on every Terraform apply when nothing has changed.
+func grantAdminConsent(ctx context.Context, client *msgraph.GraphServiceClient, servicePrincipalID string) error {
+	tflog.Info(ctx, fmt.Sprintf("[Service Principal] Starting admin consent grant for service principal %s", servicePrincipalID))
+
+	msGraphSPID, err := resolveServicePrincipalID(ctx, client, microsoftGraphAppID)
+	if err != nil {
+		return fmt.Errorf("resolving Microsoft Graph service principal: %w", err)
+	}
+	tflog.Info(ctx, fmt.Sprintf("[Service Principal] Resolved Microsoft Graph SP: appId=%s → objectId=%s", microsoftGraphAppID, msGraphSPID))
+
+	alreadyGranted, err := arePermissionsGranted(ctx, client, servicePrincipalID, msGraphSPID)
+	if err != nil {
+		return fmt.Errorf("checking existing permissions: %w", err)
+	}
+	if alreadyGranted {
+		tflog.Info(ctx, fmt.Sprintf("[Service Principal] Admin consent already fully granted for service principal %s, skipping", servicePrincipalID))
+		return nil
+	}
+	tflog.Info(ctx, fmt.Sprintf("[Service Principal] Permissions not fully granted for service principal %s, proceeding to grant", servicePrincipalID))
+
+	if err := grantOAuth2PermissionGrant(ctx, client, servicePrincipalID, msGraphSPID, microsoftGraphDelegatedScopes); err != nil {
+		return fmt.Errorf("granting Microsoft Graph delegated permissions: %w", err)
+	}
+	if err := grantAppRoleAssignment(ctx, client, servicePrincipalID, msGraphSPID, graphDirectoryReadAllRoleID); err != nil {
+		return fmt.Errorf("granting Microsoft Graph Directory.Read.All role: %w", err)
+	}
+	if err := grantAppRoleAssignment(ctx, client, servicePrincipalID, msGraphSPID, graphUserReadAllRoleID); err != nil {
+		return fmt.Errorf("granting Microsoft Graph User.Read.All role: %w", err)
+	}
+	if err := grantAppRoleAssignment(ctx, client, servicePrincipalID, msGraphSPID, graphPolicyReadAllRoleID); err != nil {
+		return fmt.Errorf("granting Microsoft Graph Policy.Read.All role: %w", err)
+	}
+
+	tflog.Info(ctx, fmt.Sprintf("[Service Principal] Admin consent granted for service principal %s", servicePrincipalID))
+	return nil
+}
+
+// arePermissionsGranted returns true only if all required oauth2PermissionGrants and appRoleAssignments
+// on Microsoft Graph are already present. This lets Update skip all mutations when the SP has not changed.
+func arePermissionsGranted(ctx context.Context, client *msgraph.GraphServiceClient, servicePrincipalID, msGraphSPID string) (bool, error) {
+	// Check oauth2PermissionGrants for Microsoft Graph
+	filter := fmt.Sprintf("clientId eq '%s' and resourceId eq '%s'", servicePrincipalID, msGraphSPID)
+	result, err := client.Oauth2PermissionGrants().Get(ctx, &oauth2permissiongrants.Oauth2PermissionGrantsRequestBuilderGetRequestConfiguration{
+		QueryParameters: &oauth2permissiongrants.Oauth2PermissionGrantsRequestBuilderGetQueryParameters{
+			Filter: &filter,
+		},
+	})
+	if err != nil {
+		return false, fmt.Errorf("querying oauth2PermissionGrants for Microsoft Graph: %w", err)
+	}
+	if len(result.GetValue()) == 0 {
+		return false, nil
+	}
+
+	// Check appRoleAssignments on the client SP (our app) instead of querying
+	// appRoleAssignedTo on the resource SP (Microsoft Graph), because the latter
+	// does not support $filter on principalId and returns "Links to EntitlementGrant
+	// are not supported between specified entities".
+	requiredRoles := []string{graphDirectoryReadAllRoleID, graphUserReadAllRoleID, graphPolicyReadAllRoleID}
+	roleResult, err := client.ServicePrincipals().ByServicePrincipalId(servicePrincipalID).AppRoleAssignments().Get(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("querying appRoleAssignments for service principal: %w", err)
+	}
+	assigned := make(map[string]bool)
+	for _, a := range roleResult.GetValue() {
+		if a.GetAppRoleId() != nil && a.GetResourceId() != nil {
+			resID, _ := uuid.Parse(msGraphSPID)
+			if *a.GetResourceId() == resID {
+				assigned[a.GetAppRoleId().String()] = true
+			}
+		}
+	}
+	for _, role := range requiredRoles {
+		if !assigned[role] {
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
+// resolveServicePrincipalID looks up the object ID of a first-party service principal by its appId.
+func resolveServicePrincipalID(ctx context.Context, client *msgraph.GraphServiceClient, appID string) (string, error) {
+	filter := fmt.Sprintf("appId eq '%s'", appID)
+	result, err := client.ServicePrincipals().Get(ctx, &serviceprincipals.ServicePrincipalsRequestBuilderGetRequestConfiguration{
+		QueryParameters: &serviceprincipals.ServicePrincipalsRequestBuilderGetQueryParameters{
+			Filter: &filter,
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("querying service principal for appId %s: %w", appID, err)
+	}
+	list := result.GetValue()
+	if len(list) == 0 {
+		return "", fmt.Errorf("service principal for appId %s not found in tenant", appID)
+	}
+	id := list[0].GetId()
+	if id == nil {
+		return "", fmt.Errorf("service principal for appId %s has no object ID", appID)
+	}
+	return *id, nil
+}
+
+// grantOAuth2PermissionGrant ensures a delegated permission grant (admin consent) exists for the
+// given clientSPID → resourceSPID with the specified scope.
+// If a grant already exists it is PATCHed with the desired scope; otherwise a new grant is POSTed.
+// This avoids the "revoke and recreate" cycle that causes the Azure Portal to briefly show
+// "Unable to determine status" after every Terraform apply.
+func grantOAuth2PermissionGrant(ctx context.Context, client *msgraph.GraphServiceClient, clientSPID, resourceSPID, scope string) error {
+	filter := fmt.Sprintf("clientId eq '%s' and resourceId eq '%s'", clientSPID, resourceSPID)
+	existing, err := client.Oauth2PermissionGrants().Get(ctx, &oauth2permissiongrants.Oauth2PermissionGrantsRequestBuilderGetRequestConfiguration{
+		QueryParameters: &oauth2permissiongrants.Oauth2PermissionGrantsRequestBuilderGetQueryParameters{
+			Filter: &filter,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("listing oauth2PermissionGrants for resource %s: %w", resourceSPID, err)
+	}
+
+	grants := existing.GetValue()
+	if len(grants) > 0 {
+		grantID := grants[0].GetId()
+		if grantID == nil {
+			return fmt.Errorf("existing oauth2PermissionGrant for resource %s has no ID", resourceSPID)
+		}
+		patch := models.NewOAuth2PermissionGrant()
+		patch.SetScope(&scope)
+		_, err = client.Oauth2PermissionGrants().ByOAuth2PermissionGrantId(*grantID).Patch(ctx, patch, nil)
+		if err != nil {
+			return fmt.Errorf("patching oauth2PermissionGrant %s: %w", *grantID, err)
+		}
+		tflog.Info(ctx, fmt.Sprintf("[Service Principal] oauth2PermissionGrant for resource %s patched scope=%q", resourceSPID, scope))
+		return nil
+	}
+
+	grant := models.NewOAuth2PermissionGrant()
+	grant.SetClientId(&clientSPID)
+	grant.SetConsentType(toStringPointer("AllPrincipals"))
+	grant.SetResourceId(&resourceSPID)
+	grant.SetScope(&scope)
+	_, err = client.Oauth2PermissionGrants().Post(ctx, grant, nil)
+	if err != nil {
+		return fmt.Errorf("posting oauth2PermissionGrant for resource %s: %w", resourceSPID, err)
+	}
+	tflog.Info(ctx, fmt.Sprintf("[Service Principal] oauth2PermissionGrant for resource %s created scope=%q", resourceSPID, scope))
+	return nil
+}
+
+// grantAppRoleAssignment assigns an application role to the service principal on a resource SP.
+// Errors indicating the assignment already exists are silently ignored.
+func grantAppRoleAssignment(ctx context.Context, client *msgraph.GraphServiceClient, principalID, resourceSPID, appRoleIDStr string) error {
+	principalUUID, err := uuid.Parse(principalID)
+	if err != nil {
+		return fmt.Errorf("parsing principal UUID %s: %w", principalID, err)
+	}
+	resourceUUID, err := uuid.Parse(resourceSPID)
+	if err != nil {
+		return fmt.Errorf("parsing resource UUID %s: %w", resourceSPID, err)
+	}
+	appRoleUUID, err := uuid.Parse(appRoleIDStr)
+	if err != nil {
+		return fmt.Errorf("parsing appRoleId UUID %s: %w", appRoleIDStr, err)
+	}
+
+	assignment := models.NewAppRoleAssignment()
+	assignment.SetPrincipalId(&principalUUID)
+	assignment.SetResourceId(&resourceUUID)
+	assignment.SetAppRoleId(&appRoleUUID)
+
+	_, err = client.ServicePrincipals().ByServicePrincipalId(resourceSPID).AppRoleAssignedTo().Post(ctx, assignment, nil)
+	if err != nil {
+		if strings.Contains(err.Error(), "Permission being assigned already exists on the object") {
+			tflog.Info(ctx, fmt.Sprintf("[Service Principal] appRoleAssignment role=%s on resource %s already exists, skipping", appRoleIDStr, resourceSPID))
+			return nil
+		}
+		return err
+	}
+	tflog.Info(ctx, fmt.Sprintf("[Service Principal] appRoleAssignment role=%s granted on resource %s", appRoleIDStr, resourceSPID))
+	return nil
 }
