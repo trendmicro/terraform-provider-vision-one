@@ -55,7 +55,7 @@ func (r *appRegistration) Schema(_ context.Context, _ resource.SchemaRequest, re
 				MarkdownDescription: "Display name of the Azure App Registration.",
 				Computed:            true,
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"object_id": schema.StringAttribute{
@@ -69,7 +69,7 @@ func (r *appRegistration) Schema(_ context.Context, _ resource.SchemaRequest, re
 				MarkdownDescription: "Azure Subscription ID that will be connected to Trend Vision One.",
 				Computed:            true,
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"tenant_id": schema.StringAttribute{
@@ -204,18 +204,17 @@ func (r *appRegistration) Update(ctx context.Context, req resource.UpdateRequest
 	}
 
 	displayName := getDisplayName(plan.DisplayName, subscriptionID)
-	app := models.NewApplication()
-	app.SetDisplayName(&displayName)
+	app := r.buildApplicationModel(displayName)
 
 	_, err = client.GraphClient.Applications().ByApplicationId(state.ObjectID.ValueString()).Patch(ctx, app, nil)
 	if err != nil {
-		resp.Diagnostics.AddError("Update App Registration Failed", err.Error())
+		resp.Diagnostics.AddError("[App Registration][Update] Update Failed", err.Error())
 		return
 	}
 
-	state.ClientID = types.StringValue(*app.GetAppId())
+	state.ClientID = types.StringValue(state.ClientID.ValueString())
 	state.DisplayName = types.StringValue(displayName)
-	state.ObjectID = types.StringValue(*app.GetId())
+	state.ObjectID = types.StringValue(state.ObjectID.ValueString())
 	state.SubscriptionID = plan.SubscriptionID
 	state.TenantID = plan.TenantID
 
@@ -296,7 +295,7 @@ func (r *appRegistration) buildAADResourceAccess() models.RequiredResourceAccess
 	aadAccess := models.NewRequiredResourceAccess()
 	aadAccess.SetResourceAppId(toStringPointer("00000002-0000-0000-c000-000000000000"))
 	aadAccess.SetResourceAccess([]models.ResourceAccessable{
-		buildResourceAccess("311a71cc-e848-46a1-bdf8-97ff7156d8e6", "Scope"),
+		buildResourceAccess("311a71cc-e848-46a1-bdf8-97ff7156d8e6", "Scope"), // User.Read (Delegated)
 	})
 	return aadAccess
 }
