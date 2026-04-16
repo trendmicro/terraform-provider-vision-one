@@ -54,3 +54,24 @@ func (c *CrmClient) ListAccounts(cloudProviderFilter *CloudProviderFilter) (*clo
 
 	return &accounts, nil
 }
+
+func (c *CrmClient) GetAccountById(accountID string) (*cloud_risk_management_dto.Account, error) {
+	apiURL := fmt.Sprintf("%s/beta/cloudPosture/accounts/%s", c.Client.HostURL, accountID)
+	req, err := http.NewRequest("GET", apiURL, http.NoBody)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.Client.DoRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	account := cloud_risk_management_dto.Account{}
+	err = json.Unmarshal(resp, &account)
+	if err != nil {
+		return nil, err
+	}
+
+	return &account, nil
+}
