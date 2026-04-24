@@ -67,6 +67,7 @@ type CAMConnectorResourceModel struct {
 	Features                  types.List                  `tfsdk:"features"`
 	FeaturesConfigFilePath    types.String                `tfsdk:"features_config_file_path"`
 	PreventDestroy            types.Bool                  `tfsdk:"prevent_destroy"`
+	AutoDiscoveryEnabled      types.Bool                  `tfsdk:"auto_discovery_enabled"`
 }
 
 type ManagementGroupDetailsModel struct {
@@ -232,6 +233,12 @@ func (r *CAMConnectorResource) Schema(ctx context.Context, req resource.SchemaRe
 				MarkdownDescription: "When `true` (default), Terraform destroy will not call the CAM DELETE API, preserving the subscription in CAM. Set to `false` to allow the subscription to be removed from CAM on destroy.",
 				Default:             booldefault.StaticBool(true),
 			},
+			"auto_discovery_enabled": schema.BoolAttribute{
+				Optional:            true,
+				Computed:            true,
+				MarkdownDescription: "Whether the auto-subscription-discovery Terraform template variant has been applied for this management group. Set by the CAM template generator; defaults to `false`. Only read on the primary subscription.",
+				Default:             booldefault.StaticBool(false),
+			},
 		},
 	}
 }
@@ -354,6 +361,7 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		IsTFProviderDeployed:      true,
 		Features:                  features,
 		FeaturesConfigFilePath:    plan.FeaturesConfigFilePath.ValueString(),
+		AutoDiscoveryEnabled:      plan.AutoDiscoveryEnabled.ValueBool(),
 	}
 
 	createErr := r.client.CreateSubscription(body)
@@ -485,6 +493,7 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 			IsTFProviderDeployed:      true,
 			Features:                  stateFeatures,
 			FeaturesConfigFilePath:    state.FeaturesConfigFilePath.ValueString(),
+			AutoDiscoveryEnabled:      state.AutoDiscoveryEnabled.ValueBool(),
 		}
 
 		err = r.client.CreateSubscription(body)
@@ -529,6 +538,7 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 			IsTFProviderDeployed:      true,
 			Features:                  stateFeatures,
 			FeaturesConfigFilePath:    state.FeaturesConfigFilePath.ValueString(),
+			AutoDiscoveryEnabled:      state.AutoDiscoveryEnabled.ValueBool(),
 		}
 
 		err = r.client.UpdateSubscription(res.SubscriptionID, body)
@@ -703,6 +713,7 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		IsTFProviderDeployed:      true,
 		Features:                  features,
 		FeaturesConfigFilePath:    plan.FeaturesConfigFilePath.ValueString(),
+		AutoDiscoveryEnabled:      plan.AutoDiscoveryEnabled.ValueBool(),
 	}
 
 	err := r.client.UpdateSubscription(subscriptionID, body)
@@ -768,6 +779,7 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		state.FeaturesConfigFilePath = plan.FeaturesConfigFilePath
 		// Preserve prevent_destroy from plan since API does not return it
 		state.PreventDestroy = plan.PreventDestroy
+		state.AutoDiscoveryEnabled = plan.AutoDiscoveryEnabled
 	}
 
 	resp.State.Set(ctx, &state)
