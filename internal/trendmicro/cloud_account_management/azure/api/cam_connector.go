@@ -26,6 +26,7 @@ type CreateSubscriptionRequest struct {
 	IsTFProviderDeployed      bool                           `json:"isTFProviderDeployed"`
 	Features                  *[]Feature                     `json:"features,omitempty"`
 	FeaturesConfigFilePath    string                         `json:"featuresConfigFilePath,omitempty"`
+	AutoDiscoveryEnabled      bool                           `json:"autoDiscoveryEnabled"`
 }
 
 type ModifySubscriptionRequest struct {
@@ -42,6 +43,7 @@ type ModifySubscriptionRequest struct {
 	IsTFProviderDeployed      bool                           `json:"isTFProviderDeployed"`
 	Features                  *[]Feature                     `json:"features,omitempty"`
 	FeaturesConfigFilePath    string                         `json:"featuresConfigFilePath,omitempty"`
+	AutoDiscoveryEnabled      bool                           `json:"autoDiscoveryEnabled"`
 }
 
 type SubscriptionResponse struct {

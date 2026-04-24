@@ -37,6 +37,8 @@ resource "visionone_cam_connector_azure" "cam_connector_with_mgmt_group" {
   is_shared_application     = true
   cam_deployed_region       = "us-east-1"
 
+  auto_discovery_enabled = false
+
   management_group_details = {
     id           = "mg-production"
     display_name = "Production Management Group"
@@ -216,6 +218,7 @@ resource "visionone_cam_connector_azure" "cam_connector_with_features_config" {
 
 ### Optional
 
+- `auto_discovery_enabled` (Boolean) Whether the auto-subscription-discovery Terraform template variant has been applied for this management group. Set by the CAM template generator; defaults to `false`. Only read on the primary subscription.
 - `cam_deployed_region` (String) Region where CAM is deployed for this connector
 - `connected_security_services` (Attributes List) List of connected security services for the connector (see [below for nested schema](#nestedatt--connected_security_services))
 - `description` (String) Description of the connector
