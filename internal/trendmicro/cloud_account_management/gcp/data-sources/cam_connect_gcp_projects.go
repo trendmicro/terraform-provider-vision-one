@@ -302,13 +302,19 @@ func (d *CAMCloudAccountsDataSource) Read(ctx context.Context, req datasource.Re
 		)
 		return
 	}
-	if response != nil {
-		if len(response.CloudAccounts) == 0 {
-			tflog.Warn(ctx, "[CAM Cloud Accounts] No cloud accounts found")
-			data.CloudAccounts = make([]CAMCloudAccountModel, 0)
-		} else {
-			data.CloudAccounts = convertToCAMCloudAccountModel(response)
-		}
+
+	data.CloudAccounts = make([]CAMCloudAccountModel, 0)
+	if response == nil || len(response.CloudAccounts) == 0 {
+		tflog.Warn(ctx, "[CAM Cloud Accounts] No connected GCP projects found", map[string]interface{}{
+			"project_ids": projectIDs,
+			"state":       state,
+		})
+		resp.Diagnostics.AddWarning(
+			"No Connected GCP Projects Found",
+			fmt.Sprintf("There are currently no connected GCP projects in Vision One for the requested filters. The data source will return an empty cloud_accounts list. Project IDs: %v, state: %q.", projectIDs, state),
+		)
+	} else {
+		data.CloudAccounts = convertToCAMCloudAccountModel(response)
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)

@@ -50,29 +50,31 @@ type ModifyProjectRequest struct {
 	ProjectNumber             string                         `json:"projectNumber" validate:"omitempty,max=254"`
 	ServiceAccountId          string                         `json:"serviceAccountId" validate:"omitempty,max=254"`
 	ServiceAccountKey         string                         `json:"serviceAccountKey,omitempty"`
+	WorkloadIdentityPoolId    *string                        `json:"workloadIdentityPoolId"`
 }
 
 type ProjectResponse struct {
-	CamDeployedRegion         string                         `json:"camDeployedRegion,omitempty"`
-	CloudAssetCount           int                            `json:"cloudAssetCount,omitempty"`
-	ConnectedSecurityServices []cam.ConnectedSecurityService `json:"connectedSecurityServices,omitempty"`
-	CreatedTime               string                         `json:"createdDateTime,omitempty"`
-	Description               string                         `json:"description,omitempty"`
-	IsCAMCloudASRMEnabled     bool                           `json:"isCAMCloudASRMEnabled,omitempty"`
-	IsCloudASRMEditable       *bool                          `json:"isCloudASRMEditable,omitempty"`
-	IsCloudASRMEnabled        *bool                          `json:"isCloudASRMEnabled,omitempty"`
-	LastSyncedDateTime        string                         `json:"lastSyncedDateTime,omitempty"`
-	Name                      string                         `json:"name,omitempty"`
-	ProjectID                 string                         `json:"projectId,omitempty"`
-	ProjectName               string                         `json:"projectName,omitempty"`
-	ProjectNumber             string                         `json:"id,omitempty"`
-	ServiceAccountEmail       string                         `json:"serviceAccountEmail,omitempty"` // GCP Service Account Email
-	ServiceAccountID          string                         `json:"serviceAccountId,omitempty"`    // GCP Service Account Unique ID
-	State                     string                         `json:"state,omitempty"`
-	Sources                   []string                       `json:"sources,omitempty"`
-	UpdatedDateTime           string                         `json:"updatedDateTime,omitempty"`
-	Folder                    *FolderDetails                 `json:"folder,omitempty"`
-	Organization              *OrganizationDetails           `json:"organization,omitempty"`
+	CamDeployedRegion          string                         `json:"camDeployedRegion,omitempty"`
+	CloudAssetCount            int                            `json:"cloudAssetCount,omitempty"`
+	ConnectedSecurityServices  []cam.ConnectedSecurityService `json:"connectedSecurityServices,omitempty"`
+	CreatedTime                string                         `json:"createdDateTime,omitempty"`
+	Description                string                         `json:"description,omitempty"`
+	IsCAMCloudASRMEnabled      bool                           `json:"isCAMCloudASRMEnabled,omitempty"`
+	IsCloudASRMEditable        *bool                          `json:"isCloudASRMEditable,omitempty"`
+	IsCloudASRMEnabled         *bool                          `json:"isCloudASRMEnabled,omitempty"`
+	LastSyncedDateTime         string                         `json:"lastSyncedDateTime,omitempty"`
+	Name                       string                         `json:"name,omitempty"`
+	ProjectID                  string                         `json:"projectId,omitempty"`
+	ProjectName                string                         `json:"projectName,omitempty"`
+	ProjectNumber              string                         `json:"id,omitempty"`
+	ServiceAccountEmail        string                         `json:"serviceAccountEmail,omitempty"`
+	ServiceAccountID           string                         `json:"serviceAccountId,omitempty"`
+	State                      string                         `json:"state,omitempty"`
+	Sources                    []string                       `json:"sources,omitempty"`
+	UpdatedDateTime            string                         `json:"updatedDateTime,omitempty"`
+	WorkloadIdentityPoolID     string                         `json:"workloadIdentityPoolId,omitempty"`
+	Folder                     *FolderDetails                 `json:"folder,omitempty"`
+	Organization               *OrganizationDetails           `json:"organization,omitempty"`
 }
 
 func (c *CamClient) CreateProject(data *CreateProjectRequest) error {
