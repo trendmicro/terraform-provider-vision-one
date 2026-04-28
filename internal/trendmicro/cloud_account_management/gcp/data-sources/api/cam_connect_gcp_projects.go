@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	cam "terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
 
@@ -131,20 +132,15 @@ func (c *CamClient) DescribeGCPProject(projectId string) (*CAMCloudAccount, erro
 
 	resp, err := c.Client.DoRequestWithFullResponse(req)
 	if err != nil {
+		if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "Could not find") {
+			return nil, nil
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil
-	}
-
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		// when the error is caused by 404 Not Found, return nil without error
-		if resp.StatusCode == http.StatusNotFound {
-			return nil, nil
-		}
 		return nil, err
 	}
 

@@ -3,7 +3,9 @@ package resources
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"terraform-provider-vision-one/internal/trendmicro"
@@ -244,9 +246,6 @@ func (r *CAMConnectorResource) Schema(ctx context.Context, req resource.SchemaRe
 			"updated_date_time": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "Timestamp when the connector was last updated",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
 			},
 		},
 	}
@@ -299,14 +298,23 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 
+	serviceAccountEmail, err := waitForGCPServiceAccountIAMReady(ctx, plan.ServiceAccountKey.ValueString(), plan.ProjectNumber.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"[CAM Connector GCP][Create] Service Account IAM Not Ready",
+			fmt.Sprintf("The service account key is valid but its IAM bindings have not yet propagated in GCP. Error: %s", err.Error()),
+		)
+		return
+	}
+
 	connectedServices, serviceDiags := r.extractConnectedServices(ctx, plan.ConnectedSecurityServices)
 	resp.Diagnostics.Append(serviceDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	tflog.Debug(ctx, fmt.Sprintf("[CAM Connector GCP][Create] Creating GCP connector with name: %s, project number: %s",
-		plan.Name.ValueString(), plan.ProjectNumber.ValueString()))
+	tflog.Debug(ctx, fmt.Sprintf("[CAM Connector GCP][Create] Creating GCP connector with name: %s, project number: %s, service account email: %s",
+		plan.Name.ValueString(), plan.ProjectNumber.ValueString(), serviceAccountEmail))
 
 	// Convert organization details if provided
 	organization, convertDiags := r.convertOrganizationDetailsToAPI(ctx, plan.Organization)
@@ -336,12 +344,17 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		ServiceAccountKey:         plan.ServiceAccountKey.ValueString(),
 	}
 
+	unlock := lockGCPCAMProjectMutation(plan.ProjectNumber.ValueString())
+	defer unlock()
+
 	createErr := r.client.CreateProject(body)
 	if createErr != nil {
 		// If the project already exists, adopt it instead of failing
 		if strings.Contains(createErr.Error(), "account-exist") {
 			tflog.Info(ctx, fmt.Sprintf("[CAM Connector GCP][Create] Project %s already exists, adopting existing resource",
 				plan.ProjectNumber.ValueString()))
+		} else if addGCPNetworkRetryDiagnostic(&resp.Diagnostics, "Create", createErr) {
+			return
 		} else {
 			resp.Diagnostics.AddError(
 				"[CAM Connector GCP][Create] Error Adding Project",
@@ -351,11 +364,14 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		}
 	}
 
-	res, err := r.client.ReadProject(plan.ProjectNumber.ValueString())
+	res, err := waitForGCPProjectConnected(ctx, r.client, plan.ProjectNumber.ValueString())
 	if err != nil {
+		if addGCPNetworkRetryDiagnostic(&resp.Diagnostics, "Create", err) {
+			return
+		}
 		resp.Diagnostics.AddError(
-			"[CAM Connector GCP][Create] Error Describing Project",
-			fmt.Sprintf("[CAM Connector GCP][Create] Failed to describe project: %s", err),
+			"[CAM Connector GCP][Create] Project Not Connected",
+			fmt.Sprintf("[CAM Connector GCP][Create] %s", err),
 		)
 		return
 	}
@@ -384,6 +400,9 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 	if err != nil {
 		if strings.Contains(err.Error(), `"code": "NotFound"`) {
 			resp.State.RemoveResource(ctx)
+			return
+		}
+		if addGCPNetworkRetryDiagnostic(&resp.Diagnostics, "Read", err) {
 			return
 		}
 		resp.Diagnostics.AddError(
@@ -464,6 +483,15 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		serviceAccountKey = state.ServiceAccountKey.ValueString()
 	}
 
+	serviceAccountEmail, err := waitForGCPServiceAccountKeyReady(ctx, serviceAccountKey)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"[CAM Connector GCP][Update] Service Account Key Not Ready",
+			fmt.Sprintf("The provided service_account_key is valid but GCP has not finished propagating it yet. Error: %s", err.Error()),
+		)
+		return
+	}
+
 	body := &api.ModifyProjectRequest{
 		CamDeployedRegion:         plan.CamDeployedRegion.ValueString(),
 		ConnectedSecurityServices: connectedServices,
@@ -478,8 +506,17 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		ServiceAccountKey:         serviceAccountKey,
 	}
 
-	err := r.client.UpdateProject(projectNumber, body)
+	tflog.Debug(ctx, fmt.Sprintf("[CAM Connector GCP][Update] Serializing CAM mutation for project %s with service account email: %s",
+		projectNumber, serviceAccountEmail))
+
+	unlock := lockGCPCAMProjectMutation(projectNumber)
+	defer unlock()
+
+	err = r.client.UpdateProject(projectNumber, body)
 	if err != nil {
+		if addGCPNetworkRetryDiagnostic(&resp.Diagnostics, "Update", err) {
+			return
+		}
 		resp.Diagnostics.AddError(
 			"[CAM Connector GCP][Update] Error Updating Project",
 			fmt.Sprintf("[CAM Connector GCP][Update] Failed to update project: %s", err),
@@ -489,6 +526,9 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 
 	res, err := r.client.ReadProject(plan.ProjectNumber.ValueString())
 	if err != nil {
+		if addGCPNetworkRetryDiagnostic(&resp.Diagnostics, "Update", err) {
+			return
+		}
 		resp.Diagnostics.AddError(
 			"[CAM Connector GCP][Update] Error Describing Project",
 			fmt.Sprintf("[CAM Connector GCP][Update] Failed to describe project: %s", err),
@@ -520,8 +560,14 @@ func (r *CAMConnectorResource) Delete(ctx context.Context, req resource.DeleteRe
 		return
 	}
 
+	unlock := lockGCPCAMProjectMutation(state.ProjectNumber.ValueString())
+	defer unlock()
+
 	err := r.client.DeleteProject(state.ProjectNumber.ValueString())
 	if err != nil {
+		if addGCPNetworkRetryDiagnostic(&resp.Diagnostics, "Delete", err) {
+			return
+		}
 		resp.Diagnostics.AddError(
 			"[CAM Connector GCP][Delete] Error Removing Project",
 			fmt.Sprintf("[CAM Connector GCP][Delete] Failed to remove project: %s", err),
@@ -531,6 +577,36 @@ func (r *CAMConnectorResource) Delete(ctx context.Context, req resource.DeleteRe
 }
 
 // ===== Helper Functions =====
+func addGCPNetworkRetryDiagnostic(diags *diag.Diagnostics, operation string, err error) bool {
+	if !isGCPNetworkRetryableError(err) {
+		return false
+	}
+
+	diags.AddError(
+		fmt.Sprintf("[CAM Connector GCP][%s] Network Error", operation),
+		fmt.Sprintf("A network timeout occurred while communicating with the GCP API. Please wait a few minutes and re-run 'terraform apply' to retry. Details: %s", err),
+	)
+
+	return true
+}
+
+func isGCPNetworkRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && urlErr.Timeout() {
+		return true
+	}
+
+	return strings.Contains(strings.ToLower(err.Error()), "timeout")
+}
+
 func (r *CAMConnectorResource) extractConnectedServices(ctx context.Context, servicesList types.List) ([]cam.ConnectedSecurityService, diag.Diagnostics) {
 	var diags diag.Diagnostics
 	var connectedServices []cam.ConnectedSecurityService

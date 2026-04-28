@@ -37,6 +37,25 @@ const (
 
 	// GCP lifecycle state constants
 	LIFECYCLE_STATE_ACTIVE = "ACTIVE"
+
+	// Legacy GCP cleanup resource types
+	RESOURCE_TYPE_LEGACY_CLEANUP_GCS_BUCKET        = "cam_legacy_cleanup_gcs_bucket"
+	RESOURCE_TYPE_LEGACY_CLEANUP_IAM_CUSTOM_ROLE   = "cam_legacy_cleanup_iam_custom_role"
+	RESOURCE_TYPE_LEGACY_CLEANUP_WORKLOAD_IDENTITY = "cam_legacy_cleanup_workload_identity"
+	RESOURCE_TYPE_LEGACY_CLEANUP_SERVICE_ACCOUNT   = "cam_legacy_cleanup_service_account"
+
+	// Legacy GCP resource naming prefixes (matching old Terraform Package Solution)
+	LEGACY_GCP_GCS_BUCKET_PREFIX                 = "trendmicro-v1-"
+	LEGACY_GCP_STATE_FILE_NAME                   = "default.tfstate"
+	LEGACY_GCP_CUSTOM_ROLE_PREFIX                = "vision_one_cam_role_"
+	LEGACY_GCP_SERVICE_ACCOUNT_NAME              = "vision-one-service-account"
+	LEGACY_GCP_SERVICE_ACCOUNT_DISPLAY_NAME      = "Vision One Service Account"
+	LEGACY_GCP_WORKLOAD_IDENTITY_POOL_ID_PREFIX  = "v1-workload-identity-pool-"
+	LEGACY_GCP_WORKLOAD_IDENTITY_POOL_ID_PREFIX2 = "vision-one-wif-pool-"
+	LEGACY_GCP_OIDC_PROVIDER_PREFIX              = "vision-one-oidc-"
+
+	// Migration resource types
+	RESOURCE_TYPE_GCP_PROJECT_MIGRATION = "cam_gcp_project_migration"
 )
 
 var GCP_CUSTOM_ROLE_CORE_PERMISSIONS = []string{
@@ -44,6 +63,7 @@ var GCP_CUSTOM_ROLE_CORE_PERMISSIONS = []string{
 	"iam.roles.list",
 	"iam.serviceAccountKeys.create",
 	"iam.serviceAccountKeys.delete",
+	"iam.serviceAccounts.get",
 	"iam.serviceAccounts.getAccessToken",
 	"resourcemanager.tagKeys.get",
 	"resourcemanager.tagKeys.list",

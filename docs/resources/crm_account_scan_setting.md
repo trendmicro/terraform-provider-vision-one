@@ -58,7 +58,6 @@ resource "visionone_crm_account_scan_setting" "frequent_scan" {
 
 ```terraform
 # Example: Disable scanning for specific regions
-# Disabled Regions is only applicable of AWS account, please don't use it for the account of the other provider
 # This example shows how to exclude certain regions from scanning
 
 resource "visionone_crm_account_scan_setting" "exclude_regions" {
@@ -145,6 +144,14 @@ resource "visionone_crm_account_scan_setting" "comprehensive" {
   # Custom scan interval (in hours)
   # More frequent scans for production environments
   interval = 2
+
+  # Exclude specific regions from scanning
+  # Useful for regions not in use or dev/test regions
+  disabled_regions = [
+    "westus",       # Not used in production
+    "northeurope",  # Development region
+    "australiaeast" # Test region
+  ]
 
   # Optional: Temporarily disable until a specific date/time
   # Leave empty for no automatic re-enable

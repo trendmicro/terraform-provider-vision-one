@@ -2,20 +2,239 @@ package resources
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/api"
 	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/resources/config"
 
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"golang.org/x/oauth2/google"
 	"google.golang.org/api/cloudresourcemanager/v1"
 	cloudresourcemanagerv2 "google.golang.org/api/cloudresourcemanager/v2"
 	cloudresourcemanagerv3 "google.golang.org/api/cloudresourcemanager/v3"
 	"google.golang.org/api/iam/v1"
+	"google.golang.org/api/option"
 )
+
+// ===== CAM Project Mutation Utilities =====
+
+const (
+	gcpCAMProjectMutationWaitInterval = 5 * time.Second
+	gcpCAMProjectMutationWaitTimeout  = 90 * time.Second
+	gcpProjectConnectedWaitInterval   = 10 * time.Second
+	gcpProjectConnectedWaitTimeout    = 5 * time.Minute
+	gcpCloudPlatformScope             = "https://www.googleapis.com/auth/cloud-platform"
+)
+
+type gcpServiceAccountKeyPayload struct {
+	ClientEmail string `json:"client_email"`
+}
+
+var gcpCAMProjectMutationLocks sync.Map
+
+func lockGCPCAMProjectMutation(projectNumber string) func() {
+	lockValue, _ := gcpCAMProjectMutationLocks.LoadOrStore(projectNumber, &sync.Mutex{})
+	projectLock := lockValue.(*sync.Mutex)
+	projectLock.Lock()
+
+	return projectLock.Unlock
+}
+
+func waitForGCPServiceAccountKeyReady(ctx context.Context, encodedKey string) (string, error) {
+	keyJSON, err := decodeServiceAccountKey(encodedKey)
+	if err != nil {
+		return "", err
+	}
+
+	var payload gcpServiceAccountKeyPayload
+	err = json.Unmarshal(keyJSON, &payload)
+	if err != nil {
+		return "", fmt.Errorf("invalid service account key JSON: %w", err)
+	}
+	if payload.ClientEmail == "" {
+		return "", fmt.Errorf("invalid service account key JSON: missing client_email")
+	}
+
+	jwtConfig, err := google.JWTConfigFromJSON(keyJSON, gcpCloudPlatformScope)
+	if err != nil {
+		return "", fmt.Errorf("invalid service account key JSON: %w", err)
+	}
+
+	tokenSource := jwtConfig.TokenSource(ctx)
+	deadline := time.Now().Add(gcpCAMProjectMutationWaitTimeout)
+
+	for {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+
+		token, err := tokenSource.Token()
+		if err == nil && token != nil && token.AccessToken != "" {
+			return payload.ClientEmail, nil
+		}
+
+		if time.Now().After(deadline) {
+			if err == nil {
+				err = fmt.Errorf("token source returned an empty access token")
+			}
+			return "", fmt.Errorf(
+				"service account key for %s did not become usable within %s: %w",
+				payload.ClientEmail,
+				gcpCAMProjectMutationWaitTimeout,
+				err,
+			)
+		}
+
+		if err != nil {
+			tflog.Debug(ctx, fmt.Sprintf(
+				"[GCP CAM] Waiting for service account key for %s to propagate before updating CAM: %s",
+				payload.ClientEmail,
+				err,
+			))
+		}
+
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(gcpCAMProjectMutationWaitInterval):
+		}
+	}
+}
+
+// waitForGCPServiceAccountIAMReady waits until the service account key can both
+// mint a token AND call a GCP API that requires an IAM role binding. This is
+// stronger than waitForGCPServiceAccountKeyReady because token minting succeeds
+// immediately after key creation, while IAM binding propagation takes 30–120 s.
+// CAM's connectivity check requires IAM-authorized API calls, so sending a PATCH
+// before IAM is ready causes the project to go disconnected.
+func waitForGCPServiceAccountIAMReady(ctx context.Context, encodedKey, projectID string) (string, error) {
+	email, err := waitForGCPServiceAccountKeyReady(ctx, encodedKey)
+	if err != nil {
+		return "", err
+	}
+
+	clientOption, err := newClientOptionFromEncodedServiceAccountKey(ctx, encodedKey)
+	if err != nil {
+		return email, err
+	}
+
+	crmSvc, err := cloudresourcemanager.NewService(ctx, clientOption)
+	if err != nil {
+		return email, fmt.Errorf("failed to create CRM client for IAM propagation check: %w", err)
+	}
+
+	deadline := time.Now().Add(gcpCAMProjectMutationWaitTimeout)
+	for {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+
+		_, err := crmSvc.Projects.Get(projectID).Context(ctx).Do()
+		if err == nil {
+			return email, nil
+		}
+
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf(
+				"service account %s IAM bindings for project %s did not propagate within %s: %w",
+				email, projectID, gcpCAMProjectMutationWaitTimeout, err,
+			)
+		}
+
+		tflog.Debug(ctx, fmt.Sprintf(
+			"[GCP CAM] Waiting for IAM binding of %s on project %s to propagate: %s",
+			email, projectID, err,
+		))
+
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(gcpCAMProjectMutationWaitInterval):
+		}
+	}
+}
+
+// waitForGCPProjectConnected polls the CAM API until the project reaches
+// "connected" state. This is needed after a PATCH that changes the service
+// account key: CAM verifies connectivity asynchronously using GCP API calls
+// that require IAM role bindings, which can take up to ~2 minutes to propagate.
+// Returning as soon as state == "connected" avoids the race where the caller
+// reads a stale "disconnected" result and records it in Terraform state.
+func waitForGCPProjectConnected(ctx context.Context, client interface {
+	ReadProject(projectNumber string) (*api.ProjectResponse, error)
+}, projectNumber string,
+) (*api.ProjectResponse, error) {
+	deadline := time.Now().Add(gcpProjectConnectedWaitTimeout)
+	for {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
+		project, err := client.ReadProject(projectNumber)
+		if err != nil {
+			return nil, err
+		}
+
+		if project.State == "managed" || project.State == "outdated" {
+			return project, nil
+		}
+
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf(
+				"project %s did not reach connected state within %s (current state: %q); "+
+					"the service account key may not yet have sufficient GCP IAM permissions — wait a few minutes and re-run 'terraform apply'",
+				projectNumber, gcpProjectConnectedWaitTimeout, project.State,
+			)
+		}
+
+		tflog.Debug(ctx, fmt.Sprintf(
+			"[GCP CAM] Waiting for project %s to reach connected state (current: %q)",
+			projectNumber, project.State,
+		))
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(gcpProjectConnectedWaitInterval):
+		}
+	}
+}
+
+// ===== Key Decoding Utilities =====
+
+// decodeServiceAccountKey base64-decodes a service account key string into raw JSON bytes.
+func decodeServiceAccountKey(encodedKey string) ([]byte, error) {
+	keyJSON, err := base64.StdEncoding.DecodeString(encodedKey)
+	if err != nil {
+		return nil, fmt.Errorf("invalid base64-encoded service account key: %w", err)
+	}
+	return keyJSON, nil
+}
+
+// errLegacyResourceFound is a sentinel returned from Pages() callbacks to stop
+// early iteration once a matching legacy resource has been found.
+var errLegacyResourceFound = errors.New("found")
+
+func newClientOptionFromEncodedServiceAccountKey(ctx context.Context, encodedKey string) (option.ClientOption, error) {
+	keyJSON, err := decodeServiceAccountKey(encodedKey)
+	if err != nil {
+		return nil, err
+	}
+
+	creds, err := google.CredentialsFromJSON(ctx, keyJSON, gcpCloudPlatformScope)
+	if err != nil {
+		return nil, fmt.Errorf("invalid service account key JSON: %w", err)
+	}
+
+	return option.WithCredentials(creds), nil
+}
 
 // ===== Validation Utilities =====
 
