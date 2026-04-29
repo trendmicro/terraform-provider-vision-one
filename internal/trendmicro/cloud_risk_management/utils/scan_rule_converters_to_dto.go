@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -79,53 +78,69 @@ func ConvertValueToString(val interface{}) (string, bool) {
 // Model to DTO Converters (Terraform Plan -> API Request)
 // =============================================================================
 
-// ConvertScanRulesToDTO converts a slice of ScanRuleModel from the Terraform plan
-// to a slice of ScanRule DTOs for API requests.
-func ConvertScanRulesToDTO(_ context.Context, rules []ScanRuleModel) ([]cloud_risk_management_dto.ScanRule, error) {
-	result := make([]cloud_risk_management_dto.ScanRule, len(rules))
+// ConvertScanRuleToDTO converts a single ScanRuleModel to a ScanRule DTO.
+func ConvertScanRuleToDTO(rule ScanRuleModel) (cloud_risk_management_dto.ScanRule, error) {
+	result := cloud_risk_management_dto.ScanRule{
+		ID:        rule.ID.ValueString(),
+		Provider:  rule.Provider.ValueString(),
+		Enabled:   rule.Enabled.ValueBool(),
+		RiskLevel: rule.RiskLevel.ValueString(),
+	}
 
-	for i, rule := range rules {
-		result[i] = cloud_risk_management_dto.ScanRule{
-			ID:        rule.ID.ValueString(),
-			Provider:  rule.Provider.ValueString(),
-			Enabled:   rule.Enabled.ValueBool(),
-			RiskLevel: rule.RiskLevel.ValueString(),
+	result.Exceptions = ConvertExceptionsToDTO(rule.Exceptions)
+
+	if len(rule.ExtraSettings) > 0 {
+		extraSettings, err := ConvertExtraSettingsToDTO(rule.ExtraSettings)
+		if err != nil {
+			return result, err
 		}
-
-		// Convert exceptions - send to API if user specified them (even if empty)
-		if rule.Exceptions != nil {
-			result[i].Exceptions = &cloud_risk_management_dto.RuleExceptions{}
-
-			// Send FilterTags if it's not nil (user specified it)
-			if rule.Exceptions.FilterTags != nil {
-				filterTags := make([]string, len(rule.Exceptions.FilterTags))
-				for j, ft := range rule.Exceptions.FilterTags {
-					filterTags[j] = ft.ValueString()
-				}
-				result[i].Exceptions.FilterTags = filterTags
-			}
-
-			// Send ResourceIds if it's not nil (user specified it)
-			if rule.Exceptions.ResourceIds != nil {
-				resourceIds := make([]string, len(rule.Exceptions.ResourceIds))
-				for j, rid := range rule.Exceptions.ResourceIds {
-					resourceIds[j] = rid.ValueString()
-				}
-				result[i].Exceptions.ResourceIds = resourceIds
-			}
-		}
-
-		// Convert extra settings
-		if len(rule.ExtraSettings) > 0 {
-			extraSettings, err := ConvertExtraSettingsToDTO(rule.ExtraSettings)
-			if err != nil {
-				return nil, err
-			}
-			result[i].ExtraSettings = extraSettings
-		}
+		result.ExtraSettings = extraSettings
 	}
 
 	return result, nil
+}
+
+// ConvertScanRulesToDTO converts a slice of ScanRuleModel to a slice of ScanRule DTOs.
+func ConvertScanRulesToDTO(rules []ScanRuleModel) ([]cloud_risk_management_dto.ScanRule, error) {
+	result := make([]cloud_risk_management_dto.ScanRule, len(rules))
+	for i, rule := range rules {
+		converted, err := ConvertScanRuleToDTO(rule)
+		if err != nil {
+			return nil, err
+		}
+		result[i] = converted
+	}
+	return result, nil
+}
+
+// ConvertExceptionsToDTO converts a RuleExceptionsModel from the Terraform plan
+// to a RuleExceptions DTO for API requests.
+func ConvertExceptionsToDTO(exceptions *RuleExceptionsModel) *cloud_risk_management_dto.RuleExceptions {
+	if exceptions == nil {
+		return nil
+	}
+
+	result := &cloud_risk_management_dto.RuleExceptions{}
+
+	// Send FilterTags if it's not nil (user specified it)
+	if exceptions.FilterTags != nil {
+		filterTags := make([]string, len(exceptions.FilterTags))
+		for j, ft := range exceptions.FilterTags {
+			filterTags[j] = ft.ValueString()
+		}
+		result.FilterTags = filterTags
+	}
+
+	// Send ResourceIds if it's not nil (user specified it)
+	if exceptions.ResourceIds != nil {
+		resourceIds := make([]string, len(exceptions.ResourceIds))
+		for j, rid := range exceptions.ResourceIds {
+			resourceIds[j] = rid.ValueString()
+		}
+		result.ResourceIds = resourceIds
+	}
+
+	return result
 }
 
 // ConvertExtraSettingsToDTO converts a slice of ExtraSettingModel from the Terraform plan
@@ -194,7 +209,7 @@ func convertMultipleObjectValuesToDTO(setting *ExtraSettingModel, result *cloud_
 		return
 	}
 
-	result.Values = []any{}
+	vals := []any{}
 
 	for i := range setting.Values {
 		v := setting.Values[i]
@@ -238,8 +253,9 @@ func convertMultipleObjectValuesToDTO(setting *ExtraSettingModel, result *cloud_
 			}
 		}
 
-		result.Values = append(result.Values, valuesMap)
+		vals = append(vals, valuesMap)
 	}
+	result.Values = &vals
 }
 
 // convertSettingValuesToDTO is a generic helper that converts values for ExtraSettingModel.
@@ -248,10 +264,11 @@ func convertSettingValuesToDTO(
 	settingType string,
 	valueSetInput []types.String,
 	valuesInput []ExtraSettingsValuesObjectModel,
-) []any {
+) *[]any {
 	// Handle value_set for simple types
-	if IsValueSetType(settingType) && len(valueSetInput) > 0 {
-		return convertValueSetToArray(valueSetInput, settingType)
+	if IsValueSetType(settingType) && valueSetInput != nil {
+		vals := convertValueSetToArray(valueSetInput, settingType)
+		return &vals
 	}
 
 	// Handle values block
@@ -266,7 +283,7 @@ func convertSettingValuesToDTO(
 		result = append(result, valuesMap)
 	}
 
-	return result
+	return &result
 }
 
 // convertValuesObjectToMap converts common fields from a values object to a map.
@@ -310,7 +327,7 @@ func convertValuesObjectToMap(
 	}
 
 	// Handle gateway_ids field
-	if len(gatewayIds) > 0 {
+	if gatewayIds != nil {
 		gwIds := make([]string, len(gatewayIds))
 		for k, gid := range gatewayIds {
 			gwIds[k] = gid.ValueString()
