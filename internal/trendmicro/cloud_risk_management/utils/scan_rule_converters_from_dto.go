@@ -22,79 +22,45 @@ const (
 	numericTypeMultipleNumberValues      = "multiple-number-values"
 )
 
-// UpdatePlanFromProfile updates the Terraform plan/state model with data from the API response.
-func UpdatePlanFromProfile(plan *ProfileResourceModel, profile *cloud_risk_management_dto.Profile) {
-	// Create a map of original extra_settings by rule ID -> setting name
-	originalExtraSettings := make(map[string]map[string]*ExtraSettingModel)
-	for _, rule := range plan.ScanRules {
-		if len(rule.ExtraSettings) > 0 {
-			ruleID := rule.ID.ValueString()
-			originalExtraSettings[ruleID] = make(map[string]*ExtraSettingModel)
-			for i := range rule.ExtraSettings {
-				settingName := rule.ExtraSettings[i].Name.ValueString()
-				originalExtraSettings[ruleID][settingName] = &rule.ExtraSettings[i]
+// ConvertExceptionsFromDTO converts a RuleExceptions DTO from the API response
+// to a RuleExceptionsModel for the Terraform state.
+func ConvertExceptionsFromDTO(exceptions *cloud_risk_management_dto.RuleExceptions) *RuleExceptionsModel {
+	if exceptions == nil {
+		return nil
+	}
+
+	result := &RuleExceptionsModel{}
+
+	// Only set FilterTags if the API returned it (even if empty)
+	// nil means the field was not sent/returned, [] means it was sent as empty
+	if exceptions.FilterTags != nil {
+		if len(exceptions.FilterTags) > 0 {
+			filterTags := make([]types.String, len(exceptions.FilterTags))
+			for j, ft := range exceptions.FilterTags {
+				filterTags[j] = types.StringValue(ft)
 			}
+			result.FilterTags = filterTags
+		} else {
+			// Empty array was explicitly sent/returned
+			result.FilterTags = []types.String{}
 		}
 	}
 
-	plan.ID = types.StringValue(profile.ID)
-	plan.Name = types.StringValue(profile.Name)
-	plan.Description = types.StringValue(profile.Description)
-
-	// Convert scan rules back
-	if len(profile.ScanRules) > 0 {
-		plan.ScanRules = make([]ScanRuleModel, len(profile.ScanRules))
-		for i, rule := range profile.ScanRules {
-			plan.ScanRules[i] = ScanRuleModel{
-				ID:        types.StringValue(rule.ID),
-				Provider:  types.StringValue(rule.Provider),
-				Enabled:   types.BoolValue(rule.Enabled),
-				RiskLevel: types.StringValue(rule.RiskLevel),
+	// Only set ResourceIds if the API returned it (even if empty)
+	if exceptions.ResourceIds != nil {
+		if len(exceptions.ResourceIds) > 0 {
+			resourceIds := make([]types.String, len(exceptions.ResourceIds))
+			for j, rid := range exceptions.ResourceIds {
+				resourceIds[j] = types.StringValue(rid)
 			}
-
-		// Convert exceptions directly from API response
-		if rule.Exceptions != nil {
-			plan.ScanRules[i].Exceptions = &RuleExceptionsModel{}
-
-			// Only set FilterTags if the API returned it (even if empty)
-			// nil means the field was not sent/returned, [] means it was sent as empty
-			if rule.Exceptions.FilterTags != nil {
-				if len(rule.Exceptions.FilterTags) > 0 {
-					filterTags := make([]types.String, len(rule.Exceptions.FilterTags))
-					for j, ft := range rule.Exceptions.FilterTags {
-						filterTags[j] = types.StringValue(ft)
-					}
-					plan.ScanRules[i].Exceptions.FilterTags = filterTags
-				} else {
-					// Empty array was explicitly sent/returned
-					plan.ScanRules[i].Exceptions.FilterTags = []types.String{}
-				}
-			}
-
-			// Only set ResourceIds if the API returned it (even if empty)
-			if rule.Exceptions.ResourceIds != nil {
-				if len(rule.Exceptions.ResourceIds) > 0 {
-					resourceIds := make([]types.String, len(rule.Exceptions.ResourceIds))
-					for j, rid := range rule.Exceptions.ResourceIds {
-						resourceIds[j] = types.StringValue(rid)
-					}
-					plan.ScanRules[i].Exceptions.ResourceIds = resourceIds
-				} else {
-					// Empty array was explicitly sent/returned
-					plan.ScanRules[i].Exceptions.ResourceIds = []types.String{}
-				}
-			}
-		}
-
-			// Convert extra settings - always convert to match plan structure
-			if len(rule.ExtraSettings) > 0 {
-				plan.ScanRules[i].ExtraSettings = ConvertExtraSettingsFromDTO(rule.ExtraSettings, originalExtraSettings[rule.ID])
-			} else {
-				// Ensure ExtraSettings is an empty slice (not nil) to match schema
-				plan.ScanRules[i].ExtraSettings = []ExtraSettingModel{}
-			}
+			result.ResourceIds = resourceIds
+		} else {
+			// Empty array was explicitly sent/returned
+			result.ResourceIds = []types.String{}
 		}
 	}
+
+	return result
 }
 
 // ConvertExtraSettingsFromDTO converts a slice of RuleExtraSetting DTOs from the API response
@@ -166,9 +132,9 @@ func convertMultipleObjectValuesFromDTO(es *cloud_risk_management_dto.RuleExtraS
 		ValueSet: nil, // multiple-object-values doesn't use value_set
 	}
 
-	if len(es.Values) > 0 {
+	if es.Values != nil && len(*es.Values) > 0 {
 		result.Values = []ExtraSettingsValuesObjectModel{}
-		for _, value := range es.Values {
+		for _, value := range *es.Values {
 			valMap, ok := value.(map[string]interface{})
 			if !ok {
 				continue
@@ -258,9 +224,9 @@ func convertChoiceMultipleValueFromDTO(es *cloud_risk_management_dto.RuleExtraSe
 		}
 	}
 
-	if len(es.Values) > 0 {
+	if es.Values != nil && len(*es.Values) > 0 {
 		result.Values = []ExtraSettingsValuesObjectModel{}
-		for _, value := range es.Values {
+		for _, value := range *es.Values {
 			valMap, ok := value.(map[string]interface{})
 			if !ok {
 				continue
@@ -311,28 +277,35 @@ func convertDefaultTypeFromDTO(es *cloud_risk_management_dto.RuleExtraSetting, o
 		ValueSet: []types.String{},
 	}
 	// Check if the original plan used value_set for this type
-	useValueSet := origSetting != nil && len(origSetting.ValueSet) > 0
+	useValueSet := origSetting != nil && origSetting.ValueSet != nil
 
 	// For value_set types, populate value_set if original plan used it
-	if IsValueSetType(es.Type) && useValueSet && len(es.Values) > 0 {
-		valueSet := make([]types.String, 0, len(es.Values))
-		for _, value := range es.Values {
+	if IsValueSetType(es.Type) && useValueSet {
+		var esValues []any
+		if es.Values != nil {
+			esValues = *es.Values
+		}
+		valueSet := make([]types.String, 0, len(esValues))
+		for _, value := range esValues {
+			// Handle map values (e.g., {"value": "..."})
 			valMap, ok := value.(map[string]interface{})
-			if !ok {
+			if ok {
+				if val, exists := valMap["value"]; exists {
+					if strVal, ok := ConvertValueToString(val); ok {
+						valueSet = append(valueSet, types.StringValue(strVal))
+					}
+				}
 				continue
 			}
-			if val, exists := valMap["value"]; exists {
-				if strVal, ok := ConvertValueToString(val); ok {
-					valueSet = append(valueSet, types.StringValue(strVal))
-				}
+			// Handle plain string/numeric values (e.g., "eu-west-1")
+			if strVal, ok := ConvertValueToString(value); ok {
+				valueSet = append(valueSet, types.StringValue(strVal))
 			}
 		}
-		if len(valueSet) > 0 {
-			result.ValueSet = valueSet
-			result.Values = []ExtraSettingsValuesObjectModel{} // When using value_set, values should be empty list
-			result.Value = types.StringNull()                  // When using value_set, value should be null
-		}
-	} else if len(es.Values) > 0 {
+		result.ValueSet = valueSet
+		result.Values = []ExtraSettingsValuesObjectModel{} // When using value_set, values should be empty list
+		result.Value = types.StringNull()                  // When using value_set, value should be null
+	} else if es.Values != nil && len(*es.Values) > 0 {
 		// Fallback to values block for complex types or when original didn't use value_set
 		result = convertValuesBlockFromDTO(es, origSetting)
 	} else {
@@ -478,44 +451,60 @@ func convertValuesBlockFromDTO(es *cloud_risk_management_dto.RuleExtraSetting, o
 	}
 
 	result.Values = []ExtraSettingsValuesObjectModel{}
-	for _, value := range es.Values {
-		valMap, ok := value.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		// Handle value field
-		var valueStr string
-		if val, exists := valMap["value"]; exists {
-			if strVal, ok := ConvertValueToString(val); ok {
-				valueStr = strVal
+	if es.Values != nil {
+		for _, value := range *es.Values {
+			// Handle plain string/numeric values (some API responses use this format)
+			if strVal, ok := ConvertValueToString(value); ok {
+				valuesObj := ExtraSettingsValuesObjectModel{
+					Value:               types.StringValue(strVal),
+					Enabled:             types.BoolNull(),
+					VpcId:               types.StringNull(),
+					GatewayIds:          nil,
+					CustomizedTags:      types.SetNull(types.StringType),
+					CustomizedRiskLevel: types.StringNull(),
+				}
+				result.Values = append(result.Values, valuesObj)
+				continue
 			}
-		}
 
-		// For multiple-vpc-gateway-mappings, use vpcId as lookup key
-		var lookupKey string
-		if useVpcIdAsKey {
-			if vpcId, exists := valMap["vpcId"]; exists {
-				if vpcIdStr, ok := vpcId.(string); ok {
-					lookupKey = vpcIdStr
+			valMap, ok := value.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			// Handle value field
+			var valueStr string
+			if val, exists := valMap["value"]; exists {
+				if strVal, ok := ConvertValueToString(val); ok {
+					valueStr = strVal
 				}
 			}
-		} else {
-			lookupKey = valueStr
+
+			// For multiple-vpc-gateway-mappings, use vpcId as lookup key
+			var lookupKey string
+			if useVpcIdAsKey {
+				if vpcId, exists := valMap["vpcId"]; exists {
+					if vpcIdStr, ok := vpcId.(string); ok {
+						lookupKey = vpcIdStr
+					}
+				}
+			} else {
+				lookupKey = valueStr
+			}
+
+			// Look up original plan value for this entry
+			origValue := origValuesMap[lookupKey]
+
+			valuesObj := ExtraSettingsValuesObjectModel{}
+			fields := convertValuesObjectFromMap(valMap, valueStr, origValue, es.Type)
+			valuesObj.Value = fields.Value
+			valuesObj.Enabled = fields.Enabled
+			valuesObj.VpcId = fields.VpcId
+			valuesObj.GatewayIds = fields.GatewayIds
+			valuesObj.CustomizedTags = fields.CustomizedTags
+			valuesObj.CustomizedRiskLevel = fields.CustomizedRiskLevel
+			result.Values = append(result.Values, valuesObj)
 		}
-
-		// Look up original plan value for this entry
-		origValue := origValuesMap[lookupKey]
-
-		valuesObj := ExtraSettingsValuesObjectModel{}
-		fields := convertValuesObjectFromMap(valMap, valueStr, origValue, es.Type)
-		valuesObj.Value = fields.Value
-		valuesObj.Enabled = fields.Enabled
-		valuesObj.VpcId = fields.VpcId
-		valuesObj.GatewayIds = fields.GatewayIds
-		valuesObj.CustomizedTags = fields.CustomizedTags
-		valuesObj.CustomizedRiskLevel = fields.CustomizedRiskLevel
-		result.Values = append(result.Values, valuesObj)
 	}
 
 	return result

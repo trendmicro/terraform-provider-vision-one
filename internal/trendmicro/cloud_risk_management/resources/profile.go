@@ -11,14 +11,12 @@ import (
 	"terraform-provider-vision-one/pkg/dto"
 	cloud_risk_management_dto "terraform-provider-vision-one/pkg/dto/cloud_risk_management"
 
-	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
@@ -40,6 +38,14 @@ func NewProfileResource() resource.Resource {
 // profileResource is the resource implementation.
 type profileResource struct {
 	client *api.CrmClient
+}
+
+// ProfileResourceModel represents the Terraform resource model for a CRM profile.
+type ProfileResourceModel struct {
+	ID          types.String          `tfsdk:"id"`
+	Name        types.String          `tfsdk:"name"`
+	Description types.String          `tfsdk:"description"`
+	ScanRules   []utils.ScanRuleModel `tfsdk:"scan_rule"`
 }
 
 // Metadata returns the resource type name.
@@ -72,139 +78,10 @@ func (r *profileResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"scan_rule": schema.SetNestedBlock{
 				MarkdownDescription: "List of scan rule configurations.",
 				NestedObject: schema.NestedBlockObject{
-					Attributes: map[string]schema.Attribute{
-						"id": schema.StringAttribute{
-							MarkdownDescription: "The rule ID.",
-							Required:            true,
-						},
-						"provider": schema.StringAttribute{
-							MarkdownDescription: "The cloud provider. Allowed values: aws, azure, gcp, oci, alibabaCloud.",
-							Required:            true,
-							Validators: []validator.String{
-								stringvalidator.OneOf("aws", "azure", "gcp", "oci", "alibabaCloud"),
-							},
-						},
-						"enabled": schema.BoolAttribute{
-							MarkdownDescription: "Whether the rule is enabled.",
-							Required:            true,
-						},
-						"risk_level": schema.StringAttribute{
-							MarkdownDescription: "The risk level of the rule. Allowed values: LOW, MEDIUM, HIGH, VERY_HIGH, EXTREME.",
-							Required:            true,
-							Validators: []validator.String{
-								stringvalidator.OneOf("LOW", "MEDIUM", "HIGH", "VERY_HIGH", "EXTREME"),
-							},
-						},
-					},
+					Attributes: utils.ScanRuleBaseAttributes(),
 					Blocks: map[string]schema.Block{
-						"exceptions": schema.SingleNestedBlock{
-							MarkdownDescription: "Rule exceptions configuration.",
-							Attributes: map[string]schema.Attribute{
-								"filter_tags": schema.SetAttribute{
-									ElementType:         types.StringType,
-									MarkdownDescription: "List of filter tags for exceptions.",
-									Optional:            true,
-								},
-								"resource_ids": schema.SetAttribute{
-									ElementType:         types.StringType,
-									MarkdownDescription: "List of resource IDs for exceptions.",
-									Optional:            true,
-								},
-							},
-						},
-						"extra_settings": schema.ListNestedBlock{
-							MarkdownDescription: "Additional rule settings.",
-							NestedObject: schema.NestedBlockObject{
-								Attributes: map[string]schema.Attribute{
-									"name": schema.StringAttribute{
-										MarkdownDescription: "The name of the setting.",
-										Required:            true,
-									},
-									"type": schema.StringAttribute{
-										MarkdownDescription: "The type of the setting. Allowed values: `multiple-string-values`, `multiple-object-values`, `choice-multiple-value`, `choice-single-value`, `countries`, `multiple-aws-account-values`, `multiple-ip-values`, `multiple-number-values`, `regions`, `ignored-regions`, `single-number-value`, `single-string-value`, `single-value-regex`, `ttl`, `multiple-vpc-gateway-mappings`, `tags`, `choice-multiple-value-with-tags`, `choice-multiple-value-with-risk-level`.",
-										Required:            true,
-										Validators: []validator.String{
-											stringvalidator.OneOf(
-												"multiple-string-values",
-												"multiple-object-values",
-												"choice-multiple-value",
-												"choice-single-value",
-												"countries",
-												"multiple-aws-account-values",
-												"multiple-ip-values",
-												"multiple-number-values",
-												"regions",
-												"ignored-regions",
-												"single-number-value",
-												"single-string-value",
-												"single-value-regex",
-												"ttl",
-												"multiple-vpc-gateway-mappings",
-												"tags",
-												"choice-multiple-value-with-tags",
-												"choice-multiple-value-with-risk-level",
-											),
-										},
-									},
-									"value": schema.StringAttribute{
-										MarkdownDescription: "Single value for the setting. For numeric types (`ttl`, `single-number-value`, `multiple-number-values`), the value is automatically converted to a number.",
-										Optional:            true,
-									},
-									"value_set": schema.SetAttribute{
-										ElementType:         types.StringType,
-										MarkdownDescription: "Set of string values for simple types like multiple-string-values, multiple-ip-values, multiple-aws-account-values, multiple-number-values, regions, ignored-regions, tags, countries. For `multiple-number-values`, values are automatically converted to numbers.",
-										Optional:            true,
-									},
-								},
-								Blocks: map[string]schema.Block{
-									"values": schema.ListNestedBlock{
-										MarkdownDescription: "Multiple values for the setting.",
-										NestedObject: schema.NestedBlockObject{
-											Attributes: map[string]schema.Attribute{
-												"value": schema.StringAttribute{
-													MarkdownDescription: "Value for the setting. For `multiple-object-values` type, use JSON string (or `jsonencode` function). For numeric types, values are automatically converted to numbers.",
-													Optional:            true,
-												},
-												"enabled": schema.BoolAttribute{
-													MarkdownDescription: "Enabled value for the setting.",
-													Optional:            true,
-												},
-												"vpc_id": schema.StringAttribute{
-													MarkdownDescription: "The VPC ID (only for multiple-vpc-gateway-mappings type).",
-													Optional:            true,
-												},
-												"gateway_ids": schema.SetAttribute{
-													ElementType:         types.StringType,
-													MarkdownDescription: "List of gateway IDs (only for multiple-vpc-gateway-mappings type).",
-													Optional:            true,
-												},
-												"customized_tags": schema.SetAttribute{
-													ElementType:         types.StringType,
-													MarkdownDescription: "List of customized tags (only for choice-multiple-value-with-tags type).",
-													Optional:            true,
-													Computed:            true,
-												},
-												"customized_risk_level": schema.StringAttribute{
-													MarkdownDescription: "Customized risk level (only for choice-multiple-value-with-risk-level type). Allowed values: LOW, MEDIUM, HIGH, VERY_HIGH, EXTREME, NOT_CUSTOMIZED",
-													Optional:            true,
-													Computed:            true,
-													Validators: []validator.String{
-														stringvalidator.OneOf(
-															"LOW",
-															"MEDIUM",
-															"HIGH",
-															"VERY_HIGH",
-															"EXTREME",
-															"NOT_CUSTOMIZED",
-														),
-													},
-												},
-											},
-										},
-									},
-								},
-							},
-						},
+						"exceptions":     utils.ExceptionsSchemaBlock(),
+						"extra_settings": utils.ExtraSettingsSchemaBlock(),
 					},
 				},
 			},
@@ -232,7 +109,7 @@ func (r *profileResource) Configure(_ context.Context, req resource.ConfigureReq
 
 // Create creates the resource and sets the initial Terraform state.
 func (r *profileResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var plan utils.ProfileResourceModel
+	var plan ProfileResourceModel
 	diags := req.Plan.Get(ctx, &plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -246,7 +123,7 @@ func (r *profileResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 
 	if len(plan.ScanRules) > 0 {
-		scanRules, err := utils.ConvertScanRulesToDTO(ctx, plan.ScanRules)
+		scanRules, err := utils.ConvertScanRulesToDTO(plan.ScanRules)
 		if err != nil {
 			resp.Diagnostics.AddError(
 				"Unable to Create Profile",
@@ -285,7 +162,7 @@ func (r *profileResource) Create(ctx context.Context, req resource.CreateRequest
 
 // Read refreshes the Terraform state with the latest data.
 func (r *profileResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
-	var state utils.ProfileResourceModel
+	var state ProfileResourceModel
 	diags := req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -307,7 +184,7 @@ func (r *profileResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	utils.UpdatePlanFromProfile(&state, profile)
+	updatePlanFromProfile(&state, profile)
 
 	diags = resp.State.Set(ctx, &state)
 	resp.Diagnostics.Append(diags...)
@@ -315,7 +192,7 @@ func (r *profileResource) Read(ctx context.Context, req resource.ReadRequest, re
 
 // Update the resource and sets the updated Terraform state on success.
 func (r *profileResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan utils.ProfileResourceModel
+	var plan ProfileResourceModel
 	diags := req.Plan.Get(ctx, &plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -328,7 +205,7 @@ func (r *profileResource) Update(ctx context.Context, req resource.UpdateRequest
 	}
 
 	if len(plan.ScanRules) > 0 {
-		scanRules, err := utils.ConvertScanRulesToDTO(ctx, plan.ScanRules)
+		scanRules, err := utils.ConvertScanRulesToDTO(plan.ScanRules)
 		if err != nil {
 			resp.Diagnostics.AddError(
 				"Unable to Update Profile",
@@ -356,7 +233,7 @@ func (r *profileResource) Update(ctx context.Context, req resource.UpdateRequest
 
 // Delete deletes the resource and removes the Terraform state on success.
 func (r *profileResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	var state utils.ProfileResourceModel
+	var state ProfileResourceModel
 	diags := req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -389,7 +266,7 @@ type stateSetter interface {
 }
 
 // readProfileAndUpdatePlan reads the profile from the API, updates the plan/state model, and sets the state.
-func (r *profileResource) readProfileAndUpdatePlan(ctx context.Context, plan *utils.ProfileResourceModel, diagnostics *diag.Diagnostics, state stateSetter) {
+func (r *profileResource) readProfileAndUpdatePlan(ctx context.Context, plan *ProfileResourceModel, diagnostics *diag.Diagnostics, state stateSetter) {
 	profile, err := r.client.GetProfile(plan.ID.ValueString())
 	if err != nil {
 		tflog.Debug(ctx, err.Error())
@@ -401,13 +278,61 @@ func (r *profileResource) readProfileAndUpdatePlan(ctx context.Context, plan *ut
 		return
 	}
 
-	tflog.Debug(ctx, fmt.Sprintf("Plan BEFORE utils.UpdatePlanFromProfile: %+v", plan))
+	tflog.Debug(ctx, fmt.Sprintf("Plan BEFORE updatePlanFromProfile: %+v", plan))
 	tflog.Debug(ctx, fmt.Sprintf("Profile from API: %+v", profile))
 
-	utils.UpdatePlanFromProfile(plan, profile)
+	updatePlanFromProfile(plan, profile)
 
-	tflog.Debug(ctx, fmt.Sprintf("Plan AFTER utils.UpdatePlanFromProfile: %+v", plan))
+	tflog.Debug(ctx, fmt.Sprintf("Plan AFTER updatePlanFromProfile: %+v", plan))
 
 	diags := state.Set(ctx, plan)
 	diagnostics.Append(diags...)
+}
+
+// =============================================================================
+// Model Converters
+// =============================================================================
+
+// updatePlanFromProfile updates the Terraform plan/state model with data from the API response.
+func updatePlanFromProfile(plan *ProfileResourceModel, profile *cloud_risk_management_dto.Profile) {
+	// Create a map of original extra_settings by rule ID -> setting name
+	originalExtraSettings := make(map[string]map[string]*utils.ExtraSettingModel)
+	for _, rule := range plan.ScanRules {
+		if len(rule.ExtraSettings) > 0 {
+			ruleID := rule.ID.ValueString()
+			originalExtraSettings[ruleID] = make(map[string]*utils.ExtraSettingModel)
+			for i := range rule.ExtraSettings {
+				settingName := rule.ExtraSettings[i].Name.ValueString()
+				originalExtraSettings[ruleID][settingName] = &rule.ExtraSettings[i]
+			}
+		}
+	}
+
+	plan.ID = types.StringValue(profile.ID)
+	plan.Name = types.StringValue(profile.Name)
+	plan.Description = types.StringValue(profile.Description)
+
+	// Convert scan rules back
+	if len(profile.ScanRules) > 0 {
+		plan.ScanRules = make([]utils.ScanRuleModel, len(profile.ScanRules))
+		for i, rule := range profile.ScanRules {
+			plan.ScanRules[i] = utils.ScanRuleModel{
+				ID:        types.StringValue(rule.ID),
+				Provider:  types.StringValue(rule.Provider),
+				Enabled:   types.BoolValue(rule.Enabled),
+				RiskLevel: types.StringValue(rule.RiskLevel),
+			}
+
+			// Convert exceptions from API response
+			plan.ScanRules[i].Exceptions = utils.ConvertExceptionsFromDTO(rule.Exceptions)
+
+			// Convert extra settings - always convert to match plan structure
+			if len(rule.ExtraSettings) > 0 {
+				plan.ScanRules[i].ExtraSettings = utils.ConvertExtraSettingsFromDTO(rule.ExtraSettings, originalExtraSettings[rule.ID])
+			} else {
+				// Ensure ExtraSettings is an empty slice (not nil) to match schema
+				plan.ScanRules[i].ExtraSettings = []utils.ExtraSettingModel{}
+			}
+		}
+	}
 }

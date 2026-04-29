@@ -198,6 +198,7 @@ func (p *TrendMicroProvider) Resources(ctx context.Context) []func() resource.Re
 		gcpresources.NewLegacyCleanupServiceAccount,
 		gcpresources.NewGCPProjectMigrationResource,
 		crmresources.NewReportConfigResource,
+		crmresources.NewAccountScanRulesResource,
 	}
 }
 

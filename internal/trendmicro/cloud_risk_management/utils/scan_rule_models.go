@@ -4,15 +4,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-// ProfileResourceModel represents the Terraform resource model for a CRM profile.
-type ProfileResourceModel struct {
-	ID          types.String    `tfsdk:"id"`
-	Name        types.String    `tfsdk:"name"`
-	Description types.String    `tfsdk:"description"`
-	ScanRules   []ScanRuleModel `tfsdk:"scan_rule"`
-}
-
-// ScanRuleModel represents a scan rule configuration within a profile.
+// ScanRuleModel represents a scan rule configuration shared across profile and account scan rules.
 type ScanRuleModel struct {
 	ID            types.String         `tfsdk:"id"`
 	Provider      types.String         `tfsdk:"provider"`
