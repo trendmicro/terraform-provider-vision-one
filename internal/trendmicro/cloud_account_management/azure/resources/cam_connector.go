@@ -21,6 +21,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
@@ -61,7 +62,7 @@ type CAMConnectorResourceModel struct {
 	State                     types.String                `tfsdk:"state"`
 	TenantID                  types.String                `tfsdk:"tenant_id"`
 	UpdatedDateTime           types.String                `tfsdk:"updated_date_time"`
-	ManagementGroupDetails    *ManagementGroupDetailsModel `tfsdk:"management_group_details"`
+	ManagementGroupDetails    types.Object                 `tfsdk:"management_group_details"`
 	IsSharedApplication       types.Bool                  `tfsdk:"is_shared_application"`
 	CamDeployedRegion         types.String                `tfsdk:"cam_deployed_region"`
 	Features                  types.List                  `tfsdk:"features"`
@@ -809,19 +810,26 @@ func (r *CAMConnectorResource) Delete(ctx context.Context, req resource.DeleteRe
 	}
 }
 
-func convertManagementGroupDetailsToAPI(ctx context.Context, mgmtGroup *ManagementGroupDetailsModel) (api.ManagementGroupDetails, diag.Diagnostics) {
+func convertManagementGroupDetailsToAPI(ctx context.Context, mgmtGroup types.Object) (api.ManagementGroupDetails, diag.Diagnostics) {
 	var diags diag.Diagnostics
 	var managementGroup api.ManagementGroupDetails
 
-	if mgmtGroup == nil {
+	if mgmtGroup.IsNull() || mgmtGroup.IsUnknown() {
 		return managementGroup, diags
 	}
 
-	if !mgmtGroup.ID.IsNull() {
+	var model ManagementGroupDetailsModel
+	asDiags := mgmtGroup.As(ctx, &model, basetypes.ObjectAsOptions{})
+	diags.Append(asDiags...)
+	if diags.HasError() {
+		return managementGroup, diags
+	}
+
+	if !model.ID.IsNull() {
 		var excludedSubsStr string
-		if !mgmtGroup.ExcludedSubscriptions.IsNull() {
+		if !model.ExcludedSubscriptions.IsNull() {
 			var excludedSubs []string
-			convertDiags := mgmtGroup.ExcludedSubscriptions.ElementsAs(ctx, &excludedSubs, false)
+			convertDiags := model.ExcludedSubscriptions.ElementsAs(ctx, &excludedSubs, false)
 			diags.Append(convertDiags...)
 			if diags.HasError() {
 				return managementGroup, diags
@@ -830,8 +838,8 @@ func convertManagementGroupDetailsToAPI(ctx context.Context, mgmtGroup *Manageme
 			excludedSubsStr = strings.Join(excludedSubs, ",")
 		}
 		managementGroup = api.ManagementGroupDetails{
-			ID:                    mgmtGroup.ID.ValueString(),
-			DisplayName:           mgmtGroup.DisplayName.ValueString(),
+			ID:                    model.ID.ValueString(),
+			DisplayName:           model.DisplayName.ValueString(),
 			ExcludedSubscriptions: excludedSubsStr,
 		}
 	}
