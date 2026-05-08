@@ -30,20 +30,16 @@ const (
 	microsoftGraphAppID = "00000003-0000-0000-c000-000000000000"
 )
 
-// Required app role IDs (Application permissions) to be granted via appRoleAssignedTo on Microsoft Graph.
-const (
-	// graphDirectoryReadAllRoleID grants Directory.Read.All on Microsoft Graph.
-	graphDirectoryReadAllRoleID = "7ab1d382-f21e-4acd-a863-ba3e13f7da61"
-	// graphUserReadAllRoleID grants User.Read.All (application) on Microsoft Graph.
-	graphUserReadAllRoleID = "df021288-bdef-4463-88db-98f22de89214"
-	// graphPolicyReadAllRoleID grants Policy.Read.All (application) on Microsoft Graph.
-	graphPolicyReadAllRoleID = "246dd0d5-5bd0-4def-940b-0421030a5b68"
-)
-
-// Required delegated permission scopes to be granted via oauth2PermissionGrants on Microsoft Graph.
-const (
-	// microsoftGraphDelegatedScopes are the delegated scopes that require admin consent on Microsoft Graph.
-	microsoftGraphDelegatedScopes = "User.Read.All"
+// Default Microsoft Graph admin-consent values used when the caller does not
+// pass `graph_application_role_ids` / `graph_delegated_scope`. They match the
+// legacy single-account flow.
+var (
+	defaultGraphApplicationRoleIDs = []string{
+		"7ab1d382-f21e-4acd-a863-ba3e13f7da61", // Directory.Read.All
+		"df021288-bdef-4463-88db-98f22de89214", // User.Read.All (Application)
+		"246dd0d5-5bd0-4def-940b-0421030a5b68", // Policy.Read.All
+	}
+	defaultGraphDelegatedScope = "User.Read.All"
 )
 
 type servicePrincipal struct {
@@ -51,12 +47,14 @@ type servicePrincipal struct {
 }
 
 type camServicePrincipalModel struct {
-	ClientID       types.String `tfsdk:"application_id"`
-	DisplayName    types.String `tfsdk:"display_name"`
-	ObjectID       types.String `tfsdk:"app_registration_object_id"`
-	PrincipalID    types.String `tfsdk:"principal_id"`
-	SubscriptionID types.String `tfsdk:"subscription_id"`
-	Tags           []string     `tfsdk:"tags"`
+	ClientID                types.String   `tfsdk:"application_id"`
+	DisplayName             types.String   `tfsdk:"display_name"`
+	ObjectID                types.String   `tfsdk:"app_registration_object_id"`
+	PrincipalID             types.String   `tfsdk:"principal_id"`
+	SubscriptionID          types.String   `tfsdk:"subscription_id"`
+	Tags                    []string       `tfsdk:"tags"`
+	GraphApplicationRoleIDs []types.String `tfsdk:"graph_application_role_ids"`
+	GraphDelegatedScope     types.String   `tfsdk:"graph_delegated_scope"`
 }
 
 func NewServicePrincipal() resource.Resource {
@@ -114,6 +112,21 @@ func (r *servicePrincipal) Schema(_ context.Context, _ resource.SchemaRequest, r
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
+			"graph_application_role_ids": schema.ListAttribute{
+				ElementType:         types.StringType,
+				MarkdownDescription: "List of Microsoft Graph App Role UUIDs to grant on the Service Principal via `appRoleAssignedTo`. When omitted, the provider falls back to the built-in default set (Directory.Read.All, User.Read.All, Policy.Read.All).",
+				Optional:            true,
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"graph_delegated_scope": schema.StringAttribute{
+				MarkdownDescription: "Space-separated list of Microsoft Graph delegated scope names to grant via `oauth2PermissionGrants`. When omitted, the provider falls back to `User.Read.All`.",
+				Optional:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
 		},
 	}
 }
@@ -147,17 +160,13 @@ func (r *servicePrincipal) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	var bareboneVersion string
-	if len(plan.Tags) > 0 {
-		bareboneVersion = plan.Tags[0]
-		tflog.Info(ctx, fmt.Sprintf("[Service Principal] Using provided barebone version: %s", bareboneVersion))
-	} else {
-		// throw a error if the user does not provide a version
+	if len(plan.Tags) == 0 {
 		resp.Diagnostics.AddError("[Service Principal][Create] Missing barebone version", "The barebone version is required to create the Service Principal. Please provide a version in the `tags` attribute, e.g., `Version:2.0.1842`.")
 		return
 	}
+	tflog.Info(ctx, fmt.Sprintf("[Service Principal] Using provided barebone version: %s", plan.Tags[0]))
 
-	servicePrincipalID, err := r.createServicePrincipal(ctx, client.GraphClient, plan.ClientID.ValueStringPointer(), &bareboneVersion)
+	servicePrincipalID, err := r.createServicePrincipal(ctx, client.GraphClient, plan.ClientID.ValueStringPointer(), plan.Tags)
 	if err != nil {
 		resp.Diagnostics.AddError("[Service Principal][Create] Failed to create service principal", err.Error())
 		return
@@ -169,7 +178,8 @@ func (r *servicePrincipal) Create(ctx context.Context, req resource.CreateReques
 	plan.PrincipalID = types.StringValue(*servicePrincipalID)
 	plan.SubscriptionID = types.StringValue(subscriptionID)
 
-	if err := grantAdminConsent(ctx, client.GraphClient, *servicePrincipalID); err != nil {
+	roleIDs, scope := resolveAdminConsentInputs(plan.GraphApplicationRoleIDs, plan.GraphDelegatedScope)
+	if err := grantAdminConsent(ctx, client.GraphClient, *servicePrincipalID, roleIDs, scope); err != nil {
 		resp.Diagnostics.AddError("[Service Principal][Create] Failed to grant admin consent", err.Error())
 		return
 	}
@@ -272,17 +282,20 @@ func (r *servicePrincipal) Update(ctx context.Context, req resource.UpdateReques
 	} else {
 		tflog.Info(ctx, fmt.Sprintf("[Service Principal] Using provided barebone version: %s", plan.Tags[0]))
 	}
-	app := models.NewApplication()
-	app.SetDisplayName(&displayName)
-	app.SetTags(tags)
 
-	_, err = client.GraphClient.Applications().ByApplicationId(state.ObjectID.ValueString()).Patch(ctx, app, nil)
+	// Patch the Service Principal (not the App Registration) so that the audit's
+	// `servicePrincipals(appId='...').tags` query sees the full tag list — both
+	// the `Version:...` barebone tag and the `<feature-id>=<version>` feature tag.
+	spPatch := models.NewServicePrincipal()
+	spPatch.SetTags(tags)
+	_, err = client.GraphClient.ServicePrincipals().ByServicePrincipalId(state.PrincipalID.ValueString()).Patch(ctx, spPatch, nil)
 	if err != nil {
-		resp.Diagnostics.AddError("Update Service Principal Failed", err.Error())
+		resp.Diagnostics.AddError("[Service Principal][Update] Failed to patch service principal tags", err.Error())
 		return
 	}
 
-	if err := grantAdminConsent(ctx, client.GraphClient, state.PrincipalID.ValueString()); err != nil {
+	roleIDs, scope := resolveAdminConsentInputs(plan.GraphApplicationRoleIDs, plan.GraphDelegatedScope)
+	if err := grantAdminConsent(ctx, client.GraphClient, state.PrincipalID.ValueString(), roleIDs, scope); err != nil {
 		resp.Diagnostics.AddError("[Service Principal][Update] Failed to grant admin consent", err.Error())
 		return
 	}
@@ -293,6 +306,8 @@ func (r *servicePrincipal) Update(ctx context.Context, req resource.UpdateReques
 	state.PrincipalID = types.StringValue(state.PrincipalID.ValueString())
 	state.SubscriptionID = plan.SubscriptionID
 	state.Tags = tags
+	state.GraphApplicationRoleIDs = plan.GraphApplicationRoleIDs
+	state.GraphDelegatedScope = plan.GraphDelegatedScope
 
 	diags = resp.State.Set(ctx, &state)
 	resp.Diagnostics.Append(diags...)
@@ -351,7 +366,7 @@ func (r *servicePrincipal) Configure(ctx context.Context, req resource.Configure
 	tflog.Debug(ctx, "[Service Principal] Service Principal resource configured successfully")
 }
 
-func (r *servicePrincipal) createServicePrincipal(ctx context.Context, client *msgraph.GraphServiceClient, applicationID, templateVersion *string) (*string, error) {
+func (r *servicePrincipal) createServicePrincipal(ctx context.Context, client *msgraph.GraphServiceClient, applicationID *string, tags []string) (*string, error) {
 	// Check if service principal already exists before creating (idempotency)
 	filter := fmt.Sprintf("appId eq '%s'", *applicationID)
 	existing, err := client.ServicePrincipals().Get(ctx, &serviceprincipals.ServicePrincipalsRequestBuilderGetRequestConfiguration{
@@ -367,7 +382,9 @@ func (r *servicePrincipal) createServicePrincipal(ctx context.Context, client *m
 	sp := models.NewServicePrincipal()
 	sp.SetAppId(applicationID)
 	sp.SetAppRoleAssignmentRequired(toBoolPointer(true))
-	sp.SetTags([]string{*templateVersion})
+	// Persist the full caller-supplied tag list so downstream audits can read both
+	// the barebone `Version:...` tag and any `<feature-id>=<version>` feature tags.
+	sp.SetTags(tags)
 
 	createdSp, err := client.ServicePrincipals().Post(ctx, sp, nil)
 	if err != nil {
@@ -377,11 +394,39 @@ func (r *servicePrincipal) createServicePrincipal(ctx context.Context, client *m
 	return createdSp.GetId(), nil
 }
 
+// resolveAdminConsentInputs decides which Microsoft Graph App Role IDs and
+// delegated scope string to grant. Caller-supplied values win; otherwise we
+// fall back to the legacy default set so existing single-account flows that
+// don't pass these new attributes keep working.
+func resolveAdminConsentInputs(planRoleIDs []types.String, planScope types.String) (roleIDs []string, scope string) {
+	roleIDs = defaultGraphApplicationRoleIDs
+	if len(planRoleIDs) > 0 {
+		roleIDs = make([]string, 0, len(planRoleIDs))
+		for _, id := range planRoleIDs {
+			if v := id.ValueString(); v != "" {
+				roleIDs = append(roleIDs, v)
+			}
+		}
+	}
+	scope = defaultGraphDelegatedScope
+	if !planScope.IsNull() && !planScope.IsUnknown() {
+		if v := planScope.ValueString(); v != "" {
+			scope = v
+		}
+	}
+	return roleIDs, scope
+}
+
 // grantAdminConsent grants admin consent for API permissions required by the service principal.
 // It mirrors the shell script's grant_admin_consent_00000002_* and grant_admin_consent_00000003_* functions.
 // It checks whether all permissions are already in place and skips the entire operation if so,
 // avoiding unnecessary Graph API mutations on every Terraform apply when nothing has changed.
-func grantAdminConsent(ctx context.Context, client *msgraph.GraphServiceClient, servicePrincipalID string) error {
+//
+// `appRoleIDs` is the set of Microsoft Graph App Role UUIDs to grant via
+// `appRoleAssignedTo`. `delegatedScope` is the space-separated scope string to
+// grant via `oauth2PermissionGrants`. Both are derived from the resource's
+// optional inputs (with the legacy default set as fallback).
+func grantAdminConsent(ctx context.Context, client *msgraph.GraphServiceClient, servicePrincipalID string, appRoleIDs []string, delegatedScope string) error {
 	tflog.Info(ctx, fmt.Sprintf("[Service Principal] Starting admin consent grant for service principal %s", servicePrincipalID))
 
 	msGraphSPID, err := resolveServicePrincipalID(ctx, client, microsoftGraphAppID)
@@ -390,7 +435,7 @@ func grantAdminConsent(ctx context.Context, client *msgraph.GraphServiceClient, 
 	}
 	tflog.Info(ctx, fmt.Sprintf("[Service Principal] Resolved Microsoft Graph SP: appId=%s → objectId=%s", microsoftGraphAppID, msGraphSPID))
 
-	alreadyGranted, err := arePermissionsGranted(ctx, client, servicePrincipalID, msGraphSPID)
+	alreadyGranted, err := arePermissionsGranted(ctx, client, servicePrincipalID, msGraphSPID, appRoleIDs)
 	if err != nil {
 		return fmt.Errorf("checking existing permissions: %w", err)
 	}
@@ -400,17 +445,13 @@ func grantAdminConsent(ctx context.Context, client *msgraph.GraphServiceClient, 
 	}
 	tflog.Info(ctx, fmt.Sprintf("[Service Principal] Permissions not fully granted for service principal %s, proceeding to grant", servicePrincipalID))
 
-	if err := grantOAuth2PermissionGrant(ctx, client, servicePrincipalID, msGraphSPID, microsoftGraphDelegatedScopes); err != nil {
+	if err := grantOAuth2PermissionGrant(ctx, client, servicePrincipalID, msGraphSPID, delegatedScope); err != nil {
 		return fmt.Errorf("granting Microsoft Graph delegated permissions: %w", err)
 	}
-	if err := grantAppRoleAssignment(ctx, client, servicePrincipalID, msGraphSPID, graphDirectoryReadAllRoleID); err != nil {
-		return fmt.Errorf("granting Microsoft Graph Directory.Read.All role: %w", err)
-	}
-	if err := grantAppRoleAssignment(ctx, client, servicePrincipalID, msGraphSPID, graphUserReadAllRoleID); err != nil {
-		return fmt.Errorf("granting Microsoft Graph User.Read.All role: %w", err)
-	}
-	if err := grantAppRoleAssignment(ctx, client, servicePrincipalID, msGraphSPID, graphPolicyReadAllRoleID); err != nil {
-		return fmt.Errorf("granting Microsoft Graph Policy.Read.All role: %w", err)
+	for _, roleID := range appRoleIDs {
+		if err := grantAppRoleAssignment(ctx, client, servicePrincipalID, msGraphSPID, roleID); err != nil {
+			return fmt.Errorf("granting Microsoft Graph App Role %s: %w", roleID, err)
+		}
 	}
 
 	tflog.Info(ctx, fmt.Sprintf("[Service Principal] Admin consent granted for service principal %s", servicePrincipalID))
@@ -419,7 +460,7 @@ func grantAdminConsent(ctx context.Context, client *msgraph.GraphServiceClient, 
 
 // arePermissionsGranted returns true only if all required oauth2PermissionGrants and appRoleAssignments
 // on Microsoft Graph are already present. This lets Update skip all mutations when the SP has not changed.
-func arePermissionsGranted(ctx context.Context, client *msgraph.GraphServiceClient, servicePrincipalID, msGraphSPID string) (bool, error) {
+func arePermissionsGranted(ctx context.Context, client *msgraph.GraphServiceClient, servicePrincipalID, msGraphSPID string, requiredRoles []string) (bool, error) {
 	// Check oauth2PermissionGrants for Microsoft Graph
 	filter := fmt.Sprintf("clientId eq '%s' and resourceId eq '%s'", servicePrincipalID, msGraphSPID)
 	result, err := client.Oauth2PermissionGrants().Get(ctx, &oauth2permissiongrants.Oauth2PermissionGrantsRequestBuilderGetRequestConfiguration{
@@ -438,7 +479,6 @@ func arePermissionsGranted(ctx context.Context, client *msgraph.GraphServiceClie
 	// appRoleAssignedTo on the resource SP (Microsoft Graph), because the latter
 	// does not support $filter on principalId and returns "Links to EntitlementGrant
 	// are not supported between specified entities".
-	requiredRoles := []string{graphDirectoryReadAllRoleID, graphUserReadAllRoleID, graphPolicyReadAllRoleID}
 	roleResult, err := client.ServicePrincipals().ByServicePrincipalId(servicePrincipalID).AppRoleAssignments().Get(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("querying appRoleAssignments for service principal: %w", err)

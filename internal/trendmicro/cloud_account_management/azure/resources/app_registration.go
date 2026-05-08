@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -24,12 +25,22 @@ type appRegistration struct {
 	client *api.CamClient
 }
 
+// resourceAccessEntryModel represents one entry in the requiredResourceAccess
+// list — a permission UUID with its Microsoft Graph "type" ("Role" for
+// Application permissions, "Scope" for Delegated permissions).
+type resourceAccessEntryModel struct {
+	ID   types.String `tfsdk:"id"`
+	Type types.String `tfsdk:"type"`
+}
+
 type camAppRegistrationModel struct {
-	ClientID       types.String `tfsdk:"application_id"`
-	DisplayName    types.String `tfsdk:"display_name"`
-	ObjectID       types.String `tfsdk:"object_id"`
-	SubscriptionID types.String `tfsdk:"subscription_id"`
-	TenantID       types.String `tfsdk:"tenant_id"`
+	ClientID               types.String               `tfsdk:"application_id"`
+	DisplayName            types.String               `tfsdk:"display_name"`
+	ObjectID               types.String               `tfsdk:"object_id"`
+	SubscriptionID         types.String               `tfsdk:"subscription_id"`
+	TenantID               types.String               `tfsdk:"tenant_id"`
+	GraphResourceAccess    []resourceAccessEntryModel `tfsdk:"graph_resource_access"`
+	AADGraphResourceAccess []resourceAccessEntryModel `tfsdk:"aad_graph_resource_access"`
 }
 
 func NewAppRegistration() resource.Resource {
@@ -79,6 +90,44 @@ func (r *appRegistration) Schema(_ context.Context, _ resource.SchemaRequest, re
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
+			"graph_resource_access": schema.ListNestedAttribute{
+				MarkdownDescription: "Microsoft Graph (`00000003-0000-0000-c000-000000000000`) `requiredResourceAccess` entries to declare on the App Registration. Each entry is `{id, type}` where `type` is `\"Role\"` for Application permissions or `\"Scope\"` for Delegated permissions. When omitted, the provider falls back to the built-in default set.",
+				Optional:            true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"id": schema.StringAttribute{
+							Required:            true,
+							MarkdownDescription: "Permission UUID.",
+						},
+						"type": schema.StringAttribute{
+							Required:            true,
+							MarkdownDescription: "Permission type — `Role` (Application) or `Scope` (Delegated).",
+						},
+					},
+				},
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"aad_graph_resource_access": schema.ListNestedAttribute{
+				MarkdownDescription: "Azure Active Directory Graph (`00000002-0000-0000-c000-000000000000`) `requiredResourceAccess` entries. Same shape as `graph_resource_access`. When omitted, the provider falls back to the built-in default (`User.Read` Delegated).",
+				Optional:            true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"id": schema.StringAttribute{
+							Required:            true,
+							MarkdownDescription: "Permission UUID.",
+						},
+						"type": schema.StringAttribute{
+							Required:            true,
+							MarkdownDescription: "Permission type — `Role` (Application) or `Scope` (Delegated).",
+						},
+					},
+				},
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.UseStateForUnknown(),
+				},
+			},
 		},
 	}
 }
@@ -104,7 +153,7 @@ func (r *appRegistration) Create(ctx context.Context, req resource.CreateRequest
 	}
 
 	displayName := getDisplayName(plan.DisplayName, subscriptionID)
-	app := r.buildApplicationModel(displayName)
+	app := r.buildApplicationModel(displayName, plan.GraphResourceAccess, plan.AADGraphResourceAccess)
 
 	createdApp, err := client.GraphClient.Applications().Post(ctx, app, nil)
 	if err != nil {
@@ -204,7 +253,7 @@ func (r *appRegistration) Update(ctx context.Context, req resource.UpdateRequest
 	}
 
 	displayName := getDisplayName(plan.DisplayName, subscriptionID)
-	app := r.buildApplicationModel(displayName)
+	app := r.buildApplicationModel(displayName, plan.GraphResourceAccess, plan.AADGraphResourceAccess)
 
 	_, err = client.GraphClient.Applications().ByApplicationId(state.ObjectID.ValueString()).Patch(ctx, app, nil)
 	if err != nil {
@@ -281,36 +330,54 @@ func buildResourceAccess(idStr, typ string) models.ResourceAccessable {
 	return ra
 }
 
-func (r *appRegistration) buildApplicationModel(displayName string) models.Applicationable {
+// Default Microsoft Graph permission UUIDs used when the caller does not pass
+// `graph_resource_access`. Matches the legacy single-account App Registration
+// manifest before the dynamic-permission migration.
+var defaultGraphResourceAccess = []resourceAccessEntryModel{
+	{ID: types.StringValue("e1fe6dd8-ba31-4d61-89e7-88639da4683d"), Type: types.StringValue("Scope")}, // User.Read (Delegated)
+	{ID: types.StringValue("a154be20-db9c-4678-8ab7-66f6cc099a59"), Type: types.StringValue("Scope")}, // User.Read.All (Delegated)
+	{ID: types.StringValue("7ab1d382-f21e-4acd-a863-ba3e13f7da61"), Type: types.StringValue("Role")},  // Directory.Read.All (Application)
+	{ID: types.StringValue("df021288-bdef-4463-88db-98f22de89214"), Type: types.StringValue("Role")},  // User.Read.All (Application)
+	{ID: types.StringValue("246dd0d5-5bd0-4def-940b-0421030a5b68"), Type: types.StringValue("Role")},  // Policy.Read.All (Application)
+}
+
+// Default Azure AD Graph permission UUIDs used when the caller does not pass
+// `aad_graph_resource_access`.
+var defaultAADGraphResourceAccess = []resourceAccessEntryModel{
+	{ID: types.StringValue("311a71cc-e848-46a1-bdf8-97ff7156d8e6"), Type: types.StringValue("Scope")}, // User.Read (Delegated)
+}
+
+func (r *appRegistration) buildApplicationModel(
+	displayName string,
+	graphAccess []resourceAccessEntryModel,
+	aadGraphAccess []resourceAccessEntryModel,
+) models.Applicationable {
+	if len(graphAccess) == 0 {
+		graphAccess = defaultGraphResourceAccess
+	}
+	if len(aadGraphAccess) == 0 {
+		aadGraphAccess = defaultAADGraphResourceAccess
+	}
+
 	app := models.NewApplication()
 	app.SetDisplayName(&displayName)
 	app.SetRequiredResourceAccess([]models.RequiredResourceAccessable{
-		r.buildAADResourceAccess(),
-		r.buildGraphResourceAccess(),
+		buildRequiredResourceAccess("00000002-0000-0000-c000-000000000000", aadGraphAccess),
+		buildRequiredResourceAccess("00000003-0000-0000-c000-000000000000", graphAccess),
 	})
 	return app
 }
 
-func (r *appRegistration) buildAADResourceAccess() models.RequiredResourceAccessable {
-	aadAccess := models.NewRequiredResourceAccess()
-	aadAccess.SetResourceAppId(toStringPointer("00000002-0000-0000-c000-000000000000"))
-	aadAccess.SetResourceAccess([]models.ResourceAccessable{
-		buildResourceAccess("311a71cc-e848-46a1-bdf8-97ff7156d8e6", "Scope"), // User.Read (Delegated)
-	})
-	return aadAccess
-}
+func buildRequiredResourceAccess(resourceAppID string, entries []resourceAccessEntryModel) models.RequiredResourceAccessable {
+	access := models.NewRequiredResourceAccess()
+	access.SetResourceAppId(toStringPointer(resourceAppID))
 
-func (r *appRegistration) buildGraphResourceAccess() models.RequiredResourceAccessable {
-	graphAccess := models.NewRequiredResourceAccess()
-	graphAccess.SetResourceAppId(toStringPointer("00000003-0000-0000-c000-000000000000"))
-	graphAccess.SetResourceAccess([]models.ResourceAccessable{
-		buildResourceAccess("e1fe6dd8-ba31-4d61-89e7-88639da4683d", "Scope"),
-		buildResourceAccess("a154be20-db9c-4678-8ab7-66f6cc099a59", "Scope"),
-		buildResourceAccess("7ab1d382-f21e-4acd-a863-ba3e13f7da61", "Role"),
-		buildResourceAccess("df021288-bdef-4463-88db-98f22de89214", "Role"),
-		buildResourceAccess("246dd0d5-5bd0-4def-940b-0421030a5b68", "Role"),
-	})
-	return graphAccess
+	out := make([]models.ResourceAccessable, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, buildResourceAccess(e.ID.ValueString(), e.Type.ValueString()))
+	}
+	access.SetResourceAccess(out)
+	return access
 }
 
 // getIssuerURL returns the issuer URL based on the CAM deployment region
@@ -336,6 +403,8 @@ func getIssuerURL(deployRegion string) string {
 		return "https://cloudaccounts-uk.xdr.trendmicro.com"
 	case "za":
 		return "https://cloudaccounts-za.xdr.trendmicro.com"
+	case "id":
+		return "https://cloudaccounts-id.xdr.trendmicro.com"
 	default:
 		return "https://cloudaccounts-us.xdr.trendmicro.com"
 	}
