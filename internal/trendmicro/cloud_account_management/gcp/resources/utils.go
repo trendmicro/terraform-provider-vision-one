@@ -660,6 +660,240 @@ func DeleteServiceAccountKey(
 	return nil
 }
 
+// AddFolderIAMBinding adds an IAM binding for a member on a GCP folder.
+func AddFolderIAMBinding(ctx context.Context, gcpClients *api.GCPClients, folderID, member, role string) error {
+	resource := fmt.Sprintf("folders/%s", folderID)
+	for attempt := 0; attempt < config.IAM_POLICY_MAX_RETRIES; attempt++ {
+		policy, err := gcpClients.CRMClientV2.Folders.GetIamPolicy(resource, &cloudresourcemanagerv2.GetIamPolicyRequest{}).Context(ctx).Do()
+		if err != nil {
+			return fmt.Errorf("failed to get folder IAM policy: %w", err)
+		}
+
+		alreadyBound := false
+		var binding *cloudresourcemanagerv2.Binding
+		for _, b := range policy.Bindings {
+			if b.Role == role {
+				binding = b
+				break
+			}
+		}
+		if binding != nil {
+			for _, m := range binding.Members {
+				if m == member {
+					alreadyBound = true
+					break
+				}
+			}
+			if !alreadyBound {
+				binding.Members = append(binding.Members, member)
+			}
+		} else {
+			policy.Bindings = append(policy.Bindings, &cloudresourcemanagerv2.Binding{
+				Role:    role,
+				Members: []string{member},
+			})
+		}
+
+		if alreadyBound {
+			return nil
+		}
+
+		_, err = gcpClients.CRMClientV2.Folders.SetIamPolicy(resource, &cloudresourcemanagerv2.SetIamPolicyRequest{Policy: policy}).Context(ctx).Do()
+		if err != nil {
+			if strings.Contains(err.Error(), "409") || strings.Contains(err.Error(), "412") || strings.Contains(err.Error(), "etag") {
+				waitTime := time.Duration(config.IAM_POLICY_RETRY_INITIAL_WAIT*(1<<attempt)) * time.Second
+				if waitTime > config.IAM_POLICY_RETRY_MAX_WAIT*time.Second {
+					waitTime = config.IAM_POLICY_RETRY_MAX_WAIT * time.Second
+				}
+				time.Sleep(waitTime)
+				continue
+			}
+			return fmt.Errorf("failed to set folder IAM policy: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("failed to update folder IAM policy after %d retries", config.IAM_POLICY_MAX_RETRIES)
+}
+
+// RemoveFolderIAMBinding removes an IAM binding for a member on a GCP folder.
+func RemoveFolderIAMBinding(ctx context.Context, gcpClients *api.GCPClients, folderID, member, role string) error {
+	resource := fmt.Sprintf("folders/%s", folderID)
+	for attempt := 0; attempt < config.IAM_POLICY_MAX_RETRIES; attempt++ {
+		policy, err := gcpClients.CRMClientV2.Folders.GetIamPolicy(resource, &cloudresourcemanagerv2.GetIamPolicyRequest{}).Context(ctx).Do()
+		if err != nil {
+			return fmt.Errorf("failed to get folder IAM policy: %w", err)
+		}
+
+		for i, binding := range policy.Bindings {
+			if binding.Role == role {
+				var newMembers []string
+				for _, m := range binding.Members {
+					if m != member {
+						newMembers = append(newMembers, m)
+					}
+				}
+				if len(newMembers) == 0 {
+					policy.Bindings = append(policy.Bindings[:i], policy.Bindings[i+1:]...)
+				} else {
+					binding.Members = newMembers
+				}
+				break
+			}
+		}
+
+		_, err = gcpClients.CRMClientV2.Folders.SetIamPolicy(resource, &cloudresourcemanagerv2.SetIamPolicyRequest{Policy: policy}).Context(ctx).Do()
+		if err != nil {
+			if strings.Contains(err.Error(), "409") || strings.Contains(err.Error(), "412") || strings.Contains(err.Error(), "etag") {
+				waitTime := time.Duration(config.IAM_POLICY_RETRY_INITIAL_WAIT*(1<<attempt)) * time.Second
+				if waitTime > config.IAM_POLICY_RETRY_MAX_WAIT*time.Second {
+					waitTime = config.IAM_POLICY_RETRY_MAX_WAIT * time.Second
+				}
+				time.Sleep(waitTime)
+				continue
+			}
+			return fmt.Errorf("failed to set folder IAM policy: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("failed to update folder IAM policy after %d retries", config.IAM_POLICY_MAX_RETRIES)
+}
+
+// HasFolderRoleBinding checks if a member has a specific role binding on a GCP folder.
+func HasFolderRoleBinding(ctx context.Context, gcpClients *api.GCPClients, folderID, member, role string) (bool, error) {
+	resource := fmt.Sprintf("folders/%s", folderID)
+	policy, err := gcpClients.CRMClientV2.Folders.GetIamPolicy(resource, &cloudresourcemanagerv2.GetIamPolicyRequest{}).Context(ctx).Do()
+	if err != nil {
+		return false, fmt.Errorf("failed to get folder IAM policy: %w", err)
+	}
+	for _, binding := range policy.Bindings {
+		if binding.Role == role {
+			for _, m := range binding.Members {
+				if m == member {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
+}
+
+// AddOrgIAMBinding adds an IAM binding for a member on a GCP organization.
+func AddOrgIAMBinding(ctx context.Context, gcpClients *api.GCPClients, orgID, member, role string) error {
+	resource := fmt.Sprintf("organizations/%s", orgID)
+	for attempt := 0; attempt < config.IAM_POLICY_MAX_RETRIES; attempt++ {
+		policy, err := gcpClients.CRMClient.Organizations.GetIamPolicy(resource, &cloudresourcemanager.GetIamPolicyRequest{}).Context(ctx).Do()
+		if err != nil {
+			return fmt.Errorf("failed to get organization IAM policy: %w", err)
+		}
+
+		alreadyBound := false
+		var binding *cloudresourcemanager.Binding
+		for _, b := range policy.Bindings {
+			if b.Role == role {
+				binding = b
+				break
+			}
+		}
+		if binding != nil {
+			for _, m := range binding.Members {
+				if m == member {
+					alreadyBound = true
+					break
+				}
+			}
+			if !alreadyBound {
+				binding.Members = append(binding.Members, member)
+			}
+		} else {
+			policy.Bindings = append(policy.Bindings, &cloudresourcemanager.Binding{
+				Role:    role,
+				Members: []string{member},
+			})
+		}
+
+		if alreadyBound {
+			return nil
+		}
+
+		_, err = gcpClients.CRMClient.Organizations.SetIamPolicy(resource, &cloudresourcemanager.SetIamPolicyRequest{Policy: policy}).Context(ctx).Do()
+		if err != nil {
+			if strings.Contains(err.Error(), "409") || strings.Contains(err.Error(), "412") || strings.Contains(err.Error(), "etag") {
+				waitTime := time.Duration(config.IAM_POLICY_RETRY_INITIAL_WAIT*(1<<attempt)) * time.Second
+				if waitTime > config.IAM_POLICY_RETRY_MAX_WAIT*time.Second {
+					waitTime = config.IAM_POLICY_RETRY_MAX_WAIT * time.Second
+				}
+				time.Sleep(waitTime)
+				continue
+			}
+			return fmt.Errorf("failed to set organization IAM policy: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("failed to update organization IAM policy after %d retries", config.IAM_POLICY_MAX_RETRIES)
+}
+
+// RemoveOrgIAMBinding removes an IAM binding for a member on a GCP organization.
+func RemoveOrgIAMBinding(ctx context.Context, gcpClients *api.GCPClients, orgID, member, role string) error {
+	resource := fmt.Sprintf("organizations/%s", orgID)
+	for attempt := 0; attempt < config.IAM_POLICY_MAX_RETRIES; attempt++ {
+		policy, err := gcpClients.CRMClient.Organizations.GetIamPolicy(resource, &cloudresourcemanager.GetIamPolicyRequest{}).Context(ctx).Do()
+		if err != nil {
+			return fmt.Errorf("failed to get organization IAM policy: %w", err)
+		}
+
+		for i, binding := range policy.Bindings {
+			if binding.Role == role {
+				var newMembers []string
+				for _, m := range binding.Members {
+					if m != member {
+						newMembers = append(newMembers, m)
+					}
+				}
+				if len(newMembers) == 0 {
+					policy.Bindings = append(policy.Bindings[:i], policy.Bindings[i+1:]...)
+				} else {
+					binding.Members = newMembers
+				}
+				break
+			}
+		}
+
+		_, err = gcpClients.CRMClient.Organizations.SetIamPolicy(resource, &cloudresourcemanager.SetIamPolicyRequest{Policy: policy}).Context(ctx).Do()
+		if err != nil {
+			if strings.Contains(err.Error(), "409") || strings.Contains(err.Error(), "412") || strings.Contains(err.Error(), "etag") {
+				waitTime := time.Duration(config.IAM_POLICY_RETRY_INITIAL_WAIT*(1<<attempt)) * time.Second
+				if waitTime > config.IAM_POLICY_RETRY_MAX_WAIT*time.Second {
+					waitTime = config.IAM_POLICY_RETRY_MAX_WAIT * time.Second
+				}
+				time.Sleep(waitTime)
+				continue
+			}
+			return fmt.Errorf("failed to set organization IAM policy: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("failed to update organization IAM policy after %d retries", config.IAM_POLICY_MAX_RETRIES)
+}
+
+// HasOrgRoleBinding checks if a member has a specific role binding on a GCP organization.
+func HasOrgRoleBinding(ctx context.Context, gcpClients *api.GCPClients, orgID, member, role string) (bool, error) {
+	resource := fmt.Sprintf("organizations/%s", orgID)
+	policy, err := gcpClients.CRMClient.Organizations.GetIamPolicy(resource, &cloudresourcemanager.GetIamPolicyRequest{}).Context(ctx).Do()
+	if err != nil {
+		return false, fmt.Errorf("failed to get organization IAM policy: %w", err)
+	}
+	for _, binding := range policy.Bindings {
+		if binding.Role == role {
+			for _, m := range binding.Members {
+				if m == member {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
+}
+
 // ===== Tag Operation Utilities =====
 // WaitForTagOperation waits for a long-running tag operation to complete.
 func WaitForTagOperation(ctx context.Context, service *cloudresourcemanagerv3.Service, operationName string) (*cloudresourcemanagerv3.Operation, error) {

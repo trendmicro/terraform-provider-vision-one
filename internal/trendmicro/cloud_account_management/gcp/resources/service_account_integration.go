@@ -63,6 +63,8 @@ type serviceAccountIntegrationResourceModel struct {
 	ValidBefore            types.String `tfsdk:"valid_before"`
 	BoundProjects          types.List   `tfsdk:"bound_projects"`
 	BoundProjectNumbers    types.List   `tfsdk:"bound_project_numbers"`
+	// BrowserBindingResource is "folders/{id}" or "organizations/{id}" when a browser binding was applied.
+	BrowserBindingResource types.String `tfsdk:"browser_binding_resource"`
 }
 
 func NewServiceAccountIntegration() resource.Resource {
@@ -219,6 +221,13 @@ func (r *ServiceAccountIntegration) Schema(_ context.Context, _ resource.SchemaR
 				ElementType:         types.StringType,
 				MarkdownDescription: "List of project numbers corresponding to bound_projects, in the same order.",
 				Computed:            true,
+			},
+			"browser_binding_resource": schema.StringAttribute{
+				MarkdownDescription: "The folder or organization resource (folders/{id} or organizations/{id}) where the service account was granted roles/browser. Set when central_management_project_id_in_folder or central_management_project_id_in_org is used.",
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 		},
 	}
@@ -526,6 +535,66 @@ func (r *ServiceAccountIntegration) Create(ctx context.Context, req resource.Cre
 
 	tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Create] IAM bindings created in %d projects for service account: %s", len(boundProjectIds), sa.Email))
 
+	// Add roles/browser on the folder or organization so the service account can enumerate resources
+	plan.BrowserBindingResource = types.StringNull()
+	if !plan.CentralManagementProjectIDFolder.IsNull() && !plan.CentralManagementProjectIDFolder.IsUnknown() {
+		centralProjID := plan.CentralManagementProjectIDFolder.ValueString()
+		ancestry, ancestryErr := gcpClients.CRMClient.Projects.GetAncestry(centralProjID, &cloudresourcemanager.GetAncestryRequest{}).Context(ctx).Do()
+		if ancestryErr != nil {
+			resp.Diagnostics.AddError(
+				"[Service Account Key][Create] Failed to get folder ancestry",
+				fmt.Sprintf("Error getting ancestry for browser binding: %s", ancestryErr.Error()),
+			)
+			return
+		}
+		var folderID string
+		for _, ancestor := range ancestry.Ancestor {
+			if ancestor.ResourceId.Type == config.PARENT_TYPE_FOLDER {
+				folderID = ancestor.ResourceId.Id
+				break
+			}
+		}
+		if folderID != "" {
+			tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Create] Adding roles/browser to folder %s for service account %s", folderID, member))
+			if bindErr := AddFolderIAMBinding(ctx, gcpClients, folderID, member, "roles/browser"); bindErr != nil {
+				resp.Diagnostics.AddError(
+					"[Service Account Key][Create] Failed to add Browser role on folder",
+					fmt.Sprintf("Error adding roles/browser to folder %s: %s", folderID, bindErr.Error()),
+				)
+				return
+			}
+			plan.BrowserBindingResource = types.StringValue(fmt.Sprintf("folders/%s", folderID))
+		}
+	} else if !plan.CentralManagementProjectIDOrg.IsNull() && !plan.CentralManagementProjectIDOrg.IsUnknown() {
+		centralProjID := plan.CentralManagementProjectIDOrg.ValueString()
+		ancestry, ancestryErr := gcpClients.CRMClient.Projects.GetAncestry(centralProjID, &cloudresourcemanager.GetAncestryRequest{}).Context(ctx).Do()
+		if ancestryErr != nil {
+			resp.Diagnostics.AddError(
+				"[Service Account Key][Create] Failed to get organization ancestry",
+				fmt.Sprintf("Error getting ancestry for browser binding: %s", ancestryErr.Error()),
+			)
+			return
+		}
+		var orgID string
+		for _, ancestor := range ancestry.Ancestor {
+			if ancestor.ResourceId.Type == config.PARENT_TYPE_ORGANIZATION {
+				orgID = ancestor.ResourceId.Id
+				break
+			}
+		}
+		if orgID != "" {
+			tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Create] Adding roles/browser to organization %s for service account %s", orgID, member))
+			if bindErr := AddOrgIAMBinding(ctx, gcpClients, orgID, member, "roles/browser"); bindErr != nil {
+				resp.Diagnostics.AddError(
+					"[Service Account Key][Create] Failed to add Browser role on organization",
+					fmt.Sprintf("Error adding roles/browser to organization %s: %s", orgID, bindErr.Error()),
+				)
+				return
+			}
+			plan.BrowserBindingResource = types.StringValue(fmt.Sprintf("organizations/%s", orgID))
+		}
+	}
+
 	boundProjectsList, diags := types.ListValueFrom(ctx, types.StringType, boundProjectIds)
 	if diags.HasError() {
 		resp.Diagnostics.Append(diags...)
@@ -757,6 +826,28 @@ func (r *ServiceAccountIntegration) Read(ctx context.Context, req resource.ReadR
 	} else {
 		state.ValidAfter = types.StringValue(key.ValidAfterTime)
 		state.ValidBefore = types.StringValue(key.ValidBeforeTime)
+	}
+
+	// Verify folder/org browser binding still exists
+	if !state.BrowserBindingResource.IsNull() && !state.BrowserBindingResource.IsUnknown() {
+		browserResource := state.BrowserBindingResource.ValueString()
+		if folderID, ok := strings.CutPrefix(browserResource, "folders/"); ok {
+			bound, checkErr := HasFolderRoleBinding(ctx, gcpClients, folderID, member, "roles/browser")
+			if checkErr != nil {
+				tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Read] Failed to check folder browser binding: %s", checkErr.Error()))
+			} else if !bound {
+				tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Read] Drift detected: roles/browser missing on folder %s", folderID))
+				state.BrowserBindingResource = types.StringNull()
+			}
+		} else if orgID, ok := strings.CutPrefix(browserResource, "organizations/"); ok {
+			bound, checkErr := HasOrgRoleBinding(ctx, gcpClients, orgID, member, "roles/browser")
+			if checkErr != nil {
+				tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Read] Failed to check organization browser binding: %s", checkErr.Error()))
+			} else if !bound {
+				tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Read] Drift detected: roles/browser missing on organization %s", orgID))
+				state.BrowserBindingResource = types.StringNull()
+			}
+		}
 	}
 
 	if diags := resp.State.Set(ctx, state); diags.HasError() {
@@ -1132,6 +1223,23 @@ func (r *ServiceAccountIntegration) Delete(ctx context.Context, req resource.Del
 			}
 		}
 		deleteRoleWg.Wait()
+	}
+
+	// Remove roles/browser from folder or organization
+	if !state.BrowserBindingResource.IsNull() && !state.BrowserBindingResource.IsUnknown() {
+		browserResource := state.BrowserBindingResource.ValueString()
+		deleteMember := fmt.Sprintf("serviceAccount:%s", state.ServiceAccountEmail.ValueString())
+		if folderID, ok := strings.CutPrefix(browserResource, "folders/"); ok {
+			tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Removing roles/browser from folder %s", folderID))
+			if removeErr := RemoveFolderIAMBinding(ctx, gcpClients, folderID, deleteMember, "roles/browser"); removeErr != nil {
+				tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Delete] Failed to remove roles/browser from folder %s: %s", folderID, removeErr.Error()))
+			}
+		} else if orgID, ok := strings.CutPrefix(browserResource, "organizations/"); ok {
+			tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Removing roles/browser from organization %s", orgID))
+			if removeErr := RemoveOrgIAMBinding(ctx, gcpClients, orgID, deleteMember, "roles/browser"); removeErr != nil {
+				tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Delete] Failed to remove roles/browser from organization %s: %s", orgID, removeErr.Error()))
+			}
+		}
 	}
 
 	_, err = gcpClients.IAMClient.Projects.ServiceAccounts.Delete(state.ServiceAccountName.ValueString()).Context(ctx).Do()
