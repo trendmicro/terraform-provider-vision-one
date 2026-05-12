@@ -58,7 +58,7 @@ func (r *federatedIdentity) Schema(_ context.Context, _ resource.SchemaRequest, 
 				},
 			},
 			"vision_one_region_code": schema.StringAttribute{
-				MarkdownDescription: "Vision One region code for the federated identity credential. If not specified, the region code will be automatically extracted from the provider's `regional_fqdn` configuration. The supported region codes are `au`, `sg`, `us`, `in`, `jp`, `eu`, `mea`, `ca`, `uk`, `za`. . Defaults to `us` if no region can be determined.",
+				MarkdownDescription: "Vision One region code for the federated identity credential. If not specified, the region code will be automatically extracted from the provider's `regional_fqdn` configuration. The supported region codes are `au`, `sg`, `us`, `in`, `jp`, `eu`, `mea`, `ca`, `uk`, `za`, `id`. . Defaults to `us` if no region can be determined.",
 				Optional:            true,
 				Computed:            true,
 				PlanModifiers: []planmodifier.String{
@@ -158,7 +158,7 @@ func (r *federatedIdentity) Create(ctx context.Context, req resource.CreateReque
 	if !isValidVisionOneRegionCode(visionOneRegionCode) {
 		resp.Diagnostics.AddError(
 			"[Federated Identity][Create] Invalid Vision One Region Code",
-			fmt.Sprintf("Invalid region code '%s'. Supported region codes are: au, sg, us, in, jp, eu, mea, ca, uk, za", visionOneRegionCode),
+			fmt.Sprintf("Invalid region code '%s'. Supported region codes are: au, sg, us, in, jp, eu, mea, ca, uk, za, id", visionOneRegionCode),
 		)
 		return
 	}
@@ -289,7 +289,7 @@ func (r *federatedIdentity) Update(ctx context.Context, req resource.UpdateReque
 	if !isValidVisionOneRegionCode(visionOneRegionCode) {
 		resp.Diagnostics.AddError(
 			"[Federated Identity][Update] Invalid Vision One Region Code",
-			fmt.Sprintf("Invalid region code '%s'. Supported region codes are: au, sg, us, in, jp, eu, mea, ca, uk, za", visionOneRegionCode),
+			fmt.Sprintf("Invalid region code '%s'. Supported region codes are: au, sg, us, in, jp, eu, mea, ca, uk, za, id", visionOneRegionCode),
 		)
 		return
 	}
@@ -402,7 +402,8 @@ func extractRegionFromFQDN(fqdn string) string {
 		"api.sg.xdr.trendmicro.com":  "sg",                       // Singapore
 		"api.mea.xdr.trendmicro.com": "mea",                      // United Arab Emirates
 		"api.uk.xdr.trendmicro.com":  "uk",                       // United Kingdom
-		"api.za.xdr.trendmicro.com":  "za",                       // United Kingdom
+		"api.za.xdr.trendmicro.com":  "za",                       // Cape Town
+		"api.id.xdr.trendmicro.com":  "id",                       // Jakarta
 		"api.xdr.trendmicro.com":     defaultVisionOneRegionCode, // United States
 	}
 
@@ -440,7 +441,7 @@ func getVisionOneRegionCode(visionOneRegion, camDeployedRegion, regionalFQDN str
 
 // isValidVisionOneRegionCode validates the Vision One region code
 func isValidVisionOneRegionCode(region string) bool {
-	validRegions := []string{"au", "sg", "us", "in", "jp", "eu", "mea", "ca", "uk", "za"}
+	validRegions := []string{"au", "sg", "us", "in", "jp", "eu", "mea", "ca", "uk", "za", "id"}
 	for _, valid := range validRegions {
 		if region == valid {
 			return true
