@@ -47,16 +47,17 @@ type CAMConnectorResource struct {
 // CAMConnectorResourceModel describes the resource data model for GCP connector.
 type CAMConnectorResourceModel struct {
 	// Required fields
-	Name              types.String `tfsdk:"name"`
-	ProjectNumber     types.String `tfsdk:"project_number"`
-	ServiceAccountID  types.String `tfsdk:"service_account_id"`
-	ServiceAccountKey types.String `tfsdk:"service_account_key"`
+	Name             types.String `tfsdk:"name"`
+	ProjectNumber    types.String `tfsdk:"project_number"`
+	ServiceAccountID types.String `tfsdk:"service_account_id"`
 
 	// Optional fields
 	CamDeployedRegion         types.String              `tfsdk:"cam_deployed_region"`
 	ConnectedSecurityServices types.List                `tfsdk:"connected_security_services"`
 	Description               types.String              `tfsdk:"description"`
 	IsCAMCloudASRMEnabled     types.Bool                `tfsdk:"is_cam_cloud_asrm_enabled"`
+	IsPrimary                 types.Bool                `tfsdk:"is_primary"`
+	ServiceAccountKey         types.String              `tfsdk:"service_account_key"`
 	Folder                    *FolderDetailsModel       `tfsdk:"folder"`
 	Organization              *OrganizationDetailsModel `tfsdk:"organization"`
 
@@ -167,6 +168,14 @@ func (r *CAMConnectorResource) Schema(ctx context.Context, req resource.SchemaRe
 					boolplanmodifier.RequiresReplace(),
 				},
 			},
+			"is_primary": schema.BoolAttribute{
+				Computed:            true,
+				MarkdownDescription: "Indicates whether this GCP project is the primary project in a multi-project deployment. " +
+					"Computed automatically by comparing the `project_id` in the service account key with the connector's `project_number`.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
+			},
 			"name": schema.StringAttribute{
 				Required:            true,
 				MarkdownDescription: "Name of the connector",
@@ -229,9 +238,11 @@ func (r *CAMConnectorResource) Schema(ctx context.Context, req resource.SchemaRe
 				},
 			},
 			"service_account_key": schema.StringAttribute{
-				Required:            true,
-				Sensitive:           true,
-				MarkdownDescription: "GCP service account key (JSON credentials) used to authenticate with the GCP project. Must be provided as a base64-encoded string.",
+				Optional:  true,
+				Sensitive: true,
+				MarkdownDescription: "GCP service account key (JSON credentials) used to authenticate with the GCP project. Must be provided as a base64-encoded string. " +
+					"Required for legacy single-project deployments and for primary projects (`is_primary = true`). " +
+					"Must be omitted for member projects (`is_primary = false`), which share the primary's service account.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -280,31 +291,28 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 
-	// Validate ServiceAccountKey is provided
-	if plan.ServiceAccountKey.IsNull() || plan.ServiceAccountKey.IsUnknown() || plan.ServiceAccountKey.ValueString() == "" {
-		resp.Diagnostics.AddError(
-			"[CAM Connector GCP][Create] Missing Service Account Key",
-			"The service_account_key is required. Please provide the GCP service account key as a base64-encoded string.",
-		)
-		return
-	}
+	hasServiceAccountKey := !plan.ServiceAccountKey.IsNull() && !plan.ServiceAccountKey.IsUnknown() && plan.ServiceAccountKey.ValueString() != ""
 
-	// Validate ServiceAccountKey is valid base64
-	if err := r.validateBase64ServiceAccountKey(plan.ServiceAccountKey.ValueString()); err != nil {
-		resp.Diagnostics.AddError(
-			"[CAM Connector GCP][Create] Invalid Service Account Key Format",
-			fmt.Sprintf("The service_account_key must be a valid base64-encoded string. Error: %s", err.Error()),
-		)
-		return
-	}
+	var serviceAccountEmail string
+	if hasServiceAccountKey {
+		// Validate ServiceAccountKey is valid base64
+		if err := r.validateBase64ServiceAccountKey(plan.ServiceAccountKey.ValueString()); err != nil {
+			resp.Diagnostics.AddError(
+				"[CAM Connector GCP][Create] Invalid Service Account Key Format",
+				fmt.Sprintf("The service_account_key must be a valid base64-encoded string. Error: %s", err.Error()),
+			)
+			return
+		}
 
-	serviceAccountEmail, err := waitForGCPServiceAccountIAMReady(ctx, plan.ServiceAccountKey.ValueString(), plan.ProjectNumber.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"[CAM Connector GCP][Create] Service Account IAM Not Ready",
-			fmt.Sprintf("The service account key is valid but its IAM bindings have not yet propagated in GCP. Error: %s", err.Error()),
-		)
-		return
+		var err error
+		serviceAccountEmail, err = waitForGCPServiceAccountIAMReady(ctx, plan.ServiceAccountKey.ValueString(), plan.ProjectNumber.ValueString())
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"[CAM Connector GCP][Create] Service Account IAM Not Ready",
+				fmt.Sprintf("The service account key is valid but its IAM bindings have not yet propagated in GCP. Error: %s", err.Error()),
+			)
+			return
+		}
 	}
 
 	connectedServices, serviceDiags := r.extractConnectedServices(ctx, plan.ConnectedSecurityServices)
@@ -330,12 +338,22 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 
+	isPrimaryPtr, err := isPrimaryFromKey(ctx, plan.ServiceAccountKey.ValueString(), plan.ProjectNumber.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"[CAM Connector GCP][Create] Error Resolving is_primary",
+			fmt.Sprintf("[CAM Connector GCP][Create] Failed to resolve is_primary from service account key: %s", err),
+		)
+		return
+	}
+
 	body := &api.CreateProjectRequest{
 		CamDeployedRegion:         plan.CamDeployedRegion.ValueString(),
 		ConnectedSecurityServices: connectedServices,
 		Description:               plan.Description.ValueString(),
 		Folder:                    folder,
 		IsCAMCloudASRMEnabled:     plan.IsCAMCloudASRMEnabled.ValueBool(),
+		IsPrimary:                 isPrimaryPtr,
 		IsTFProviderDeployed:      true,
 		Name:                      plan.Name.ValueString(),
 		Organization:              organization,
@@ -483,11 +501,26 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		serviceAccountKey = state.ServiceAccountKey.ValueString()
 	}
 
-	serviceAccountEmail, err := waitForGCPServiceAccountKeyReady(ctx, serviceAccountKey)
+	// Only verify key propagation when one is actually present.
+	// Member projects (is_primary = false) intentionally have no key.
+	var serviceAccountEmail string
+	if serviceAccountKey != "" {
+		var err error
+		serviceAccountEmail, err = waitForGCPServiceAccountKeyReady(ctx, serviceAccountKey)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"[CAM Connector GCP][Update] Service Account Key Not Ready",
+				fmt.Sprintf("The provided service_account_key is valid but GCP has not finished propagating it yet. Error: %s", err.Error()),
+			)
+			return
+		}
+	}
+
+	isPrimaryPtr, err := isPrimaryFromKey(ctx, serviceAccountKey, projectNumber)
 	if err != nil {
 		resp.Diagnostics.AddError(
-			"[CAM Connector GCP][Update] Service Account Key Not Ready",
-			fmt.Sprintf("The provided service_account_key is valid but GCP has not finished propagating it yet. Error: %s", err.Error()),
+			"[CAM Connector GCP][Update] Error Resolving is_primary",
+			fmt.Sprintf("[CAM Connector GCP][Update] Failed to resolve is_primary from service account key: %s", err),
 		)
 		return
 	}
@@ -498,6 +531,7 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		Description:               plan.Description.ValueString(),
 		Folder:                    folder,
 		IsCAMCloudASRMEnabled:     isCAMCloudASRMEnabled,
+		IsPrimary:                 isPrimaryPtr,
 		IsTFProviderDeployed:      true,
 		Name:                      plan.Name.ValueString(),
 		Organization:              organization,
@@ -765,11 +799,10 @@ func (r *CAMConnectorResource) mapResponseToModel(ctx context.Context, res *api.
 		model.Description = types.StringValue(res.Description)
 	}
 
-	// Note: IsCAMCloudASRMEnabled is a user-provided required field.
-	// We preserve it from the plan/state and do NOT overwrite from API response
-	// because the API may not reflect the value immediately after creation.
+	// Note: IsCAMCloudASRMEnabled and Name are user-provided required fields.
+	// We preserve them from the plan/state and do NOT overwrite from API response
+	// because the API may store a different value (e.g. auto-generated name from project number).
 
-	model.Name = types.StringValue(res.Name)
 	model.CreatedDateTime = types.StringValue(res.CreatedTime)
 	model.UpdatedDateTime = types.StringValue(res.UpdatedDateTime)
 
@@ -808,4 +841,10 @@ func (r *CAMConnectorResource) mapResponseToModel(ctx context.Context, res *api.
 			},
 		})
 	}
+
+	if res.IsPrimary != nil {
+		model.IsPrimary = types.BoolValue(*res.IsPrimary)
+	}
 }
+
+

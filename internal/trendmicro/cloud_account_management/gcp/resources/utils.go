@@ -35,6 +35,44 @@ const (
 
 type gcpServiceAccountKeyPayload struct {
 	ClientEmail string `json:"client_email"`
+	ProjectID   string `json:"project_id"`
+}
+
+// isPrimaryFromKey derives the is_primary value by looking up the GCP project number
+// for the project_id embedded in the service account key and comparing it to projectNumber.
+// Returns true when they match, false when they differ, and nil when no key is provided.
+func isPrimaryFromKey(ctx context.Context, encodedKey, projectNumber string) (*bool, error) {
+	if encodedKey == "" {
+		return nil, nil
+	}
+	keyJSON, err := decodeServiceAccountKey(encodedKey)
+	if err != nil {
+		return nil, err
+	}
+	var payload gcpServiceAccountKeyPayload
+	err = json.Unmarshal(keyJSON, &payload)
+	if err != nil {
+		return nil, fmt.Errorf("invalid service account key JSON: %w", err)
+	}
+	if payload.ProjectID == "" {
+		return nil, fmt.Errorf("service account key missing project_id field")
+	}
+
+	cred, err := google.CredentialsFromJSON(ctx, keyJSON, gcpCloudPlatformScope)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create credentials from service account key: %w", err)
+	}
+	crmClient, err := cloudresourcemanager.NewService(ctx, option.WithCredentials(cred))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Cloud Resource Manager client: %w", err)
+	}
+	project, err := crmClient.Projects.Get(payload.ProjectID).Context(ctx).Do()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get project %s: %w", payload.ProjectID, err)
+	}
+
+	v := fmt.Sprintf("%d", project.ProjectNumber) == projectNumber
+	return &v, nil
 }
 
 var gcpCAMProjectMutationLocks sync.Map
