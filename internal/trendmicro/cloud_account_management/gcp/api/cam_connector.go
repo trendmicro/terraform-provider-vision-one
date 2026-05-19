@@ -30,6 +30,7 @@ type CreateProjectRequest struct {
 	Description               string                         `json:"description" validate:"omitempty,max=254"`
 	Folder                    *FolderDetails                 `json:"folder" validate:"omitempty"`
 	IsCAMCloudASRMEnabled     bool                           `json:"isCAMCloudASRMEnabled" validate:"omitempty"`
+	IsPrimary                 *bool                          `json:"isPrimary,omitempty"`
 	IsTFProviderDeployed      bool                           `json:"isTFProviderDeployed" validate:"omitempty"`
 	Name                      string                         `json:"name" validate:"max=254"`
 	Organization              *OrganizationDetails           `json:"organization" validate:"omitempty"`
@@ -44,6 +45,7 @@ type ModifyProjectRequest struct {
 	Description               string                         `json:"description" validate:"omitempty,max=254"`
 	Folder                    *FolderDetails                 `json:"folder" validate:"omitempty"`
 	IsCAMCloudASRMEnabled     bool                           `json:"isCAMCloudASRMEnabled" validate:"omitempty"`
+	IsPrimary                 *bool                          `json:"isPrimary,omitempty"`
 	IsTFProviderDeployed      bool                           `json:"isTFProviderDeployed" validate:"omitempty"`
 	Name                      string                         `json:"name" validate:"max=254"`
 	Organization              *OrganizationDetails           `json:"organization" validate:"omitempty"`
@@ -62,6 +64,7 @@ type ProjectResponse struct {
 	IsCAMCloudASRMEnabled      bool                           `json:"isCAMCloudASRMEnabled,omitempty"`
 	IsCloudASRMEditable        *bool                          `json:"isCloudASRMEditable,omitempty"`
 	IsCloudASRMEnabled         *bool                          `json:"isCloudASRMEnabled,omitempty"`
+	IsPrimary                  *bool                          `json:"isPrimary,omitempty"`
 	LastSyncedDateTime         string                         `json:"lastSyncedDateTime,omitempty"`
 	Name                       string                         `json:"name,omitempty"`
 	ProjectID                  string                         `json:"projectId,omitempty"`
