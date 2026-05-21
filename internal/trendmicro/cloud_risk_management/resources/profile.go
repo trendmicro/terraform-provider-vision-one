@@ -70,7 +70,7 @@ func (r *profileResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Required:            true,
 			},
 			"description": schema.StringAttribute{
-				MarkdownDescription: "The description of the profile.",
+				MarkdownDescription: "The description of the profile. For removing the description, set it to an empty string; if not set explicitly, it will keep the previous value.",
 				Optional:            true,
 			},
 		},
@@ -119,7 +119,7 @@ func (r *profileResource) Create(ctx context.Context, req resource.CreateRequest
 	tflog.Debug(ctx, fmt.Sprintf("Create new Profile plan: %+v", plan))
 	createReq := cloud_risk_management_dto.CreateProfileRequest{
 		Name:        plan.Name.ValueString(),
-		Description: plan.Description.ValueString(),
+		Description: plan.Description.ValueStringPointer(),
 	}
 
 	if len(plan.ScanRules) > 0 {
@@ -201,7 +201,7 @@ func (r *profileResource) Update(ctx context.Context, req resource.UpdateRequest
 
 	updateReq := cloud_risk_management_dto.UpdateProfileRequest{
 		Name:        plan.Name.ValueString(),
-		Description: plan.Description.ValueString(),
+		Description: plan.Description.ValueStringPointer(),
 	}
 
 	if len(plan.ScanRules) > 0 {
@@ -310,7 +310,12 @@ func updatePlanFromProfile(plan *ProfileResourceModel, profile *cloud_risk_manag
 
 	plan.ID = types.StringValue(profile.ID)
 	plan.Name = types.StringValue(profile.Name)
-	plan.Description = types.StringValue(profile.Description)
+
+	if plan.Description.ValueStringPointer() != nil && profile.Description != nil {
+		plan.Description = types.StringValue(*profile.Description)
+	} else if plan.Description.ValueStringPointer() != nil {
+		plan.Description = types.StringValue("")
+	}
 
 	// Convert scan rules back
 	if len(profile.ScanRules) > 0 {
