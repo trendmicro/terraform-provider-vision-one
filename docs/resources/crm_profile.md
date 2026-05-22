@@ -350,7 +350,7 @@ resource "visionone_crm_profile" "advanced" {
 
 ### Optional
 
-- `description` (String) The description of the profile.
+- `description` (String) The description of the profile. For removing the description, set it to an empty string; if not set explicitly, it will keep the previous value.
 - `scan_rule` (Block Set) List of scan rule configurations. (see [below for nested schema](#nestedblock--scan_rule))
 
 ### Read-Only
