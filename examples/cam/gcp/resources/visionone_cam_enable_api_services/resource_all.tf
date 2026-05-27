@@ -30,6 +30,10 @@ resource "visionone_cam_enable_api_services" "all_options" {
     "cloudfunctions.googleapis.com",
     "pubsub.googleapis.com",
     "secretmanager.googleapis.com",
+    # data security posture management
+    "run.googleapis.com",
+    "cloudscheduler.googleapis.com",
+    "eventarc.googleapis.com",
     # Add additional services as needed for new features
     # "compute.googleapis.com",
   ]

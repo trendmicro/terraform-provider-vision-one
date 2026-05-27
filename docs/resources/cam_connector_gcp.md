@@ -431,20 +431,23 @@ output "tag_value_names" {
 - `name` (String) Name of the connector
 - `project_number` (String) GCP project number for the connector
 - `service_account_id` (String) GCP service account unique ID used to connect to the GCP project
-- `service_account_key` (String, Sensitive) GCP service account key (JSON credentials) used to authenticate with the GCP project. Must be provided as a base64-encoded string.
 
 ### Optional
 
 - `cam_deployed_region` (String) Region where CAM is deployed for this connector
 - `connected_security_services` (Attributes List) List of connected security services for the connector (see [below for nested schema](#nestedatt--connected_security_services))
 - `description` (String) Description of the connector
+- `features` (Attributes List) List of features to enable for the connector (see [below for nested schema](#nestedatt--features))
+- `features_config_file_path` (String) Path to the features configuration file
 - `folder` (Attributes) GCP folder details for the connector (see [below for nested schema](#nestedatt--folder))
 - `organization` (Attributes) GCP organization details for the connector (see [below for nested schema](#nestedatt--organization))
+- `service_account_key` (String, Sensitive) GCP service account key (JSON credentials) used to authenticate with the GCP project. Must be provided as a base64-encoded string. Required for legacy single-project deployments and for primary projects (`is_primary = true`). Must be omitted for member projects (`is_primary = false`), which share the primary's service account.
 
 ### Read-Only
 
 - `created_date_time` (String) Timestamp when the connector was created
 - `id` (String) Unique identifier for the connector (same as project_number)
+- `is_primary` (Boolean) Indicates whether this GCP project is the primary project in a multi-project deployment. Computed automatically by comparing the `project_id` in the service account key with the connector's `project_number`.
 - `project_id` (String) GCP project ID
 - `project_name` (String) GCP project name
 - `service_account_email` (String) GCP service account email
@@ -458,6 +461,18 @@ Required:
 
 - `instance_ids` (List of String) List of instance IDs for the security service
 - `name` (String) Name of the security service
+
+
+<a id="nestedatt--features"></a>
+### Nested Schema for `features`
+
+Required:
+
+- `id` (String) Feature identifier
+
+Optional:
+
+- `locations` (List of String) List of GCP locations (regions) to enable the feature in
 
 
 <a id="nestedatt--folder"></a>
