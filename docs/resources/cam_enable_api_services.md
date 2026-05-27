@@ -23,6 +23,9 @@ The resource automatically:
   - `cloudfunctions.googleapis.com` - Cloud Functions API
   - `pubsub.googleapis.com` - Cloud Pub/Sub API
   - `secretmanager.googleapis.com` - Secret Manager API
+  - `run.googleapis.com` - Cloud Run API (data security posture management)
+  - `cloudscheduler.googleapis.com` - Cloud Scheduler API (data security posture management)
+  - `eventarc.googleapis.com` - Eventarc API (data security posture management)
 - Supports custom service lists for specific use cases or additional features
 - Validates that services are enabled and available
 - Preserves enabled services when the resource is destroyed (to prevent disruption)
@@ -217,6 +220,10 @@ resource "visionone_cam_enable_api_services" "all_options" {
     "cloudfunctions.googleapis.com",
     "pubsub.googleapis.com",
     "secretmanager.googleapis.com",
+    # data security posture management
+    "run.googleapis.com",
+    "cloudscheduler.googleapis.com",
+    "eventarc.googleapis.com",
     # Add additional services as needed for new features
     # "compute.googleapis.com",
   ]

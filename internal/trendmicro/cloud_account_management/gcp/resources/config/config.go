@@ -82,4 +82,8 @@ var GCP_REQUIRED_ENABLE_API_AND_SERVICE = []string{
 	"cloudfunctions.googleapis.com",
 	"pubsub.googleapis.com",
 	"secretmanager.googleapis.com",
+	// data-security-posture-management API services
+	"run.googleapis.com",
+	"cloudscheduler.googleapis.com",
+	"eventarc.googleapis.com",
 }

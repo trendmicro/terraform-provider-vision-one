@@ -15,6 +15,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
@@ -26,14 +27,20 @@ import (
 )
 
 var (
-	_ resource.Resource              = &CAMConnectorResource{}
-	_ resource.ResourceWithConfigure = &CAMConnectorResource{}
+	_ resource.Resource                     = &CAMConnectorResource{}
+	_ resource.ResourceWithConfigure        = &CAMConnectorResource{}
+	_ resource.ResourceWithConfigValidators = &CAMConnectorResource{}
 )
 
 // SecurityServiceModel represents a connected security service in Terraform state
 type SecurityServiceModel struct {
 	Name        types.String `tfsdk:"name"`
 	InstanceIds types.List   `tfsdk:"instance_ids"`
+}
+
+type GCPFeatureModel struct {
+	ID        types.String `tfsdk:"id"`
+	Locations types.List   `tfsdk:"locations"`
 }
 
 func NewCAMConnectorResource() resource.Resource {
@@ -55,6 +62,8 @@ type CAMConnectorResourceModel struct {
 	CamDeployedRegion         types.String              `tfsdk:"cam_deployed_region"`
 	ConnectedSecurityServices types.List                `tfsdk:"connected_security_services"`
 	Description               types.String              `tfsdk:"description"`
+	Features                  types.List                `tfsdk:"features"`
+	FeaturesConfigFilePath    types.String              `tfsdk:"features_config_file_path"`
 	IsCAMCloudASRMEnabled     types.Bool                `tfsdk:"is_cam_cloud_asrm_enabled"`
 	IsPrimary                 types.Bool                `tfsdk:"is_primary"`
 	ServiceAccountKey         types.String              `tfsdk:"service_account_key"`
@@ -135,6 +144,27 @@ func (r *CAMConnectorResource) Schema(ctx context.Context, req resource.SchemaRe
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
+			"features": schema.ListNestedAttribute{
+				Optional:            true,
+				MarkdownDescription: "List of features to enable for the connector",
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"id": schema.StringAttribute{
+							Required:            true,
+							MarkdownDescription: "Feature identifier",
+						},
+						"locations": schema.ListAttribute{
+							ElementType:         types.StringType,
+							Optional:            true,
+							MarkdownDescription: "List of GCP locations (regions) to enable the feature in",
+						},
+					},
+				},
+			},
+			"features_config_file_path": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Path to the features configuration file",
+			},
 			"folder": schema.SingleNestedAttribute{
 				Optional:            true,
 				MarkdownDescription: "GCP folder details for the connector",
@@ -169,7 +199,7 @@ func (r *CAMConnectorResource) Schema(ctx context.Context, req resource.SchemaRe
 				},
 			},
 			"is_primary": schema.BoolAttribute{
-				Computed:            true,
+				Computed: true,
 				MarkdownDescription: "Indicates whether this GCP project is the primary project in a multi-project deployment. " +
 					"Computed automatically by comparing the `project_id` in the service account key with the connector's `project_number`.",
 				PlanModifiers: []planmodifier.Bool{
@@ -282,6 +312,41 @@ func (r *CAMConnectorResource) Configure(ctx context.Context, req resource.Confi
 	tflog.Debug(ctx, "[CAM Connector GCP] CAM Connector resource configured successfully")
 }
 
+func (r *CAMConnectorResource) ConfigValidators(_ context.Context) []resource.ConfigValidator {
+	return []resource.ConfigValidator{
+		featuresConfigFilePathRequiresFeaturesValidator{},
+	}
+}
+
+type featuresConfigFilePathRequiresFeaturesValidator struct{}
+
+func (v featuresConfigFilePathRequiresFeaturesValidator) Description(_ context.Context) string {
+	return "features_config_file_path requires features to also be set"
+}
+
+func (v featuresConfigFilePathRequiresFeaturesValidator) MarkdownDescription(_ context.Context) string {
+	return "`features_config_file_path` requires `features` to also be set"
+}
+
+func (v featuresConfigFilePathRequiresFeaturesValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data CAMConnectorResourceModel
+	diags := req.Config.Get(ctx, &data)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !data.FeaturesConfigFilePath.IsNull() && !data.FeaturesConfigFilePath.IsUnknown() && data.FeaturesConfigFilePath.ValueString() != "" {
+		if data.Features.IsNull() || data.Features.IsUnknown() {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("features_config_file_path"),
+				"Invalid Attribute Combination",
+				"features_config_file_path cannot be set without features.",
+			)
+		}
+	}
+}
+
 func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan CAMConnectorResourceModel
 
@@ -321,6 +386,12 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 
+	features, featureDiags := extractFeatures(ctx, plan.Features)
+	resp.Diagnostics.Append(featureDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	tflog.Debug(ctx, fmt.Sprintf("[CAM Connector GCP][Create] Creating GCP connector with name: %s, project number: %s, service account email: %s",
 		plan.Name.ValueString(), plan.ProjectNumber.ValueString(), serviceAccountEmail))
 
@@ -351,6 +422,8 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		CamDeployedRegion:         plan.CamDeployedRegion.ValueString(),
 		ConnectedSecurityServices: connectedServices,
 		Description:               plan.Description.ValueString(),
+		Features:                  features,
+		FeaturesConfigFilePath:    plan.FeaturesConfigFilePath.ValueString(),
 		Folder:                    folder,
 		IsCAMCloudASRMEnabled:     plan.IsCAMCloudASRMEnabled.ValueBool(),
 		IsPrimary:                 isPrimaryPtr,
@@ -501,6 +574,12 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		serviceAccountKey = state.ServiceAccountKey.ValueString()
 	}
 
+	features, featureDiags := extractFeatures(ctx, plan.Features)
+	resp.Diagnostics.Append(featureDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	// Only verify key propagation when one is actually present.
 	// Member projects (is_primary = false) intentionally have no key.
 	var serviceAccountEmail string
@@ -529,6 +608,8 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		CamDeployedRegion:         plan.CamDeployedRegion.ValueString(),
 		ConnectedSecurityServices: connectedServices,
 		Description:               plan.Description.ValueString(),
+		Features:                  features,
+		FeaturesConfigFilePath:    plan.FeaturesConfigFilePath.ValueString(),
 		Folder:                    folder,
 		IsCAMCloudASRMEnabled:     isCAMCloudASRMEnabled,
 		IsPrimary:                 isPrimaryPtr,
@@ -577,9 +658,10 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 			return
 		}
 
-		// Preserve organization from plan since API response might not include all details
 		state.Organization = plan.Organization
 		state.Folder = plan.Folder
+		state.Features = plan.Features
+		state.FeaturesConfigFilePath = plan.FeaturesConfigFilePath
 	}
 
 	resp.State.Set(ctx, &state)
@@ -679,6 +761,40 @@ func (r *CAMConnectorResource) extractConnectedServices(ctx context.Context, ser
 	}
 
 	return connectedServices, diags
+}
+
+func extractFeatures(ctx context.Context, featuresList types.List) (*[]api.Feature, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	if featuresList.IsNull() || featuresList.IsUnknown() {
+		return nil, diags
+	}
+
+	var featureModels []GCPFeatureModel
+	extractDiags := featuresList.ElementsAs(ctx, &featureModels, false)
+	diags.Append(extractDiags...)
+	if diags.HasError() {
+		return nil, diags
+	}
+
+	features := make([]api.Feature, 0, len(featureModels))
+	for _, model := range featureModels {
+		// Terraform-side attribute is `locations`; map to API's `regions` field.
+		var locations []string
+		if !model.Locations.IsNull() && !model.Locations.IsUnknown() {
+			locationDiags := model.Locations.ElementsAs(ctx, &locations, false)
+			diags.Append(locationDiags...)
+			if diags.HasError() {
+				return nil, diags
+			}
+		}
+		features = append(features, api.Feature{
+			ID:      model.ID.ValueString(),
+			Regions: locations,
+		})
+	}
+
+	return &features, diags
 }
 
 // convertOrganizationDetailsToAPI converts Terraform organization model to API format
@@ -846,5 +962,3 @@ func (r *CAMConnectorResource) mapResponseToModel(ctx context.Context, res *api.
 		model.IsPrimary = types.BoolValue(*res.IsPrimary)
 	}
 }
-
-
