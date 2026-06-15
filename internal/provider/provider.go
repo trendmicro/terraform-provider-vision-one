@@ -11,6 +11,8 @@ import (
 	gcpresources "terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/resources"
 	crmdatasources "terraform-provider-vision-one/internal/trendmicro/cloud_risk_management/data-sources"
 	crmresources "terraform-provider-vision-one/internal/trendmicro/cloud_risk_management/resources"
+	gcpdspmdatasources "terraform-provider-vision-one/internal/trendmicro/data_security_posture_management/gcp/data-sources"
+	gcpdspmresources "terraform-provider-vision-one/internal/trendmicro/data_security_posture_management/gcp/resources"
 	"terraform-provider-vision-one/internal/trendmicro/container_security/resources"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -196,6 +198,7 @@ func (p *TrendMicroProvider) Resources(ctx context.Context) []func() resource.Re
 		gcpresources.NewLegacyCleanupIAMCustomRole,
 		gcpresources.NewLegacyCleanupWorkloadIdentity,
 		gcpresources.NewLegacyCleanupServiceAccount,
+		gcpdspmresources.NewLegacyCleanupDSPMRegion,
 		gcpresources.NewGCPProjectMigrationResource,
 		crmresources.NewReportConfigResource,
 		crmresources.NewAccountScanRulesResource,
@@ -206,6 +209,7 @@ func (p *TrendMicroProvider) DataSources(ctx context.Context) []func() datasourc
 	return []func() datasource.DataSource{
 		azurecamdatasources.NewCAMCloudAccountsDataSource,
 		gcpcamdatasources.NewCAMCloudAccountsDataSource,
+		gcpdspmdatasources.NewLegacyStateRegionsDataSource,
 		crmdatasources.NewCRMAccountDataSource,
 		crmdatasources.NewApplyProfileDataSource,
 	}
