@@ -69,6 +69,26 @@ var GCP_CUSTOM_ROLE_CORE_PERMISSIONS = []string{
 	"resourcemanager.tagKeys.list",
 	"resourcemanager.tagValues.get",
 	"resourcemanager.tagValues.list",
+
+	// Required by visionone_dspm_legacy_cleanup_region to delete legacy
+	// DSPM Package resources on Old-Single -> New upgrade. The cleanup
+	// runs under the CAM-managed SA, so these permissions must live on
+	// the SA's custom role. Without them cleanup_status returns
+	// "partial" and the downstream data-security-posture-management
+	// module 409-collides with surviving legacy resources. Empirically
+	// verified on data-security-int / asia-northeast1 (2026-06-15):
+	// granting the SA roles/editor produced the same effect as adding
+	// these permissions individually.
+	"cloudfunctions.functions.delete",
+	"cloudscheduler.jobs.delete",
+	"compute.disks.delete",
+	"compute.firewalls.delete",
+	"compute.networks.updatePolicy",
+	"compute.resourcePolicies.delete",
+	"compute.snapshots.create",
+	"eventarc.triggers.delete",
+	"run.services.delete",
+	"vpcaccess.connectors.delete",
 }
 
 // GCP required API services to enable
