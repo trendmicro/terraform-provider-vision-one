@@ -14,7 +14,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -77,10 +76,14 @@ func (r *IAMCustomRole) Schema(_ context.Context, _ resource.SchemaRequest, resp
 			},
 			"permissions": schema.ListAttribute{
 				ElementType:         types.StringType,
-				MarkdownDescription: "List of permissions associated with the Trend Micro Vision One Cloud Account Management custom role definition. **IMPORTANT**: If specified, this list will OVERWRITE (not append to) the default core permissions. If not specified, the role will include the core permissions appropriate for the parent level (organization or project). Organization-level roles include organization, folder, and project permissions, while project-level roles include only project permissions. For detailed permission requirements, refer to the [Permissions API](coming-soon).",
+				MarkdownDescription: "List of permissions associated with the Trend Micro Vision One Cloud Account Management custom role definition. **IMPORTANT**: If specified, this list will OVERWRITE (not append to) the default core permissions. If not specified, the role will include the core permissions appropriate for the parent level (organization or project) plus any permissions contributed by `feature_permissions`. Organization-level roles include organization, folder, and project permissions, while project-level roles include only project permissions. For detailed permission requirements, refer to the [Permissions API](coming-soon).",
 				Optional:            true,
 				Computed:            true,
-				Default:             listdefault.StaticValue(cam.ConvertStringSliceToListValue(config.GCP_CUSTOM_ROLE_CORE_PERMISSIONS)), // Once the API is ready, we can remove the default and get the permissions from the API based on the default behavior and features.
+				// Default removed: when feature_permissions is set, Create
+				// aggregates and the framework rejects plan(default) vs
+				// apply(aggregated) consistency. Computed-only at plan time
+				// lets Create resolve the final list — Read still pulls the
+				// authoritative permission list from GCP on every refresh.
 			},
 			"feature_permissions": schema.SetAttribute{
 				ElementType:         types.StringType,
