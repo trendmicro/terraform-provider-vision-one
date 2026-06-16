@@ -88,6 +88,7 @@ var FEATURE_PERMISSIONS = map[string][]string{
 		"compute.firewalls.delete",
 		"compute.instances.delete",
 		"compute.networks.delete",
+		"compute.networks.updatePolicy", // implicit for firewall.delete + router NAT.delete
 		"compute.resourcePolicies.delete",
 		"compute.routers.delete",
 		"compute.routers.update",
