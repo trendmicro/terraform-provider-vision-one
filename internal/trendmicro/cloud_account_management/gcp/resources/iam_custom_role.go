@@ -577,25 +577,30 @@ func (r *IAMCustomRole) Configure(ctx context.Context, req resource.ConfigureReq
 	tflog.Debug(ctx, "[GCP Role Definition] resource configured successfully")
 }
 
-// aggregatePermissions combines base permissions with feature-specific permissions
-// TODO: In the future, this will call an API to retrieve permissions for each feature
+// aggregatePermissions combines base permissions with feature-specific
+// permissions. Feature → permission resolution currently uses the static
+// `config.FEATURE_PERMISSIONS` map; once the Features API ships this will
+// be replaced by a remote lookup keyed by parent type.
 //
 //nolint:unparam // error return is currently always nil but will be used when API integration is implemented
 func (r *IAMCustomRole) aggregatePermissions(ctx context.Context, corePermissions, features []string) ([]string, error) {
-	// Start with base permissions
 	permissionMap := make(map[string]bool)
 	for _, perm := range corePermissions {
 		permissionMap[perm] = true
 	}
 
-	// If features are specified, aggregate their permissions
-	if len(features) > 0 {
-		// TODO: Call API to get permissions for each feature based on parent type
-		// For now, this is a placeholder that will be implemented when the API is ready
-		tflog.Debug(ctx, fmt.Sprintf("[GCP Role Definition] Features specified: %v (feature permissions will be added when API is available)", features))
+	for _, feature := range features {
+		perms, ok := config.FEATURE_PERMISSIONS[feature]
+		if !ok {
+			tflog.Warn(ctx, fmt.Sprintf("[GCP Role Definition] Unknown feature %q — skipping (known features: see config.FEATURE_PERMISSIONS)", feature))
+			continue
+		}
+		tflog.Debug(ctx, fmt.Sprintf("[GCP Role Definition] Feature %q contributes %d permissions", feature, len(perms)))
+		for _, perm := range perms {
+			permissionMap[perm] = true
+		}
 	}
 
-	// Convert map back to slice and sort for consistent ordering
 	aggregated := make([]string, 0, len(permissionMap))
 	for perm := range permissionMap {
 		aggregated = append(aggregated, perm)
