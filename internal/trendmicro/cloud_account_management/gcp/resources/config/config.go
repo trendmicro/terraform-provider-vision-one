@@ -71,30 +71,14 @@ var GCP_CUSTOM_ROLE_CORE_PERMISSIONS = []string{
 	"resourcemanager.tagValues.list",
 }
 
-// Feature names accepted by visionone_cam_iam_custom_role.feature_permissions.
-// Keep in sync with FEATURE_PERMISSIONS below and with the schema docs example.
 const (
 	FEATURE_DATA_SECURITY_POSTURE_MANAGEMENT = "data-security-posture-management"
 )
 
-// FEATURE_PERMISSIONS maps each supported feature to the GCP permissions it
-// requires on top of GCP_CUSTOM_ROLE_CORE_PERMISSIONS.
-//
-// This is a placeholder for the upcoming Features API; until that ships, the
-// mapping lives client-side. Add new features by appending an entry here so
-// that customers who only opt into CAM stay minimally privileged and only
-// feature-opted-in customers receive the extra grants.
+// Per-feature permissions unioned onto GCP_CUSTOM_ROLE_CORE_PERMISSIONS.
+// Placeholder until the Features API ships.
 var FEATURE_PERMISSIONS = map[string][]string{
-	// data-security-posture-management — required by
-	// visionone_dspm_legacy_cleanup_region to delete legacy DSPM Package
-	// resources on Old-Single -> New upgrade. The cleanup runs under the
-	// CAM-managed SA, so these permissions must live on the SA's custom
-	// role. Without them cleanup_status returns "partial" and the
-	// downstream data-security-posture-management module 409-collides
-	// with surviving legacy resources. Empirically verified on
-	// data-security-int / asia-northeast1 (2026-06-15): granting the SA
-	// roles/editor produced the same effect as adding these permissions
-	// individually.
+	// Required by visionone_dspm_legacy_cleanup_region (runs under CAM SA).
 	FEATURE_DATA_SECURITY_POSTURE_MANAGEMENT: {
 		"cloudfunctions.functions.delete",
 		"cloudscheduler.jobs.delete",
