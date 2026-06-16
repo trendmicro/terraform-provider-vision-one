@@ -79,13 +79,15 @@ const (
 // Placeholder until the Features API ships.
 var FEATURE_PERMISSIONS = map[string][]string{
 	// Required by visionone_dspm_legacy_cleanup_region (runs under CAM SA).
+	// Derived by `cases/05_gcp_lifecycle/scripts/derive_dspm_cleanup_perms.py`.
 	FEATURE_DATA_SECURITY_POSTURE_MANAGEMENT: {
 		"cloudfunctions.functions.delete",
 		"cloudscheduler.jobs.delete",
+		"compute.disks.createSnapshot",
 		"compute.disks.delete",
 		"compute.firewalls.delete",
+		"compute.instances.delete",
 		"compute.networks.delete",
-		"compute.networks.updatePolicy",
 		"compute.resourcePolicies.delete",
 		"compute.routers.delete",
 		"compute.routers.update",
