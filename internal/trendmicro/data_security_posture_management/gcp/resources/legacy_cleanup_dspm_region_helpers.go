@@ -180,6 +180,15 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 	if computeErr != nil {
 		errs = append(errs, fmt.Sprintf("compute client: %v", computeErr))
 	} else {
+		// VMs must be deleted before the disk — if a VM holds the disk, disk delete returns 400 "in use".
+		instances, err := listDSPMInstances(ctx, cSvc, opts.ProjectID, opts.Region)
+		noteErr("instances_list", opts.Region, err)
+		for _, inst := range instances {
+			err := deleteAndWaitComputeInstance(ctx, cSvc, opts.ProjectID, inst.zone, inst.name)
+			tally("vms", err == nil)
+			noteErr("vm", inst.name, err)
+		}
+
 		diskName := fmt.Sprintf("%s-persistent-scan-job-disk", pfx)
 		diskZone := opts.Region + "-b"
 		snapName := fmt.Sprintf("%s-disk-pre-upgrade", pfx)
@@ -206,14 +215,6 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 		deleted, err := deleteAndWaitResourcePolicy(ctx, cSvc, opts.ProjectID, opts.Region, policyName)
 		tally("resource_policies", deleted)
 		noteErr("resource_policy", policyName, err)
-
-		instances, err := listDSPMInstances(ctx, cSvc, opts.ProjectID, opts.Region)
-		noteErr("instances_list", opts.Region, err)
-		for _, inst := range instances {
-			err := deleteAndWaitComputeInstance(ctx, cSvc, opts.ProjectID, inst.zone, inst.name)
-			tally("vms", err == nil)
-			noteErr("vm", inst.name, err)
-		}
 	}
 
 	// VPC connector must drain before VPC can be deleted (async).
