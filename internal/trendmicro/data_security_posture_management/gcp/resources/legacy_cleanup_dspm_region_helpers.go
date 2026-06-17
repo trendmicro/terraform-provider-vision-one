@@ -11,10 +11,12 @@ import (
 	cloudfunctions "google.golang.org/api/cloudfunctions/v2"
 	scheduler "google.golang.org/api/cloudscheduler/v1"
 	compute "google.golang.org/api/compute/v1"
+	crm "google.golang.org/api/cloudresourcemanager/v1"
 	eventarc "google.golang.org/api/eventarc/v1"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 	run "google.golang.org/api/run/v2"
+	storagev1 "google.golang.org/api/storage/v1"
 	vpcaccess "google.golang.org/api/vpcaccess/v1"
 )
 
@@ -111,6 +113,7 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 			"routers":           0,
 			"subnets":           0,
 			"vpcs":              0,
+			"buckets":           0,
 		},
 	}
 	var errs []string
@@ -250,6 +253,26 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 		deleted, err = deleteAndWaitVPC(ctx, cSvc, opts.ProjectID, vpcName)
 		tally("vpcs", deleted)
 		noteErr("vpc", vpcName, err)
+	}
+
+	// Delete orphaned new-module GCS buckets (audit_logs + trend_resources) that may
+	// have been created by a prior partial apply and left without TF state. These use
+	// the new naming: {namePrefix}-{projectNumber}-{audit-logs,trend-resources}.
+	// A fresh install has no such buckets — the GCS 404 is silent success.
+	if storageSvc, err := storagev1.NewService(ctx, opts.ClientOptions...); err != nil {
+		errs = append(errs, fmt.Sprintf("storage client: %v", err))
+	} else {
+		projectNumber, numErr := resolveProjectNumber(ctx, opts.ProjectID, opts.ClientOptions...)
+		if numErr != nil {
+			errs = append(errs, fmt.Sprintf("resolve project number: %v", numErr))
+		} else {
+			for _, suffix := range []string{"-audit-logs", "-trend-resources"} {
+				bucketName := fmt.Sprintf("%s-%s%s", pfx, projectNumber, suffix)
+				deleted, err := deleteGCSBucketIfExists(ctx, storageSvc, bucketName)
+				tally("buckets", deleted)
+				noteErr("bucket", bucketName, err)
+			}
+		}
 	}
 
 	var combinedErr error
@@ -641,6 +664,66 @@ func waitComputeRegionOp(ctx context.Context, svc *compute.Service, projectID, r
 		op = fresh
 	}
 	return fmt.Errorf("compute region op %s did not finish within %s", op.Name, asyncOpPollInterval*asyncOpMaxPolls)
+}
+
+// resolveProjectNumber looks up the numeric project number for a given project ID.
+func resolveProjectNumber(ctx context.Context, projectID string, opts ...option.ClientOption) (string, error) {
+	crmSvc, err := crm.NewService(ctx, opts...)
+	if err != nil {
+		return "", fmt.Errorf("cloudresourcemanager client: %w", err)
+	}
+	proj, err := crmSvc.Projects.Get(projectID).Context(ctx).Do()
+	if err != nil {
+		return "", fmt.Errorf("get project %s: %w", projectID, err)
+	}
+	return fmt.Sprintf("%d", proj.ProjectNumber), nil
+}
+
+// deleteGCSBucketIfExists empties and deletes a GCS bucket. Treats 404 as success (already gone).
+func deleteGCSBucketIfExists(ctx context.Context, svc *storagev1.Service, bucketName string) (bool, error) {
+	// List and delete all objects first (bucket must be empty before deletion).
+	var pageToken string
+	for {
+		req := svc.Objects.List(bucketName)
+		if pageToken != "" {
+			req = req.PageToken(pageToken)
+		}
+		objs, err := req.Context(ctx).Do()
+		if err != nil {
+			if isGCSNotFound(err) {
+				return false, nil
+			}
+			return false, fmt.Errorf("list objects in %s: %w", bucketName, err)
+		}
+		for _, obj := range objs.Items {
+			if delErr := svc.Objects.Delete(bucketName, obj.Name).Context(ctx).Do(); delErr != nil && !isGCSNotFound(delErr) {
+				return false, fmt.Errorf("delete object %s/%s: %w", bucketName, obj.Name, delErr)
+			}
+		}
+		if objs.NextPageToken == "" {
+			break
+		}
+		pageToken = objs.NextPageToken
+	}
+	if err := svc.Buckets.Delete(bucketName).Context(ctx).Do(); err != nil {
+		if isGCSNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("delete bucket %s: %w", bucketName, err)
+	}
+	return true, nil
+}
+
+// isGCSNotFound checks for GCS 404 responses.
+func isGCSNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	var gerr *googleapi.Error
+	if errors.As(err, &gerr) {
+		return gerr.Code == 404
+	}
+	return strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "notFound")
 }
 
 func waitComputeGlobalOp(ctx context.Context, svc *compute.Service, projectID string, op *compute.Operation) error {
