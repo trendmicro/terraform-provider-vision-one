@@ -187,5 +187,8 @@ func isStorageNotFound(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "404") || strings.Contains(msg, "notFound") || strings.Contains(msg, "doesn't exist")
+	// GCS returns 403 instead of 404 when the caller lacks permission — it deliberately
+	// does not reveal bucket existence. Treat as "no legacy state" (same as missing bucket).
+	return strings.Contains(msg, "403") || strings.Contains(msg, "404") ||
+		strings.Contains(msg, "notFound") || strings.Contains(msg, "doesn't exist")
 }

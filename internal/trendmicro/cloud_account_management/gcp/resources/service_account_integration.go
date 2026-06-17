@@ -25,7 +25,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"google.golang.org/api/cloudresourcemanager/v1"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iam/v1"
+	storagev1 "google.golang.org/api/storage/v1"
 )
 
 type ServiceAccountIntegration struct {
@@ -535,6 +537,19 @@ func (r *ServiceAccountIntegration) Create(ctx context.Context, req resource.Cre
 
 	tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Create] IAM bindings created in %d projects for service account: %s", len(boundProjectIds), sa.Email))
 
+	// Grant the CAM SA storage.objectViewer on each bound project's legacy state bucket
+	// so visionone_dspm_legacy_state_regions can read it during the upgrade flow.
+	// 404 = no legacy install = safe to skip. Any other error = fail fast (Step 2 would 403).
+	for _, projID := range boundProjectIds {
+		if err := grantLegacyBucketViewer(ctx, sa.Email, projID); err != nil {
+			resp.Diagnostics.AddError(
+				"[Service Account Key][Create] Failed to grant legacy bucket viewer",
+				fmt.Sprintf("project %s: %s", projID, err.Error()),
+			)
+			return
+		}
+	}
+
 	// Add roles/browser on the folder or organization so the service account can enumerate resources
 	plan.BrowserBindingResource = types.StringNull()
 	if !plan.CentralManagementProjectIDFolder.IsNull() && !plan.CentralManagementProjectIDFolder.IsUnknown() {
@@ -846,6 +861,17 @@ func (r *ServiceAccountIntegration) Read(ctx context.Context, req resource.ReadR
 			} else if !bound {
 				tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Read] Drift detected: roles/browser missing on organization %s", orgID))
 				state.BrowserBindingResource = types.StringNull()
+			}
+		}
+	}
+
+	// Idempotent grant — ensures legacy bucket access is present even for SAs
+	// created before this fix was shipped.
+	var readBoundProjects []string
+	if bpDiags := state.BoundProjects.ElementsAs(ctx, &readBoundProjects, false); !bpDiags.HasError() {
+		for _, projID := range readBoundProjects {
+			if err := grantLegacyBucketViewer(ctx, sa.Email, projID); err != nil {
+				tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Read] Failed to grant legacy bucket viewer for project %s: %s", projID, err.Error()))
 			}
 		}
 	}
@@ -1448,6 +1474,44 @@ func (r *ServiceAccountIntegration) discoverTargetProjects(
 	}
 
 	return targetProjects, nil
+}
+
+// grantLegacyBucketViewer grants the CAM SA roles/storage.objectViewer on the legacy
+// state bucket gs://trendmicro-v1-<projectID>. Silently no-ops on 404 (bucket absent
+// means no legacy install for that project — not an error).
+func grantLegacyBucketViewer(ctx context.Context, saEmail, projectID string) error {
+	bucketName := config.LEGACY_GCP_GCS_BUCKET_PREFIX + projectID
+	storageSvc, err := storagev1.NewService(ctx)
+	if err != nil {
+		return fmt.Errorf("storage client: %w", err)
+	}
+	policy, err := storageSvc.Buckets.GetIamPolicy(bucketName).Context(ctx).Do()
+	if err != nil {
+		if gErr, ok := err.(*googleapi.Error); ok && gErr.Code == 404 {
+			return nil
+		}
+		return fmt.Errorf("get bucket IAM policy: %w", err)
+	}
+	member := "serviceAccount:" + saEmail
+	const role = "roles/storage.objectViewer"
+	for _, b := range policy.Bindings {
+		if b.Role == role {
+			for _, m := range b.Members {
+				if m == member {
+					return nil // already granted
+				}
+			}
+			b.Members = append(b.Members, member)
+			_, err = storageSvc.Buckets.SetIamPolicy(bucketName, policy).Context(ctx).Do()
+			return err
+		}
+	}
+	policy.Bindings = append(policy.Bindings, &storagev1.PolicyBindings{
+		Role:    role,
+		Members: []string{member},
+	})
+	_, err = storageSvc.Buckets.SetIamPolicy(bucketName, policy).Context(ctx).Do()
+	return err
 }
 
 // resolveProjectNumbers looks up the GCP project number for each project ID.
