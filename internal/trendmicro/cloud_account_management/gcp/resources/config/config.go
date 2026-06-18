@@ -94,8 +94,13 @@ var FEATURE_PERMISSIONS = map[string][]string{
 		"compute.routers.update",
 		"compute.snapshots.create",
 		"compute.subnetworks.delete",
+		"cloudbuild.builds.list",
+		"cloudbuild.builds.update",
 		"eventarc.triggers.delete",
+		"logging.sinks.delete",
 		"run.services.delete",
+		"storage.buckets.delete",
+		"storage.objects.delete",
 		"vpcaccess.connectors.delete",
 	},
 }

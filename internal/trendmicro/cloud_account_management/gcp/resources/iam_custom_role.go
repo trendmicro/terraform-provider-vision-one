@@ -365,6 +365,16 @@ func (r *IAMCustomRole) Read(ctx context.Context, req resource.ReadRequest, resp
 		return
 	}
 
+	// Soft-deleted role grants no permissions to bound principals. Drop it
+	// from state so TF re-creates on next apply; the alternative is silently
+	// owning a ghost role that lingers in bindings but blocks no traffic
+	// (the failure mode that surfaced in DDR-3273 — bindings to many
+	// soft-deleted dspm_feature roles accumulating over test cycles).
+	if role.Deleted {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
 	state.Title = types.StringValue(role.Title)
 	state.Description = types.StringValue(role.Description)
 	state.Deleted = types.BoolValue(role.Deleted)
@@ -555,6 +565,64 @@ func (r *IAMCustomRole) Delete(ctx context.Context, req resource.DeleteRequest, 
 	}
 
 	tflog.Debug(ctx, fmt.Sprintf("[GCP Role Definition][Delete] Deleted role: %s", roleName))
+}
+
+// ModifyPlan resolves the Computed `permissions` attribute from
+// `feature_permissions` + core perms at plan time. Without this, the attribute
+// stays unknown until apply and TF can't detect drift when FEATURE_PERMISSIONS
+// (in this provider's source) gains new entries between releases — Read
+// populates state.permissions from GCP, plan.permissions is still unknown, no
+// diff visible, no Update call. The DDR-3273 follow-on (sink+GCS perms) hit
+// exactly this: 16-perm role on GCP, FEATURE_PERMISSIONS map now 19, but TF
+// did nothing on apply because no plan-vs-state attribute differed.
+//
+// Skipped when the user supplied `permissions` explicitly (they get the raw
+// list they wrote — feature aggregation is opt-in via `feature_permissions`).
+func (r *IAMCustomRole) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	// Destroy plans have a null Plan.
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var plan customRoleDefinitionResourceModel
+	if diags := req.Plan.Get(ctx, &plan); diags.HasError() {
+		resp.Diagnostics.Append(diags...)
+		return
+	}
+
+	// User supplied an explicit list — honor it verbatim, no aggregation.
+	if !plan.Permissions.IsNull() && !plan.Permissions.IsUnknown() {
+		return
+	}
+
+	var features []string
+	if !plan.FeaturePermissions.IsNull() && !plan.FeaturePermissions.IsUnknown() {
+		if diags := plan.FeaturePermissions.ElementsAs(ctx, &features, false); diags.HasError() {
+			resp.Diagnostics.Append(diags...)
+			return
+		}
+	}
+
+	corePerms := make([]string, len(config.GCP_CUSTOM_ROLE_CORE_PERMISSIONS))
+	copy(corePerms, config.GCP_CUSTOM_ROLE_CORE_PERMISSIONS)
+
+	expected, err := r.aggregatePermissions(ctx, corePerms, features)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"[GCP Role Definition][ModifyPlan] Failed to derive expected permissions",
+			err.Error(),
+		)
+		return
+	}
+
+	list, diags := types.ListValueFrom(ctx, types.StringType, expected)
+	if diags.HasError() {
+		resp.Diagnostics.Append(diags...)
+		return
+	}
+	plan.Permissions = list
+
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, plan)...)
 }
 
 func (r *IAMCustomRole) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
