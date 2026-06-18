@@ -26,9 +26,8 @@ import (
 	vpcaccess "google.golang.org/api/vpcaccess/v1"
 )
 
-// dspmFeatureRoleTitle is the canonical Title field on the custom role created
-// by `visionone_cam_iam_custom_role.dspm_feature` for each bound project. The
-// janitor uses this as a scope guard so it never touches another product's role.
+// dspmFeatureRoleTitle is the canonical Title of dspm_feature custom roles,
+// used by the janitor as a scope guard.
 const dspmFeatureRoleTitle = "Vision One DSPM Feature Role"
 
 // regionAbbreviationOverrides mirrors the explicit `region_abbr()` case
@@ -114,39 +113,30 @@ const (
 	asyncOpPollInterval = 10 * time.Second
 	asyncOpMaxPolls     = 30
 
-	// IAM propagation wait budget — fail-fast philosophy. Active polling
-	// catches normal propagation (typically 60-120s) within budget. Beyond
-	// that, something is structurally wrong (missing role, broken binding,
-	// wrong SA) and waiting longer just hides the real error. Better to
-	// surface a clear "IAM didn't propagate in N seconds" diagnostic
-	// pointing at the upstream resources than to silently hang the apply.
+	// IAM propagation poll budget (testIamPermissions on the project).
 	cleanupPermsWaitMaxDuration = 3 * time.Minute
 	cleanupPermsPollStart       = 5 * time.Second
 	cleanupPermsPollCap         = 20 * time.Second
 	cleanupPermsPollFactor      = 2.0
 
-	// Per-service IAM cache warmup — same fail-fast principle. Each service
-	// usually catches up within 30-60s of the central IAM update. If it
-	// doesn't, retrying longer rarely helps.
+	// Per-service IAM cache warmup. Probe uses delete-on-nonexistent so it
+	// exercises the actual delete perm (not the looser list perm).
 	cleanupServiceCacheMaxDuration = 90 * time.Second
 	cleanupServiceCachePollStart   = 5 * time.Second
 	cleanupServiceCachePollCap     = 15 * time.Second
 )
 
-// warmupServiceCaches polls each GCP service's IAM resolver until it stops
-// 403'ing the SA. Even after testIamPermissions reports all perms granted
-// (central IAM), individual services keep their own IAM caches that can lag
-// 30-90s. We probe with cheap LIST calls (covered by viewer-level perms the
-// SA holds) — a 200 / 404 means the cache has refreshed for our principal;
-// a 403 means it hasn't.
-//
-// Probe coverage MUST match the services this cleanup actually calls
-// destructive APIs against. Missing a service here = first delete call to
-// that service will false-403 (the original bug). Each service we delete
-// from below has a corresponding probe here.
+// warmupServiceCaches polls each GCP service's IAM resolver until it
+// stops 403'ing the delete perm the cleanup will use. Each probe calls
+// Delete on a random-named non-existent resource:
+//   • 404 = SA has the perm, resource just absent → ready
+//   • 403 = perm not yet visible to this service → retry
+// Coverage matches the services cleanup destroys; missing one here
+// means that service can false-403 the first real delete.
 func warmupServiceCaches(ctx context.Context, projectID, region string, opts ...option.ClientOption) error {
 	parent := fmt.Sprintf("projects/%s/locations/%s", projectID, region)
 	projParent := fmt.Sprintf("projects/%s", projectID)
+	probeSuffix := fmt.Sprintf("dspm-warmup-probe-%d", time.Now().UnixNano())
 
 	type probe struct {
 		name string
@@ -154,73 +144,71 @@ func warmupServiceCaches(ctx context.Context, projectID, region string, opts ...
 	}
 
 	probes := []probe{
-		// Services with location/region scope:
-		{"eventarc", func() error {
+		{"eventarc.triggers.delete", func() error {
 			svc, err := eventarc.NewService(ctx, opts...)
 			if err != nil {
 				return err
 			}
-			_, err = svc.Projects.Locations.Triggers.List(parent).PageSize(1).Context(ctx).Do()
+			_, err = svc.Projects.Locations.Triggers.Delete(fmt.Sprintf("%s/triggers/%s", parent, probeSuffix)).Context(ctx).Do()
 			return err
 		}},
-		{"cloudfunctions", func() error {
+		{"cloudfunctions.functions.delete", func() error {
 			svc, err := cloudfunctions.NewService(ctx, opts...)
 			if err != nil {
 				return err
 			}
-			_, err = svc.Projects.Locations.Functions.List(parent).PageSize(1).Context(ctx).Do()
+			_, err = svc.Projects.Locations.Functions.Delete(fmt.Sprintf("%s/functions/%s", parent, probeSuffix)).Context(ctx).Do()
 			return err
 		}},
-		{"run", func() error {
+		{"run.services.delete", func() error {
 			svc, err := run.NewService(ctx, opts...)
 			if err != nil {
 				return err
 			}
-			_, err = svc.Projects.Locations.Services.List(parent).PageSize(1).Context(ctx).Do()
+			_, err = svc.Projects.Locations.Services.Delete(fmt.Sprintf("%s/services/%s", parent, probeSuffix)).Context(ctx).Do()
 			return err
 		}},
-		{"cloudscheduler", func() error {
+		{"cloudscheduler.jobs.delete", func() error {
 			svc, err := scheduler.NewService(ctx, opts...)
 			if err != nil {
 				return err
 			}
-			_, err = svc.Projects.Locations.Jobs.List(parent).PageSize(1).Context(ctx).Do()
+			_, err = svc.Projects.Locations.Jobs.Delete(fmt.Sprintf("%s/jobs/%s", parent, probeSuffix)).Context(ctx).Do()
 			return err
 		}},
-		{"vpcaccess", func() error {
+		{"vpcaccess.connectors.delete", func() error {
 			svc, err := vpcaccess.NewService(ctx, opts...)
 			if err != nil {
 				return err
 			}
-			_, err = svc.Projects.Locations.Connectors.List(parent).PageSize(1).Context(ctx).Do()
+			_, err = svc.Projects.Locations.Connectors.Delete(fmt.Sprintf("%s/connectors/%s", parent, probeSuffix)).Context(ctx).Do()
 			return err
 		}},
-		// Project-scoped services:
-		{"compute", func() error {
-			// One list call probes the compute API's IAM resolver — covers
-			// disks/instances/firewalls/networks/routers/subnetworks/snapshots/
-			// resourcePolicies (all under compute.googleapis.com).
+		{"compute.firewalls.delete", func() error {
+			// firewall probe covers the whole compute API IAM cache
+			// (disks/instances/networks/routers/subnetworks/snapshots/
+			// resourcePolicies all share it).
 			svc, err := compute.NewService(ctx, opts...)
 			if err != nil {
 				return err
 			}
-			_, err = svc.Networks.List(projectID).MaxResults(1).Context(ctx).Do()
+			_, err = svc.Firewalls.Delete(projectID, probeSuffix).Context(ctx).Do()
 			return err
 		}},
-		{"logging", func() error {
+		{"logging.sinks.delete", func() error {
 			svc, err := logging.NewService(ctx, opts...)
 			if err != nil {
 				return err
 			}
-			_, err = svc.Projects.Sinks.List(projParent).PageSize(1).Context(ctx).Do()
+			_, err = svc.Projects.Sinks.Delete(fmt.Sprintf("%s/sinks/%s", projParent, probeSuffix)).Context(ctx).Do()
 			return err
 		}},
-		{"storage", func() error {
+		{"storage.buckets.delete", func() error {
 			svc, err := storagev1.NewService(ctx, opts...)
 			if err != nil {
 				return err
 			}
-			_, err = svc.Buckets.List(projectID).MaxResults(1).Context(ctx).Do()
+			err = svc.Buckets.Delete(probeSuffix).Context(ctx).Do()
 			return err
 		}},
 	}
@@ -243,19 +231,30 @@ func warmupServiceCaches(ctx context.Context, projectID, region string, opts ...
 		attempt++
 		notReady := make([]string, 0)
 		for _, p := range probes {
-			if err := p.fn(); err != nil && is403(err) {
-				notReady = append(notReady, p.name)
+			err := p.fn()
+			// Ready signal: nil (we deleted the bogus name — won't happen)
+			// OR 404 (we have the perm, resource just doesn't exist —
+			// expected path). Anything else → not ready (most often 403
+			// = IAM cache still warming).
+			if err != nil && !isGCPNotFound(err) {
+				if is403(err) {
+					notReady = append(notReady, p.name)
+				} else {
+					// Unexpected error — surface fast instead of retrying
+					// forever on something unrelated to IAM lag.
+					return fmt.Errorf("warmup probe %s unexpected error: %w", p.name, err)
+				}
 			}
 		}
 		if len(notReady) == 0 {
-			tflog.Info(ctx, fmt.Sprintf("[DSPM Region Cleanup] per-service IAM caches warm on %s (attempt %d)", projectID, attempt))
+			tflog.Info(ctx, fmt.Sprintf("[DSPM Region Cleanup] per-service IAM caches warm on %s (attempt %d) — all delete perms confirmed via probe", projectID, attempt))
 			return nil
 		}
 		tflog.Warn(ctx, fmt.Sprintf("[DSPM Region Cleanup] per-service IAM cache lag on %s: %v still 403 (attempt %d)", projectID, notReady, attempt))
 
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return fmt.Errorf("per-service IAM cache warmup timeout on project %s after %s — services still 403: %v", projectID, cleanupServiceCacheMaxDuration, notReady)
+			return fmt.Errorf("per-service IAM cache warmup timeout on project %s after %s — delete perms still 403: %v", projectID, cleanupServiceCacheMaxDuration, notReady)
 		}
 		wait := backoff
 		if wait > remaining {
@@ -273,17 +272,11 @@ func warmupServiceCaches(ctx context.Context, projectID, region string, opts ...
 	}
 }
 
-// waitForCleanupPermsReady polls projects.testIamPermissions as the calling
-// principal (the CAM SA when opts carries its key, or ADC otherwise) until
-// every perm in the DSPM feature role has been granted on projectID, or the
-// budget runs out. Eliminates the racy "fresh role + binding + 60s sleep"
-// pattern that intermittently fires 403s on the first apply of a folder/org
-// install.
-//
-// Returns nil when ready. On timeout the error names a sample missing perm so
-// the operator log points straight at the broken IAM binding rather than
-// surfacing a downstream "permission denied" from whichever Delete call
-// happened to run first.
+// waitForCleanupPermsReady polls projects.testIamPermissions until every
+// perm in the DSPM feature role is granted to the calling principal on
+// projectID. Returns nil on success; on timeout the error names a sample
+// missing perm so the diagnostic points at the unpropagated IAM rather
+// than at whichever Delete call happens to 403 first.
 func waitForCleanupPermsReady(ctx context.Context, projectID string, opts ...option.ClientOption) error {
 	required := camconfig.FEATURE_PERMISSIONS[camconfig.FEATURE_DATA_SECURITY_POSTURE_MANAGEMENT]
 	if len(required) == 0 {
@@ -394,16 +387,10 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 	pfx := opts.NamePrefix
 	parent := fmt.Sprintf("projects/%s/locations/%s", opts.ProjectID, opts.Region)
 
-	// Block until the CAM SA actually has the cleanup perms on this project.
-	// Two layers because GCP IAM is eventually consistent in TWO places:
-	//   (1) waitForCleanupPermsReady — polls testIamPermissions until the
-	//       central IAM (resourcemanager) acknowledges all 19 cleanup perms.
-	//   (2) warmupServiceCaches — even after (1), each per-service IAM
-	//       resolver (cloudscheduler, vpcaccess, cloudfunctions, run, etc.)
-	//       keeps its own cache that lags central by 30-90s. Probe each
-	//       service's list endpoint until it stops 403'ing.
-	// The static `time_sleep.wait_for_dspm_iam = 60s` in the integration TF
-	// only gives a head-start; these two polls are the source of truth.
+	// Two-layer IAM readiness check before any destroy:
+	//   1. central IAM (resourcemanager) via testIamPermissions
+	//   2. per-service IAM caches via delete-on-nonexistent probe
+	// The static time_sleep in the integration TF is only a head-start.
 	if err := waitForCleanupPermsReady(ctx, opts.ProjectID, opts.ClientOptions...); err != nil {
 		return result, err
 	}
@@ -534,14 +521,9 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 		noteErr("vpc", vpcName, err)
 	}
 
-	// Delete the log_router_sink that targets the audit-logs bucket BEFORE
-	// touching the bucket itself. The sink continuously writes audit log
-	// entries to the bucket — if we empty + delete the bucket while the sink
-	// is still alive, in-flight writes race the deletion and either: (a)
-	// repopulate the bucket so Buckets.Delete returns 409/not-empty, or (b)
-	// recreate objects between our List and Delete. Sink name matches
-	// dspm-cloud-autonomous-gcp-tf's log_router_sink module: `${pfx}-audit-sink`.
-	// 404 is silent success (fresh install — no sink to remove).
+	// Delete the audit-logs sink before touching its destination bucket
+	// so in-flight writes can't repopulate the bucket. Sink name matches
+	// dspm-cloud-autonomous-gcp-tf's log_router_sink: `${pfx}-audit-sink`.
 	if logSvc, err := logging.NewService(ctx, opts.ClientOptions...); err != nil {
 		errs = append(errs, fmt.Sprintf("logging client: %v", err))
 	} else {
@@ -551,24 +533,9 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 		noteErr("sink", sinkName, err)
 	}
 
-	// Two buckets follow opposite strategies based on what's in them:
-	//
-	//   -audit-logs      → PRESERVE (compliance trail). Reported via
-	//                      result.OrphanBuckets so the downstream new-module
-	//                      can adopt with `import { for_each = ... }`. We
-	//                      can't safely delete this — GCP's audit-log
-	//                      forwarding pipeline drains in-flight entries for
-	//                      seconds-to-minutes after Sinks.Delete, racing
-	//                      Buckets.Delete and producing 409 not-empty.
-	//
-	//   -trend-resources → DELETE. Contents are Terraform-regenerated
-	//                      (CF source archives, startup scripts, .keep
-	//                      placeholders) — no customer data. The new
-	//                      architecture relocates this bucket to
-	//                      shared_resources/ in primary with a different
-	//                      `-shared` suffix, so the old per-member bucket
-	//                      becomes orphan with no import target. No sink
-	//                      writes here ⇒ no audit-pipeline race.
+	// -audit-logs:      preserve (compliance trail) and report for
+	//                   downstream `import { for_each }` adoption.
+	// -trend-resources: delete (TF-regenerated content).
 	if storageSvc, err := storagev1.NewService(ctx, opts.ClientOptions...); err != nil {
 		errs = append(errs, fmt.Sprintf("storage client: %v", err))
 	} else {
@@ -586,9 +553,8 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 				tflog.Info(ctx, fmt.Sprintf("[DSPM Region Cleanup] audit-logs bucket preserved for new-module import: %s", auditBucket))
 			}
 
-			// -trend-resources: kill Cloud Build first (it streams compile
-			// logs into container-builds/logs/ at ~1 write/sec, which would
-			// race empty+delete), then drop the bucket.
+			// Cancel Cloud Build first (streams compile logs that race
+			// empty+delete), then drop the trend-resources bucket.
 			if cancelled, err := cancelActiveCloudBuilds(ctx, opts.ProjectID, opts.ClientOptions...); err != nil {
 				tflog.Warn(ctx, fmt.Sprintf("[DSPM Region Cleanup] cancel builds best-effort: %v", err))
 			} else if cancelled > 0 {
@@ -602,11 +568,9 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 		}
 	}
 
-	// Janitor pass: clean up project-IAM bindings that point at soft-deleted
-	// DSPM-feature roles for our SA. Best-effort — its failure must not turn
-	// an otherwise-clean cleanup into a partial/failed status, so we log and
-	// continue rather than appending to errs. Uses ADC (operator creds), NOT
-	// the CAM SA, because the CAM SA must not have setIamPolicy.
+	// Best-effort janitor: strip stale SA bindings pointing at soft-deleted
+	// DSPM Feature Roles. Uses ADC (operator creds) — CAM SA must not have
+	// setIamPolicy. Failure here doesn't fail the cleanup.
 	if opts.SAEmail != "" {
 		purged, err := purgeOrphanDSPMFeatureRoleBindings(ctx, opts.ProjectID, opts.SAEmail)
 		if err != nil {
@@ -623,26 +587,12 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 	return result, combinedErr
 }
 
-// purgeOrphanDSPMFeatureRoleBindings strips saEmail from project-IAM bindings
-// that point at soft-deleted "Vision One DSPM Feature Role" custom roles.
-//
-// Why: each apply of `visionone_cam_iam_custom_role.dspm_feature` creates a new
-// random-suffix role; previous incarnations get soft-deleted but their bindings
-// linger on the project's IAM policy (DDR-3273 testing observed 22 stale
-// bindings on a single SA in int). They grant nothing — the role is dead — but
-// clutter `gcloud projects get-iam-policy` output and survive GCP's 7-day role
-// garbage collect window because policy GC is decoupled from role GC.
-//
-// Credentials: ADC (operator), not the CAM SA. The CAM SA must NOT carry
-// resourcemanager.projects.setIamPolicy. The operator running `terraform
-// apply` already has project-IAM admin rights — they're the same principal
-// that creates the role + binding via the upstream `iam_custom_role` /
-// `google_project_iam_member` resources.
-//
-// Scope guards: (projectID, dspmFeatureRoleTitle, saEmail). Roles from other
-// products / other SAs are never touched.
-//
-// Returns count of bindings stripped (best-effort; caller treats err as warning).
+// purgeOrphanDSPMFeatureRoleBindings strips saEmail from project-IAM
+// bindings whose role is a soft-deleted "Vision One DSPM Feature Role".
+// accumulate across apply cycles. Uses ADC (operator) because CAM SA
+// must not carry setIamPolicy. Scope is bounded by (projectID,
+// dspmFeatureRoleTitle, saEmail) so other products' roles are never
+// touched. Returns count of bindings stripped.
 func purgeOrphanDSPMFeatureRoleBindings(ctx context.Context, projectID, saEmail string) (int, error) {
 	if projectID == "" || saEmail == "" {
 		return 0, nil
@@ -1127,23 +1077,11 @@ func resolveProjectNumber(ctx context.Context, projectID string, opts ...option.
 	return fmt.Sprintf("%d", proj.ProjectNumber), nil
 }
 
-// probeOrphanBuckets returns the names of GCS buckets that already exist for
-// (projectID, region, stage) AND should be adopted-not-deleted by the new
-// module. This is the set the root-module `import { for_each = ... }` blocks
-// iterate over; the same value is exposed at plan time by ModifyPlan and at
-// apply time by Create.
-//
-// CONTRACT: only `-audit-logs` buckets are reported. The legacy
-// `-trend-resources` bucket lives in a DIFFERENT location in the new
-// architecture (`shared_resources/` with `-shared` suffix), has no matching
-// import target in the per-member `module/storage`, and its content is
-// TF-regenerated (CF source archives, scripts) — so cleanup_region deletes it
-// inline rather than reporting it for import. Mixing both into one list would
-// (and did, in earlier development) cause both imports to target the single
-// `audit_logs_bucket[0]` instance, importing the wrong bucket.
-//
-// Returns ([], nil) for fresh installs. Read-only — uses storage.buckets.get
-// covered by roles/viewer.
+// probeOrphanBuckets returns existing `-audit-logs` bucket names that the
+// new module should adopt via root-level `import { for_each }` blocks.
+// Only audit-logs are reported here — `-trend-resources` is deleted
+// inline by Create (no matching import target in the new architecture).
+// Returns ([], nil) for fresh installs.
 func probeOrphanBuckets(ctx context.Context, projectID, region, stage string, opts ...option.ClientOption) ([]string, error) {
 	pfx := fmt.Sprintf("%s%s-%s", config.LEGACY_GCP_DSPM_NAME_BASE, stageNameToLetter(stage), regionAbbreviation(region))
 
@@ -1168,18 +1106,10 @@ func probeOrphanBuckets(ctx context.Context, projectID, region, stage string, op
 }
 
 // deleteGCSBucketIfExists empties + deletes a GCS bucket. Treats 404 as
-// success (already gone).
-//
-// Race: Cloud Build streams compile-job logs into this bucket (under
-// container-builds/logs/) at ~1 write/sec while a CF deployment is
-// in-flight. If we empty+delete while a build is running, log writes
-// race the delete → 409 not-empty.
-//
-// Solution: caller MUST run cancelActiveCloudBuilds before this. With
-// builds cancelled the writes stop within a few seconds; this function
-// then does a single empty+delete pass with a tiny retry budget (3) to
-// absorb the SIGKILL-to-write-stop lag. No IAM lock, no propagation
-// polling — just kill the writer + do the work.
+// success. Caller must run cancelActiveCloudBuilds first — Cloud Build
+// streams compile logs at ~1 write/sec which races empty+delete; once
+// builds are cancelled, 3-attempt active retry absorbs the
+// SIGKILL-to-write-stop lag.
 func deleteGCSBucketIfExists(ctx context.Context, svc *storagev1.Service, bucketName string) (bool, error) {
 	const maxAttempts = 3
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -1207,23 +1137,11 @@ func deleteGCSBucketIfExists(ctx context.Context, svc *storagev1.Service, bucket
 	return false, fmt.Errorf("delete bucket %s: unreachable", bucketName)
 }
 
-// cancelActiveCloudBuilds cancels every WORKING / QUEUED Cloud Build in the
-// project AND actively polls each cancelled build until its status leaves
-// WORKING/QUEUED (i.e. the worker has actually stopped writing). Cloud
-// Build's Cancel RPC is async: the API accepts the request immediately
-// but the worker keeps running — and streaming logs to GCS — for ~10-30s
-// until SIGKILL takes effect. Without the post-cancel poll, the bucket
-// cleanup races those log writes.
-//
-// Project-wide scope is intentional — Cloud Build jobs are identified by
-// UUID not by our prefix. We only cancel WORKING/QUEUED; terminal states
-// (SUCCESS / FAILURE / CANCELLED) are no-op. Returns number of builds we
-// confirmed have stopped.
-//
-// Active wait budget: 2 min. Each poll is one Get RPC per cancelled build
-// — actual work, not blind sleep. Beyond 2 min something is structurally
-// wrong (locked build worker, networking issue) and waiting longer just
-// hides the diagnosis.
+// cancelActiveCloudBuilds cancels every WORKING/QUEUED Cloud Build in
+// the project, then polls each cancelled build until its status leaves
+// WORKING/QUEUED (the worker keeps streaming logs for ~10-30s after
+// Cancel returns 200, until SIGKILL takes effect). Returns count of
+// confirmed-stopped builds. 2-min poll budget.
 func cancelActiveCloudBuilds(ctx context.Context, projectID string, opts ...option.ClientOption) (int, error) {
 	svc, err := cloudbuild.NewService(ctx, opts...)
 	if err != nil {
@@ -1260,8 +1178,7 @@ func cancelActiveCloudBuilds(ctx context.Context, projectID string, opts ...opti
 		return 0, nil
 	}
 
-	// Active wait: poll each cancelled build until its status leaves
-	// WORKING/QUEUED. Then we know the worker has stopped streaming logs.
+	// Poll each cancelled build until status leaves WORKING/QUEUED.
 	deadline := time.Now().Add(2 * time.Minute)
 	pending := make(map[string]struct{}, len(cancelledIDs))
 	for _, id := range cancelledIDs {
@@ -1297,18 +1214,11 @@ func cancelActiveCloudBuilds(ctx context.Context, projectID string, opts ...opti
 	return len(cancelledIDs), nil
 }
 
-// emptyGCSBucket lists+deletes ALL objects in a bucket, including noncurrent
-// (versioned) generations. The default Objects.List omits noncurrent
-// versions, so a bucket that ever had versioning enabled — even if
-// versioning is now Suspended — keeps its old generations as ghost
-// objects that block Bucket.Delete with 409 not-empty (root cause of
-// the trend-resources delete failures: ~30 noncurrent log-*.txt
-// generations from prior Cloud Build streaming runs).
-//
-// `Versions(true)` makes List include both current AND noncurrent
-// generations. For each returned object we delete the SPECIFIC
-// generation via .Generation(g) — without it, Delete only removes the
-// live version, leaving noncurrent ones to block bucket delete.
+// emptyGCSBucket lists+deletes ALL object generations (current AND
+// noncurrent). A bucket that ever had versioning enabled keeps its
+// noncurrent generations as ghost objects that block Bucket.Delete with
+// 409 not-empty — they're invisible to the default List call. Versions(true)
+// surfaces them; per-object Generation(g) on the delete removes them.
 func emptyGCSBucket(ctx context.Context, svc *storagev1.Service, bucketName string) error {
 	var pageToken string
 	for {

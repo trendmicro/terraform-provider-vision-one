@@ -20,11 +20,8 @@ import (
 	"google.golang.org/api/option"
 )
 
-// stringListFromSlice converts a []string into a known-not-null types.List of
-// strings. types.ListValueFrom in framework v1.16 normalizes empty slices to
-// the null list, which then trips TF's "Provider produced inconsistent result"
-// guard when ModifyPlan planned an empty (non-null) list and Create returned
-// null. Building from an explicit []attr.Value keeps the empty case empty.
+// stringListFromSlice — known-non-null types.List (ListValueFrom may
+// normalize empty slices to null, tripping TF's consistency guard).
 func stringListFromSlice(s []string) types.List {
 	elems := make([]attr.Value, 0, len(s))
 	for _, v := range s {
@@ -178,9 +175,8 @@ func (r *LegacyCleanupDSPMRegion) Create(ctx context.Context, req resource.Creat
 			return
 		}
 		clientOptions = append(clientOptions, opt)
-		// SA email feeds the orphan-binding janitor; on parse failure we log
-		// and continue without the janitor (key is otherwise still usable
-		// for cleanup ops, so we don't fail the whole resource).
+		// SA email feeds the orphan-binding janitor; on parse failure
+		// continue without it (key is still usable for cleanup ops).
 		if email, err := saEmailFromEncodedKey(key); err != nil {
 			tflog.Warn(ctx, fmt.Sprintf("[DSPM Region Cleanup] could not extract SA email for janitor: %v", err))
 		} else {
@@ -203,10 +199,7 @@ func (r *LegacyCleanupDSPMRegion) Create(ctx context.Context, req resource.Creat
 	resp.Diagnostics.Append(diag...)
 	plan.ResourcesDeleted = resourcesDeleted
 
-	// Surface orphan buckets so the downstream new-module can import them
-	// via `import { for_each = ... }`. Always materialize as a (possibly
-	// empty) known list so the attribute is never unknown / null — that
-	// would block downstream for_each evaluation at plan time.
+	// Always known-non-null — root module's `import { for_each }` rejects unknown / null.
 	plan.OrphanBucketNames = stringListFromSlice(result.OrphanBuckets)
 
 	plan.SnapshotName = types.StringValue(result.SnapshotName)
@@ -215,7 +208,6 @@ func (r *LegacyCleanupDSPMRegion) Create(ctx context.Context, req resource.Creat
 	deletedCount := totalDeleted(result.ResourcesDeleted)
 	switch {
 	case err != nil && deletedCount > 0:
-		// Some resource types succeeded, at least one failed — surface details via cleanup_error.
 		plan.CleanupStatus = types.StringValue("partial")
 		plan.CleanupError = types.StringValue(err.Error())
 	case err != nil:
@@ -229,16 +221,10 @@ func (r *LegacyCleanupDSPMRegion) Create(ctx context.Context, req resource.Creat
 
 	tflog.Info(ctx, fmt.Sprintf("[DSPM Region Cleanup] done project=%s region=%s status=%s", projectID, region, plan.CleanupStatus.ValueString()))
 
-	// Persist state first so the operator can inspect cleanup_status /
-	// resources_deleted / cleanup_error via `terraform state show` even when
-	// we hard-stop the apply below.
+	// Persist before hard-stop so operator can inspect cleanup_* attrs.
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 
-	// Hard-stop the apply on partial/failed. Letting it continue with stale
-	// legacy resources still in place causes downstream module steps to fail
-	// with confusing errors far from the cleanup miss (e.g. audit-logs bucket
-	// returning 409 "you already own it"). Better to fail here pointing at
-	// the family that broke.
+	// Fail fast — letting apply continue surfaces confusing 409s downstream.
 	if err != nil {
 		resp.Diagnostics.AddError(
 			fmt.Sprintf("[DSPM Region Cleanup] cleanup %s for project=%s region=%s", plan.CleanupStatus.ValueString(), projectID, region),
@@ -247,20 +233,11 @@ func (r *LegacyCleanupDSPMRegion) Create(ctx context.Context, req resource.Creat
 	}
 }
 
-// ModifyPlan probes GCP for pre-existing orphan buckets at plan time so the
-// root-module `import { for_each = ... }` blocks have a known-at-plan-time
-// list to iterate (Terraform forbids unknown values in for_each).
-//
-// Uses ADC (operator creds), NOT the resource's service_account_key — the SA
-// key is often unknown at first plan (e.g. depends on a yet-to-be-created
-// CAM SA via coalesce + integration.private_key). storage.buckets.get on the
-// target buckets is covered by roles/viewer the operator already has.
-//
-// Post-first-apply this method preserves state.OrphanBucketNames untouched
-// — the value Create wrote into state takes precedence over a fresh probe.
-// On probe failure (no ADC, network) we set the empty list rather than
-// erroring: fresh-install path stays unblocked; re-install with orphans
-// will surface clearly via the downstream google_storage_bucket 409.
+// ModifyPlan probes GCP for orphan buckets at plan time so the root-module
+// `import { for_each }` block has a known list (TF forbids unknown
+// for_each). Uses ADC because the SA key may be unknown at first plan.
+// On post-first-apply, preserves state.OrphanBucketNames. On probe
+// failure, sets empty list to keep the fresh-install path unblocked.
 func (r *LegacyCleanupDSPMRegion) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
 	if req.Plan.Raw.IsNull() {
 		return
@@ -318,17 +295,11 @@ func (r *LegacyCleanupDSPMRegion) Update(ctx context.Context, req resource.Updat
 	}
 	state.ServiceAccountKey = plan.ServiceAccountKey
 	state.SnapshotDiskBeforeDelete = plan.SnapshotDiskBeforeDelete
-	// Carry over computed-by-ModifyPlan attributes so they don't appear as
-	// "now null" inconsistencies vs the plan. TF v1.5+ enforces that
-	// computed attrs whose plan was set (not unknown) must match in the
-	// final new state. ModifyPlan populates OrphanBucketNames to a known
-	// list (possibly empty); Update must preserve that, otherwise this
-	// path silently drops it to null on second-apply of an existing resource.
+	// Preserve plan's OrphanBucketNames (set by ModifyPlan) to satisfy
+	// TF's plan/state consistency check on second apply.
 	if !plan.OrphanBucketNames.IsNull() && !plan.OrphanBucketNames.IsUnknown() {
 		state.OrphanBucketNames = plan.OrphanBucketNames
 	} else if state.OrphanBucketNames.IsNull() || state.OrphanBucketNames.IsUnknown() {
-		// Pre-existing state from an older schema where the attribute didn't
-		// exist; materialize an empty list so downstream for_each is happy.
 		state.OrphanBucketNames = stringListFromSlice(nil)
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
