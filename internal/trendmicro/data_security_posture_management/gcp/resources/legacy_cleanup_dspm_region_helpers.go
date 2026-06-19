@@ -344,6 +344,42 @@ func waitForCleanupPermsReady(ctx context.Context, projectID string, opts ...opt
 	}
 }
 
+// probeForLegacyDSPMResources returns true if any legacy DSPM resources exist
+// in the region. Checks VPC and instances as a proxy — if neither exist,
+// the entire cleanup is no-op and can skip the 3-min IAM propagation wait.
+func probeForLegacyDSPMResources(ctx context.Context, projectID, region, namePrefix string, opts ...option.ClientOption) bool {
+	cSvc, err := compute.NewService(ctx, opts...)
+	if err != nil {
+		// On compute client error, assume resources might exist (conservative).
+		// The cleanup will fail anyway when it tries to list instances.
+		return true
+	}
+
+	// Check for VPC first (exists = cleanup needed).
+	vpcName := namePrefix + "-vpc"
+	_, err = cSvc.Networks.Get(projectID, vpcName).Context(ctx).Do()
+	if err == nil {
+		return true
+	}
+	if !isGCPNotFound(err) {
+		// Network error — assume resources exist and let cleanup handle it.
+		return true
+	}
+
+	// VPC missing — also check for instances as a secondary signal.
+	instances, err := listDSPMInstances(ctx, cSvc, projectID, region)
+	if err != nil && !isGCPNotFound(err) {
+		// List error — assume resources exist.
+		return true
+	}
+	if len(instances) > 0 {
+		return true
+	}
+
+	// Neither VPC nor instances found — no cleanup needed.
+	return false
+}
+
 // runDSPMRegionCleanup deletes legacy DSPM Package resources in dependency
 // order. Errors are collected but don't short-circuit — goal is best-effort
 // cleanup so the new stack can claim the same names. NotFound is silent success.
@@ -386,6 +422,13 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 
 	pfx := opts.NamePrefix
 	parent := fmt.Sprintf("projects/%s/locations/%s", opts.ProjectID, opts.Region)
+
+	// Quick probe: check if legacy resources exist before spending 3 min on IAM.
+	// If VPC and instances both absent, this is a no-op cleanup (fresh install).
+	if !probeForLegacyDSPMResources(ctx, opts.ProjectID, opts.Region, pfx, opts.ClientOptions...) {
+		tflog.Info(ctx, fmt.Sprintf("[DSPM Region Cleanup] no legacy resources found on %s/%s — skipping IAM wait", opts.ProjectID, opts.Region))
+		return result, nil
+	}
 
 	// Two-layer IAM readiness check before any destroy:
 	//   1. central IAM (resourcemanager) via testIamPermissions
@@ -449,9 +492,9 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 		instances, err := listDSPMInstances(ctx, cSvc, opts.ProjectID, opts.Region)
 		noteErr("instances_list", opts.Region, err)
 		for _, inst := range instances {
-			err := deleteAndWaitComputeInstance(ctx, cSvc, opts.ProjectID, inst.zone, inst.name)
-			tally("vms", err == nil)
-			noteErr("vm", inst.name, err)
+			delErr := deleteAndWaitComputeInstance(ctx, cSvc, opts.ProjectID, inst.zone, inst.name)
+			tally("vms", delErr == nil)
+			noteErr("vm", inst.name, delErr)
 		}
 
 		diskName := fmt.Sprintf("%s-persistent-scan-job-disk", pfx)
@@ -616,9 +659,9 @@ func purgeOrphanDSPMFeatureRoleBindings(ctx context.Context, projectID, saEmail 
 		if pageToken != "" {
 			req = req.PageToken(pageToken)
 		}
-		resp, err := req.Context(ctx).Do()
-		if err != nil {
-			return 0, fmt.Errorf("list roles: %w", err)
+		resp, listErr := req.Context(ctx).Do()
+		if listErr != nil {
+			return 0, fmt.Errorf("list roles: %w", listErr)
 		}
 		for _, role := range resp.Roles {
 			if !role.Deleted {

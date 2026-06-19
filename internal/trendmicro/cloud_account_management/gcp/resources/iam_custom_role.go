@@ -571,14 +571,24 @@ func (r *IAMCustomRole) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 		return
 	}
 
-	var plan customRoleDefinitionResourceModel
-	if diags := req.Plan.Get(ctx, &plan); diags.HasError() {
+	// Check the *config* (what the practitioner actually typed), not the plan
+	// (which Terraform back-fills with prior state for Optional+Computed attrs).
+	// Without this, an in-place upgrade keeps the old permission set from state
+	// and never re-derives when FEATURE_PERMISSIONS gains new entries.
+	var cfg customRoleDefinitionResourceModel
+	if diags := req.Config.Get(ctx, &cfg); diags.HasError() {
 		resp.Diagnostics.Append(diags...)
 		return
 	}
 
 	// User-supplied list — honor verbatim, no aggregation.
-	if !plan.Permissions.IsNull() && !plan.Permissions.IsUnknown() {
+	if !cfg.Permissions.IsNull() && !cfg.Permissions.IsUnknown() {
+		return
+	}
+
+	var plan customRoleDefinitionResourceModel
+	if diags := req.Plan.Get(ctx, &plan); diags.HasError() {
+		resp.Diagnostics.Append(diags...)
 		return
 	}
 
