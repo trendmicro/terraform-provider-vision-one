@@ -581,7 +581,6 @@ func (r *IAMCustomRole) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 		return
 	}
 
-	// User-supplied list — honor verbatim, no aggregation.
 	if !cfg.Permissions.IsNull() && !cfg.Permissions.IsUnknown() {
 		return
 	}
