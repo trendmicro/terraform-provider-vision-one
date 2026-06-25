@@ -176,7 +176,11 @@ func (r *federatedIdentity) Create(ctx context.Context, req resource.CreateReque
 	fed.SetIssuer(toStringPointer(issuerURL))
 	fed.SetSubject(toStringPointer(`urn:visionone:identity:` + visionOneRegionCode + `:` + v1BusinessID + `:account/` + v1BusinessID))
 
-	_, err = client.GraphClient.Applications().ByApplicationId(*objectId).FederatedIdentityCredentials().Post(ctx, fed, nil)
+	// Retry while the just-created app registration is still propagating.
+	err = retryOnGraphPropagation(ctx, "Federated Identity", func() error {
+		_, e := client.GraphClient.Applications().ByApplicationId(*objectId).FederatedIdentityCredentials().Post(ctx, fed, nil)
+		return e
+	})
 	if err != nil {
 		resp.Diagnostics.AddError("[Federated Identity][Create] Failed to create federated identity credential", err.Error())
 		return
