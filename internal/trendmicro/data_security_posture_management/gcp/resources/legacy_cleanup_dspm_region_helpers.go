@@ -20,20 +20,18 @@ import (
 	"google.golang.org/api/googleapi"
 	iam "google.golang.org/api/iam/v1"
 	logging "google.golang.org/api/logging/v2"
+	monitoring   "google.golang.org/api/monitoring/v3"
+	monitoringv1 "google.golang.org/api/monitoring/v1"
 	"google.golang.org/api/option"
 	run "google.golang.org/api/run/v2"
 	storagev1 "google.golang.org/api/storage/v1"
 	vpcaccess "google.golang.org/api/vpcaccess/v1"
 )
 
-// dspmFeatureRoleTitle is the canonical Title of dspm_feature custom roles,
-// used by the janitor as a scope guard.
+// dspmFeatureRoleTitle is the canonical Title of dspm_feature custom roles; used by the janitor as a scope guard.
 const dspmFeatureRoleTitle = "Vision One DSPM Feature Role"
 
-// regionAbbreviationOverrides mirrors the explicit `region_abbr()` case
-// statement that ships in dspm-cloud-autonomous-gcp-tf today
-// (config/module_template_mg.{int,stg,prod}.txt). Bytes MUST match the bash
-// output or legacy resource names won't be found.
+// regionAbbreviationOverrides mirrors dspm-cloud-autonomous-gcp-tf's region_abbr(); bytes MUST match bash output or legacy names won't be found.
 var regionAbbreviationOverrides = map[string]string{
 	"us-central1":             "usc1",
 	"us-east1":                "use1",
@@ -90,21 +88,14 @@ type dspmRegionCleanupOptions struct {
 	NamePrefix               string // e.g. "dspm-i-use1"
 	SnapshotDiskBeforeDelete bool
 	ClientOptions            []option.ClientOption
-	// SAEmail is the client_email from ServiceAccountKey, used by the
-	// orphan-binding janitor pass. Empty string skips janitor entirely.
+	// SAEmail is the client_email from ServiceAccountKey; empty skips the orphan-binding janitor.
 	SAEmail string
 }
 
 type dspmRegionCleanupResult struct {
 	ResourcesDeleted map[string]int
 	SnapshotName     string
-	// OrphanBuckets lists the new-module-style GCS buckets that pre-existed
-	// for this (project, region) tuple. cleanup_region intentionally does
-	// NOT delete these (audit logs are data-preservation-sensitive, and
-	// deleting them races GCP's audit-log forwarding pipeline buffer).
-	// The downstream new-module is expected to adopt them via Terraform
-	// `import { for_each = ... }` blocks keyed on these names. Empty on
-	// fresh installs.
+	// OrphanBuckets lists pre-existing audit-log buckets; NOT deleted (compliance) — downstream module adopts via import { for_each }.
 	OrphanBuckets []string
 }
 
@@ -114,25 +105,20 @@ const (
 	asyncOpMaxPolls     = 30
 
 	// IAM propagation poll budget (testIamPermissions on the project).
-	cleanupPermsWaitMaxDuration = 3 * time.Minute
+	// GCP IAM bindings propagate within ~60s in most cases but can take up to 7 min.
+	cleanupPermsWaitMaxDuration = 7 * time.Minute
 	cleanupPermsPollStart       = 5 * time.Second
 	cleanupPermsPollCap         = 20 * time.Second
 	cleanupPermsPollFactor      = 2.0
 
 	// Per-service IAM cache warmup. Probe uses delete-on-nonexistent so it
 	// exercises the actual delete perm (not the looser list perm).
-	cleanupServiceCacheMaxDuration = 90 * time.Second
+	cleanupServiceCacheMaxDuration = 3 * time.Minute
 	cleanupServiceCachePollStart   = 5 * time.Second
 	cleanupServiceCachePollCap     = 15 * time.Second
 )
 
-// warmupServiceCaches polls each GCP service's IAM resolver until it
-// stops 403'ing the delete perm the cleanup will use. Each probe calls
-// Delete on a random-named non-existent resource:
-//   • 404 = SA has the perm, resource just absent → ready
-//   • 403 = perm not yet visible to this service → retry
-// Coverage matches the services cleanup destroys; missing one here
-// means that service can false-403 the first real delete.
+// warmupServiceCaches probes each service with a delete on a non-existent resource until it returns 404 (perm visible) instead of 403.
 func warmupServiceCaches(ctx context.Context, projectID, region string, opts ...option.ClientOption) error {
 	parent := fmt.Sprintf("projects/%s/locations/%s", projectID, region)
 	projParent := fmt.Sprintf("projects/%s", projectID)
@@ -185,14 +171,61 @@ func warmupServiceCaches(ctx context.Context, projectID, region string, opts ...
 			return err
 		}},
 		{"compute.firewalls.delete", func() error {
-			// firewall probe covers the whole compute API IAM cache
-			// (disks/instances/networks/routers/subnetworks/snapshots/
-			// resourcePolicies all share it).
 			svc, err := compute.NewService(ctx, opts...)
 			if err != nil {
 				return err
 			}
 			_, err = svc.Firewalls.Delete(projectID, probeSuffix).Context(ctx).Do()
+			return err
+		}},
+		{"compute.disks.delete", func() error {
+			// Zonal resource — separate IAM cache path from global firewalls.
+			svc, err := compute.NewService(ctx, opts...)
+			if err != nil {
+				return err
+			}
+			_, err = svc.Disks.Delete(projectID, region+"-b", probeSuffix).Context(ctx).Do()
+			return err
+		}},
+		{"compute.subnetworks.delete", func() error {
+			// Regional resource — separate IAM cache path from global resources.
+			svc, err := compute.NewService(ctx, opts...)
+			if err != nil {
+				return err
+			}
+			_, err = svc.Subnetworks.Delete(projectID, region, probeSuffix).Context(ctx).Do()
+			return err
+		}},
+		{"compute.routers.delete", func() error {
+			svc, err := compute.NewService(ctx, opts...)
+			if err != nil {
+				return err
+			}
+			_, err = svc.Routers.Delete(projectID, region, probeSuffix).Context(ctx).Do()
+			return err
+		}},
+		{"compute.resourcePolicies.delete", func() error {
+			svc, err := compute.NewService(ctx, opts...)
+			if err != nil {
+				return err
+			}
+			_, err = svc.ResourcePolicies.Delete(projectID, region, probeSuffix).Context(ctx).Do()
+			return err
+		}},
+		{"monitoring.alertPolicies.delete", func() error {
+			svc, err := monitoring.NewService(ctx, opts...)
+			if err != nil {
+				return err
+			}
+			_, err = svc.Projects.AlertPolicies.Delete(fmt.Sprintf("%s/alertPolicies/%s", projParent, probeSuffix)).Context(ctx).Do()
+			return err
+		}},
+		{"monitoring.dashboards.delete", func() error {
+			svc, err := monitoringv1.NewService(ctx, opts...)
+			if err != nil {
+				return err
+			}
+			_, err = svc.Projects.Dashboards.Delete(fmt.Sprintf("%s/dashboards/%s", projParent, probeSuffix)).Context(ctx).Do()
 			return err
 		}},
 		{"logging.sinks.delete", func() error {
@@ -272,11 +305,7 @@ func warmupServiceCaches(ctx context.Context, projectID, region string, opts ...
 	}
 }
 
-// waitForCleanupPermsReady polls projects.testIamPermissions until every
-// perm in the DSPM feature role is granted to the calling principal on
-// projectID. Returns nil on success; on timeout the error names a sample
-// missing perm so the diagnostic points at the unpropagated IAM rather
-// than at whichever Delete call happens to 403 first.
+// waitForCleanupPermsReady polls testIamPermissions until all DSPM perms are granted; on timeout names a missing perm for diagnostics.
 func waitForCleanupPermsReady(ctx context.Context, projectID string, opts ...option.ClientOption) error {
 	required := camconfig.FEATURE_PERMISSIONS[camconfig.FEATURE_DATA_SECURITY_POSTURE_MANAGEMENT]
 	if len(required) == 0 {
@@ -344,9 +373,7 @@ func waitForCleanupPermsReady(ctx context.Context, projectID string, opts ...opt
 	}
 }
 
-// probeForLegacyDSPMResources returns true if any legacy DSPM resources exist
-// in the region. Checks VPC and instances as a proxy — if neither exist,
-// the entire cleanup is no-op and can skip the 3-min IAM propagation wait.
+// probeForLegacyDSPMResources returns true if any legacy DSPM VPC/instances exist; false means cleanup is a no-op and skips IAM wait.
 func probeForLegacyDSPMResources(ctx context.Context, projectID, region, namePrefix string, opts ...option.ClientOption) bool {
 	cSvc, err := compute.NewService(ctx, opts...)
 	if err != nil {
@@ -380,9 +407,7 @@ func probeForLegacyDSPMResources(ctx context.Context, projectID, region, namePre
 	return false
 }
 
-// runDSPMRegionCleanup deletes legacy DSPM Package resources in dependency
-// order. Errors are collected but don't short-circuit — goal is best-effort
-// cleanup so the new stack can claim the same names. NotFound is silent success.
+// runDSPMRegionCleanup deletes legacy DSPM resources in dependency order; errors collected, not short-circuited (best-effort).
 func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (dspmRegionCleanupResult, error) {
 	result := dspmRegionCleanupResult{
 		ResourcesDeleted: map[string]int{
@@ -402,6 +427,8 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 			"vpcs":              0,
 			"sinks":                    0,
 			"buckets":                  0,
+			"alert_policies":           0,
+			"dashboards":               0,
 			"orphan_buckets_preserved": 0,
 			"orphan_bindings":          0,
 		},
@@ -427,13 +454,22 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 	// If VPC and instances both absent, this is a no-op cleanup (fresh install).
 	if !probeForLegacyDSPMResources(ctx, opts.ProjectID, opts.Region, pfx, opts.ClientOptions...) {
 		tflog.Info(ctx, fmt.Sprintf("[DSPM Region Cleanup] no legacy resources found on %s/%s — skipping IAM wait", opts.ProjectID, opts.Region))
+		// Still probe the audit-logs orphan bucket so Create returns a value consistent
+		// with ModifyPlan's plan-time probe (both check the same bucket name).
+		// A partial prior run may have deleted VPC/instances while leaving the bucket.
+		if storageSvc, sErr := storagev1.NewService(ctx, opts.ClientOptions...); sErr == nil {
+			if pn, pErr := resolveProjectNumber(ctx, opts.ProjectID, opts.ClientOptions...); pErr == nil {
+				auditBucket := fmt.Sprintf("%s-%s-audit-logs", pfx, pn)
+				if exists, _ := gcsBucketExists(ctx, storageSvc, auditBucket); exists {
+					result.OrphanBuckets = append(result.OrphanBuckets, auditBucket)
+					result.ResourcesDeleted["orphan_buckets_preserved"]++
+				}
+			}
+		}
 		return result, nil
 	}
 
-	// Two-layer IAM readiness check before any destroy:
-	//   1. central IAM (resourcemanager) via testIamPermissions
-	//   2. per-service IAM caches via delete-on-nonexistent probe
-	// The static time_sleep in the integration TF is only a head-start.
+	// Two-layer IAM readiness: (1) central IAM via testIamPermissions, (2) per-service caches via delete-on-nonexistent probe.
 	if err := waitForCleanupPermsReady(ctx, opts.ProjectID, opts.ClientOptions...); err != nil {
 		return result, err
 	}
@@ -491,10 +527,14 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 		// VMs must be deleted before the disk — if a VM holds the disk, disk delete returns 400 "in use".
 		instances, err := listDSPMInstances(ctx, cSvc, opts.ProjectID, opts.Region)
 		noteErr("instances_list", opts.Region, err)
+		vmDelErrs := 0
 		for _, inst := range instances {
 			delErr := deleteAndWaitComputeInstance(ctx, cSvc, opts.ProjectID, inst.zone, inst.name)
 			tally("vms", delErr == nil)
 			noteErr("vm", inst.name, delErr)
+			if delErr != nil {
+				vmDelErrs++
+			}
 		}
 
 		diskName := fmt.Sprintf("%s-persistent-scan-job-disk", pfx)
@@ -504,6 +544,7 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 		diskExists, err := computeDiskExists(ctx, cSvc, opts.ProjectID, diskZone, diskName)
 		noteErr("disk_describe", diskName, err)
 
+		// Snapshot is safe even while a VM holds the disk; do it regardless of VM deletion outcome.
 		if diskExists && opts.SnapshotDiskBeforeDelete {
 			if snapErr := snapshotDiskAndWait(ctx, cSvc, opts.ProjectID, diskZone, diskName, snapName); snapErr != nil {
 				noteErr("disk_snapshot", snapName, snapErr)
@@ -513,10 +554,16 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 			}
 		}
 
+		// Only delete the disk once all VMs have been confirmed gone; if any VM deletion
+		// failed the disk is still attached and the delete would return 400 "in use".
 		if diskExists {
-			delErr := deleteAndWaitComputeDisk(ctx, cSvc, opts.ProjectID, diskZone, diskName)
-			tally("disks", delErr == nil)
-			noteErr("disk", diskName, delErr)
+			if vmDelErrs > 0 {
+				noteErr("disk", diskName, fmt.Errorf("skipped: %d VM deletion(s) failed — disk may still be attached", vmDelErrs))
+			} else {
+				delErr := deleteAndWaitComputeDisk(ctx, cSvc, opts.ProjectID, diskZone, diskName)
+				tally("disks", delErr == nil)
+				noteErr("disk", diskName, delErr)
+			}
 		}
 
 		policyName := fmt.Sprintf("%s-disk-snapshot-schedule", pfx)
@@ -564,9 +611,7 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 		noteErr("vpc", vpcName, err)
 	}
 
-	// Delete the audit-logs sink before touching its destination bucket
-	// so in-flight writes can't repopulate the bucket. Sink name matches
-	// dspm-cloud-autonomous-gcp-tf's log_router_sink: `${pfx}-audit-sink`.
+	// Delete audit-logs sink before its destination bucket — in-flight writes would repopulate it. Name: ${pfx}-audit-sink.
 	if logSvc, err := logging.NewService(ctx, opts.ClientOptions...); err != nil {
 		errs = append(errs, fmt.Sprintf("logging client: %v", err))
 	} else {
@@ -576,9 +621,28 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 		noteErr("sink", sinkName, err)
 	}
 
-	// -audit-logs:      preserve (compliance trail) and report for
-	//                   downstream `import { for_each }` adoption.
-	// -trend-resources: delete (TF-regenerated content).
+	// Delete monitoring alert policies and dashboards whose display name starts with the
+	// legacy prefix. Alert policies must be gone before the metric descriptor can be
+	// removed; orphaned policies (state bucket deleted mid-upgrade) block metric descriptor
+	// deletion on destroy. Dashboards accumulate across test runs and are never cleaned by
+	// terraform destroy when the state bucket is already gone.
+	if monSvc, err := monitoring.NewService(ctx, opts.ClientOptions...); err != nil {
+		errs = append(errs, fmt.Sprintf("monitoring client: %v", err))
+	} else {
+		deleted, err := deleteAlertPoliciesByPrefix(ctx, monSvc, opts.ProjectID, pfx)
+		result.ResourcesDeleted["alert_policies"] += deleted
+		noteErr("alert_policies", pfx, err)
+
+		if dashSvc, dashErr := monitoringv1.NewService(ctx, opts.ClientOptions...); dashErr != nil {
+			errs = append(errs, fmt.Sprintf("monitoring/v1 client: %v", dashErr))
+		} else {
+			deleted, err = deleteDashboardsByPrefix(ctx, dashSvc, opts.ProjectID, pfx)
+			result.ResourcesDeleted["dashboards"] += deleted
+			noteErr("dashboards", pfx, err)
+		}
+	}
+
+	// -audit-logs: preserve (compliance) and report for import adoption. -trend-resources: delete (TF-regenerated).
 	if storageSvc, err := storagev1.NewService(ctx, opts.ClientOptions...); err != nil {
 		errs = append(errs, fmt.Sprintf("storage client: %v", err))
 	} else {
@@ -596,8 +660,7 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 				tflog.Info(ctx, fmt.Sprintf("[DSPM Region Cleanup] audit-logs bucket preserved for new-module import: %s", auditBucket))
 			}
 
-			// Cancel Cloud Build first (streams compile logs that race
-			// empty+delete), then drop the trend-resources bucket.
+			// Cancel Cloud Build first (streams logs that race empty+delete), then drop trend-resources bucket.
 			if cancelled, err := cancelActiveCloudBuilds(ctx, opts.ProjectID, opts.ClientOptions...); err != nil {
 				tflog.Warn(ctx, fmt.Sprintf("[DSPM Region Cleanup] cancel builds best-effort: %v", err))
 			} else if cancelled > 0 {
@@ -611,9 +674,7 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 		}
 	}
 
-	// Best-effort janitor: strip stale SA bindings pointing at soft-deleted
-	// DSPM Feature Roles. Uses ADC (operator creds) — CAM SA must not have
-	// setIamPolicy. Failure here doesn't fail the cleanup.
+	// Best-effort janitor: strip stale SA bindings to soft-deleted DSPM Feature Roles via ADC; failure doesn't fail cleanup.
 	if opts.SAEmail != "" {
 		purged, err := purgeOrphanDSPMFeatureRoleBindings(ctx, opts.ProjectID, opts.SAEmail)
 		if err != nil {
@@ -630,12 +691,7 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 	return result, combinedErr
 }
 
-// purgeOrphanDSPMFeatureRoleBindings strips saEmail from project-IAM
-// bindings whose role is a soft-deleted "Vision One DSPM Feature Role".
-// accumulate across apply cycles. Uses ADC (operator) because CAM SA
-// must not carry setIamPolicy. Scope is bounded by (projectID,
-// dspmFeatureRoleTitle, saEmail) so other products' roles are never
-// touched. Returns count of bindings stripped.
+// purgeOrphanDSPMFeatureRoleBindings strips saEmail from bindings pointing at soft-deleted DSPM Feature Roles via ADC; scoped to (projectID, title, saEmail).
 func purgeOrphanDSPMFeatureRoleBindings(ctx context.Context, projectID, saEmail string) (int, error) {
 	if projectID == "" || saEmail == "" {
 		return 0, nil
@@ -723,7 +779,6 @@ func purgeOrphanDSPMFeatureRoleBindings(ctx context.Context, projectID, saEmail 
 	return removed, nil
 }
 
-// isGCPNotFound treats 404 / "notFound" as already-absent so delete is idempotent.
 func isGCPNotFound(err error) bool {
 	if err == nil {
 		return false
@@ -925,10 +980,15 @@ type computeInstanceRef struct {
 	zone string
 }
 
-// listDSPMInstances enumerates VMs in the region's a/b/c zones whose name starts with "dspm-".
+// listDSPMInstances enumerates VMs in all zones of the region whose name starts with "dspm-".
+// Zones are fetched dynamically from the Compute API to avoid assuming a/b/c suffixes
+// (some regions, e.g. europe-west1, have b/c/d but no a).
 func listDSPMInstances(ctx context.Context, svc *compute.Service, projectID, region string) ([]computeInstanceRef, error) {
+	zones, err := listRegionZones(ctx, svc, projectID, region)
+	if err != nil {
+		return nil, err
+	}
 	var out []computeInstanceRef
-	zones := []string{region + "-a", region + "-b", region + "-c"}
 	for _, zone := range zones {
 		err := svc.Instances.List(projectID, zone).
 			Filter(`name eq "dspm-.*"`).
@@ -945,6 +1005,24 @@ func listDSPMInstances(ctx context.Context, svc *compute.Service, projectID, reg
 		}
 	}
 	return out, nil
+}
+
+// listRegionZones returns the names of all zones in the given region.
+func listRegionZones(ctx context.Context, svc *compute.Service, projectID, region string) ([]string, error) {
+	var zones []string
+	regionURL := fmt.Sprintf("https://www.googleapis.com/compute/v1/projects/%s/regions/%s", projectID, region)
+	err := svc.Zones.List(projectID).
+		Filter(fmt.Sprintf(`region eq "%s"`, regionURL)).
+		Pages(ctx, func(page *compute.ZoneList) error {
+			for _, z := range page.Items {
+				zones = append(zones, z.Name)
+			}
+			return nil
+		})
+	if err != nil {
+		return nil, fmt.Errorf("list zones for region %s: %w", region, err)
+	}
+	return zones, nil
 }
 
 func deleteAndWaitComputeInstance(ctx context.Context, svc *compute.Service, projectID, zone, name string) error {
@@ -1107,7 +1185,6 @@ func waitComputeRegionOp(ctx context.Context, svc *compute.Service, projectID, r
 	return fmt.Errorf("compute region op %s did not finish within %s", op.Name, asyncOpPollInterval*asyncOpMaxPolls)
 }
 
-// resolveProjectNumber looks up the numeric project number for a given project ID.
 func resolveProjectNumber(ctx context.Context, projectID string, opts ...option.ClientOption) (string, error) {
 	crmSvc, err := crm.NewService(ctx, opts...)
 	if err != nil {
@@ -1120,11 +1197,6 @@ func resolveProjectNumber(ctx context.Context, projectID string, opts ...option.
 	return fmt.Sprintf("%d", proj.ProjectNumber), nil
 }
 
-// probeOrphanBuckets returns existing `-audit-logs` bucket names that the
-// new module should adopt via root-level `import { for_each }` blocks.
-// Only audit-logs are reported here — `-trend-resources` is deleted
-// inline by Create (no matching import target in the new architecture).
-// Returns ([], nil) for fresh installs.
 func probeOrphanBuckets(ctx context.Context, projectID, region, stage string, opts ...option.ClientOption) ([]string, error) {
 	pfx := fmt.Sprintf("%s%s-%s", config.LEGACY_GCP_DSPM_NAME_BASE, stageNameToLetter(stage), regionAbbreviation(region))
 
@@ -1148,11 +1220,6 @@ func probeOrphanBuckets(ctx context.Context, projectID, region, stage string, op
 	return []string{auditBucket}, nil
 }
 
-// deleteGCSBucketIfExists empties + deletes a GCS bucket. Treats 404 as
-// success. Caller must run cancelActiveCloudBuilds first — Cloud Build
-// streams compile logs at ~1 write/sec which races empty+delete; once
-// builds are cancelled, 3-attempt active retry absorbs the
-// SIGKILL-to-write-stop lag.
 func deleteGCSBucketIfExists(ctx context.Context, svc *storagev1.Service, bucketName string) (bool, error) {
 	const maxAttempts = 3
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -1180,11 +1247,6 @@ func deleteGCSBucketIfExists(ctx context.Context, svc *storagev1.Service, bucket
 	return false, fmt.Errorf("delete bucket %s: unreachable", bucketName)
 }
 
-// cancelActiveCloudBuilds cancels every WORKING/QUEUED Cloud Build in
-// the project, then polls each cancelled build until its status leaves
-// WORKING/QUEUED (the worker keeps streaming logs for ~10-30s after
-// Cancel returns 200, until SIGKILL takes effect). Returns count of
-// confirmed-stopped builds. 2-min poll budget.
 func cancelActiveCloudBuilds(ctx context.Context, projectID string, opts ...option.ClientOption) (int, error) {
 	svc, err := cloudbuild.NewService(ctx, opts...)
 	if err != nil {
@@ -1257,11 +1319,6 @@ func cancelActiveCloudBuilds(ctx context.Context, projectID string, opts ...opti
 	return len(cancelledIDs), nil
 }
 
-// emptyGCSBucket lists+deletes ALL object generations (current AND
-// noncurrent). A bucket that ever had versioning enabled keeps its
-// noncurrent generations as ghost objects that block Bucket.Delete with
-// 409 not-empty — they're invisible to the default List call. Versions(true)
-// surfaces them; per-object Generation(g) on the delete removes them.
 func emptyGCSBucket(ctx context.Context, svc *storagev1.Service, bucketName string) error {
 	var pageToken string
 	for {
@@ -1286,7 +1343,6 @@ func emptyGCSBucket(ctx context.Context, svc *storagev1.Service, bucketName stri
 	}
 }
 
-// isGCSBucketNotEmpty matches GCP's 409 "bucket not empty" response.
 func isGCSBucketNotEmpty(err error) bool {
 	if err == nil {
 		return false
@@ -1298,8 +1354,6 @@ func isGCSBucketNotEmpty(err error) bool {
 	return strings.Contains(err.Error(), "is not empty")
 }
 
-// gcsBucketExists returns true if the named bucket is present in GCP, false on 404,
-// and an error otherwise. Read-only — uses storage.buckets.get (covered by roles/viewer).
 func gcsBucketExists(ctx context.Context, svc *storagev1.Service, bucketName string) (bool, error) {
 	if _, err := svc.Buckets.Get(bucketName).Context(ctx).Do(); err != nil {
 		if isGCSNotFound(err) {
@@ -1310,8 +1364,6 @@ func gcsBucketExists(ctx context.Context, svc *storagev1.Service, bucketName str
 	return true, nil
 }
 
-// deleteLoggingSink deletes a project-level log router sink. Treats 404 as success.
-// sinkName must be the fully qualified resource name: projects/{project}/sinks/{sink}.
 func deleteLoggingSink(ctx context.Context, svc *logging.Service, sinkName string) (bool, error) {
 	if _, err := svc.Projects.Sinks.Delete(sinkName).Context(ctx).Do(); err != nil {
 		if isGCPNotFound(err) {
@@ -1322,7 +1374,71 @@ func deleteLoggingSink(ctx context.Context, svc *logging.Service, sinkName strin
 	return true, nil
 }
 
-// isGCSNotFound checks for GCS 404 responses.
+// deleteAlertPoliciesByPrefix lists and deletes all monitoring alert policies in the project
+// whose display name starts with namePrefix. Idempotent — 404 is treated as success.
+func deleteAlertPoliciesByPrefix(ctx context.Context, svc *monitoring.Service, projectID, namePrefix string) (int, error) {
+	project := fmt.Sprintf("projects/%s", projectID)
+	deleted := 0
+	var errs []string
+
+	err := svc.Projects.AlertPolicies.List(project).
+		Filter(fmt.Sprintf(`display_name=starts_with("%s")`, namePrefix)).
+		Pages(ctx, func(page *monitoring.ListAlertPoliciesResponse) error {
+			for _, policy := range page.AlertPolicies {
+				if _, delErr := svc.Projects.AlertPolicies.Delete(policy.Name).Context(ctx).Do(); delErr != nil {
+					if isGCPNotFound(delErr) {
+						continue
+					}
+					errs = append(errs, fmt.Sprintf("%s: %v", policy.Name, delErr))
+					continue
+				}
+				deleted++
+			}
+			return nil
+		})
+	if err != nil {
+		errs = append(errs, fmt.Sprintf("list alert policies: %v", err))
+	}
+	if len(errs) > 0 {
+		return deleted, errors.New(strings.Join(errs, "; "))
+	}
+	return deleted, nil
+}
+
+// deleteDashboardsByPrefix lists and deletes all monitoring dashboards in the project
+// whose display name starts with namePrefix. Client-side filter (dashboards API has no
+// server-side displayName filter). Idempotent — 404 is treated as success.
+func deleteDashboardsByPrefix(ctx context.Context, svc *monitoringv1.Service, projectID, namePrefix string) (int, error) {
+	project := fmt.Sprintf("projects/%s", projectID)
+	deleted := 0
+	var errs []string
+
+	err := svc.Projects.Dashboards.List(project).
+		Pages(ctx, func(page *monitoringv1.ListDashboardsResponse) error {
+			for _, dash := range page.Dashboards {
+				if !strings.HasPrefix(dash.DisplayName, namePrefix) {
+					continue
+				}
+				if _, delErr := svc.Projects.Dashboards.Delete(dash.Name).Context(ctx).Do(); delErr != nil {
+					if isGCPNotFound(delErr) {
+						continue
+					}
+					errs = append(errs, fmt.Sprintf("%s: %v", dash.Name, delErr))
+					continue
+				}
+				deleted++
+			}
+			return nil
+		})
+	if err != nil {
+		errs = append(errs, fmt.Sprintf("list dashboards: %v", err))
+	}
+	if len(errs) > 0 {
+		return deleted, errors.New(strings.Join(errs, "; "))
+	}
+	return deleted, nil
+}
+
 func isGCSNotFound(err error) bool {
 	if err == nil {
 		return false

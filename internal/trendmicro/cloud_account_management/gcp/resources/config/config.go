@@ -1,5 +1,13 @@
 package config
 
+// FEATURE_ROLE_IDS maps feature keys to deterministic GCP custom role IDs.
+// When a role is created with feature_permissions set to one of these features
+// and no explicit role_id is given, the fixed ID is used instead of a random
+// suffix so that re-applies update the role in-place rather than creating a new one.
+var FEATURE_ROLE_IDS = map[string]string{
+	FEATURE_DATA_SECURITY_POSTURE_MANAGEMENT: "vision_one_dspm_feature_role",
+}
+
 const (
 	GCP_CUSTOM_ROLE_NAME          = "vision_one_cam_role_"
 	RESOURCE_TYPE_IAM_CUSTOM_ROLE = "cam_iam_custom_role"
@@ -75,8 +83,7 @@ const (
 	FEATURE_DATA_SECURITY_POSTURE_MANAGEMENT = "data-security-posture-management"
 )
 
-// Per-feature permissions unioned onto GCP_CUSTOM_ROLE_CORE_PERMISSIONS.
-// Placeholder until the Features API ships.
+// Per-feature permissions unioned onto GCP_CUSTOM_ROLE_CORE_PERMISSIONS; placeholder until Features API ships.
 var FEATURE_PERMISSIONS = map[string][]string{
 	// Required by visionone_dspm_legacy_cleanup_region (runs under CAM SA).
 	// Derived by `cases/05_gcp_lifecycle/scripts/derive_dspm_cleanup_perms.py`.
@@ -98,6 +105,8 @@ var FEATURE_PERMISSIONS = map[string][]string{
 		"cloudbuild.builds.update",
 		"eventarc.triggers.delete",
 		"logging.sinks.delete",
+		"monitoring.alertPolicies.delete",
+		"monitoring.dashboards.delete",
 		"run.services.delete",
 		"storage.buckets.delete",
 		"storage.objects.delete",
@@ -105,8 +114,7 @@ var FEATURE_PERMISSIONS = map[string][]string{
 	},
 }
 
-// GCP required API services to enable
-// Note: This list can be extended when new features are added that require additional API services
+// GCP required API services to enable; extend when new features need additional services.
 var GCP_REQUIRED_ENABLE_API_AND_SERVICE = []string{
 	"iamcredentials.googleapis.com",
 	"cloudresourcemanager.googleapis.com",

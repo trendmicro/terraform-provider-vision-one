@@ -12,9 +12,7 @@ import (
 
 const gcpCloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 
-// saEmailFromEncodedKey decodes the base64 SA key and returns its client_email.
-// Used by the cleanup_region janitor to know which principal's stale role
-// bindings to purge.
+// saEmailFromEncodedKey decodes the base64 SA key and returns its client_email for the cleanup_region janitor.
 func saEmailFromEncodedKey(encodedKey string) (string, error) {
 	keyJSON, err := base64.StdEncoding.DecodeString(encodedKey)
 	if err != nil {
@@ -32,12 +30,7 @@ func saEmailFromEncodedKey(encodedKey string) (string, error) {
 	return payload.ClientEmail, nil
 }
 
-// newClientOptionFromEncodedServiceAccountKey base64-decodes the provided
-// service-account key and returns a GCP client option carrying its credentials.
-//
-// Duplicated from cloud_account_management/gcp/resources/utils.go so this
-// package does not depend on CAM. The two copies are intentionally identical;
-// no shared "legacy utils" package is needed at this scale.
+// newClientOptionFromEncodedServiceAccountKey decodes a base64 SA key into a GCP client option. Intentional copy from CAM utils — no shared package at this scale.
 func newClientOptionFromEncodedServiceAccountKey(ctx context.Context, encodedKey string) (option.ClientOption, error) {
 	keyJSON, err := base64.StdEncoding.DecodeString(encodedKey)
 	if err != nil {

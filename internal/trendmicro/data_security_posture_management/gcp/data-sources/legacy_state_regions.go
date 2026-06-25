@@ -125,12 +125,10 @@ func buildStorageClientOptions(ctx context.Context, encodedKey string) ([]option
 	return []option.ClientOption{option.WithCredentials(creds)}, nil
 }
 
-// regionTokenRE matches `["<token>"]` in tfstate module addresses; results are
-// filtered to last-char-digit since GCP region names always end with a digit.
+// regionTokenRE matches ["<token>"] in tfstate addresses; filtered to last-char-digit (GCP regions end with a digit).
 var regionTokenRE = regexp.MustCompile(`\["([^"]+)"\]`)
 
-// discoverRegionsFromLegacyState returns regions from default.tfstate, or
-// empty slice (no error) when bucket/object is missing — the "no legacy state" signal.
+// discoverRegionsFromLegacyState returns regions from default.tfstate, or empty slice when bucket/object is missing.
 func discoverRegionsFromLegacyState(ctx context.Context, bucketName string, clientOptions []option.ClientOption) ([]string, error) {
 	svc, err := storagev1.NewService(ctx, clientOptions...)
 	if err != nil {
@@ -167,6 +165,11 @@ func discoverRegionsFromLegacyState(ctx context.Context, bucketName string, clie
 			if tok == "" {
 				continue
 			}
+			// GCP regions always contain a hyphen (e.g. asia-northeast1, us-east4).
+			// Pure numeric for_each indices like "0" must be excluded.
+			if !strings.Contains(tok, "-") {
+				continue
+			}
 			last := tok[len(tok)-1]
 			if last < '0' || last > '9' {
 				continue
@@ -187,8 +190,7 @@ func isStorageNotFound(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	// GCS returns 403 instead of 404 when the caller lacks permission — it deliberately
-	// does not reveal bucket existence. Treat as "no legacy state" (same as missing bucket).
+	// GCS returns 403 (not 404) when caller lacks permission — treat as "no legacy state".
 	return strings.Contains(msg, "403") || strings.Contains(msg, "404") ||
 		strings.Contains(msg, "notFound") || strings.Contains(msg, "doesn't exist")
 }

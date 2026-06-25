@@ -20,8 +20,7 @@ import (
 	"google.golang.org/api/option"
 )
 
-// stringListFromSlice — known-non-null types.List (ListValueFrom may
-// normalize empty slices to null, tripping TF's consistency guard).
+// stringListFromSlice builds a known-non-null types.List; ListValueFrom can normalize empty to null, tripping TF consistency.
 func stringListFromSlice(s []string) types.List {
 	elems := make([]attr.Value, 0, len(s))
 	for _, v := range s {
@@ -122,7 +121,7 @@ func (r *LegacyCleanupDSPMRegion) Schema(_ context.Context, _ resource.SchemaReq
 				Computed:            true,
 			},
 			"resources_deleted": schema.MapAttribute{
-				MarkdownDescription: "Count of legacy resources deleted, keyed by resource family (functions, triggers, schedulers, run_services, vms, firewalls, router_nats, routers, subnets, vpcs, connectors, disks, snapshots, resource_policies, sinks, orphan_buckets_preserved, orphan_bindings).",
+				MarkdownDescription: "Count of legacy resources deleted, keyed by resource family (functions, triggers, schedulers, run_services, vms, firewalls, router_nats, routers, subnets, vpcs, connectors, disks, snapshots, resource_policies, sinks, alert_policies, dashboards, orphan_buckets_preserved, orphan_bindings).",
 				ElementType:         types.Int64Type,
 				Computed:            true,
 			},
@@ -233,11 +232,7 @@ func (r *LegacyCleanupDSPMRegion) Create(ctx context.Context, req resource.Creat
 	}
 }
 
-// ModifyPlan probes GCP for orphan buckets at plan time so the root-module
-// `import { for_each }` block has a known list (TF forbids unknown
-// for_each). Uses ADC because the SA key may be unknown at first plan.
-// On post-first-apply, preserves state.OrphanBucketNames. On probe
-// failure, sets empty list to keep the fresh-install path unblocked.
+// ModifyPlan probes GCP for orphan buckets at plan time; TF forbids unknown for_each. Uses ADC (SA key may be unknown). Failure → empty list.
 func (r *LegacyCleanupDSPMRegion) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
 	if req.Plan.Raw.IsNull() {
 		return
@@ -295,8 +290,7 @@ func (r *LegacyCleanupDSPMRegion) Update(ctx context.Context, req resource.Updat
 	}
 	state.ServiceAccountKey = plan.ServiceAccountKey
 	state.SnapshotDiskBeforeDelete = plan.SnapshotDiskBeforeDelete
-	// Preserve plan's OrphanBucketNames (set by ModifyPlan) to satisfy
-	// TF's plan/state consistency check on second apply.
+	// Preserve plan's OrphanBucketNames (set by ModifyPlan) for TF plan/state consistency on second apply.
 	if !plan.OrphanBucketNames.IsNull() && !plan.OrphanBucketNames.IsUnknown() {
 		state.OrphanBucketNames = plan.OrphanBucketNames
 	} else if state.OrphanBucketNames.IsNull() || state.OrphanBucketNames.IsUnknown() {
@@ -306,8 +300,7 @@ func (r *LegacyCleanupDSPMRegion) Update(ctx context.Context, req resource.Updat
 }
 
 func (r *LegacyCleanupDSPMRegion) Delete(_ context.Context, _ resource.DeleteRequest, resp *resource.DeleteResponse) {
-	// No-op. Removing the resource from state does not undo the legacy GCP
-	// deletions; matches the existing legacy_cleanup_* family.
+	// No-op: removing from state does not undo legacy GCP deletions; matches legacy_cleanup_* family.
 	_ = resp
 }
 
