@@ -386,7 +386,13 @@ func (r *servicePrincipal) createServicePrincipal(ctx context.Context, client *m
 	// the barebone `Version:...` tag and any `<feature-id>=<version>` feature tags.
 	sp.SetTags(tags)
 
-	createdSp, err := client.ServicePrincipals().Post(ctx, sp, nil)
+	// Retry while the just-created app registration is still propagating.
+	var createdSp models.ServicePrincipalable
+	err = retryOnGraphPropagation(ctx, "Service Principal", func() error {
+		var e error
+		createdSp, e = client.ServicePrincipals().Post(ctx, sp, nil)
+		return e
+	})
 	if err != nil {
 		return nil, err
 	}
