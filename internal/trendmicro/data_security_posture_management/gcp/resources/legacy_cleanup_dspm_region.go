@@ -8,6 +8,7 @@ import (
 	"terraform-provider-vision-one/internal/trendmicro/data_security_posture_management/gcp/resources/config"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
@@ -19,7 +20,17 @@ import (
 	"google.golang.org/api/option"
 )
 
+// stringListFromSlice builds a known-non-null types.List; ListValueFrom can normalize empty to null, tripping TF consistency.
+func stringListFromSlice(s []string) types.List {
+	elems := make([]attr.Value, 0, len(s))
+	for _, v := range s {
+		elems = append(elems, types.StringValue(v))
+	}
+	return types.ListValueMust(types.StringType, elems)
+}
+
 var _ resource.Resource = &LegacyCleanupDSPMRegion{}
+var _ resource.ResourceWithModifyPlan = &LegacyCleanupDSPMRegion{}
 
 type LegacyCleanupDSPMRegion struct{}
 
@@ -31,12 +42,13 @@ type legacyCleanupDSPMRegionModel struct {
 	ServiceAccountKey        types.String `tfsdk:"service_account_key"`
 	SnapshotDiskBeforeDelete types.Bool   `tfsdk:"snapshot_disk_before_delete"`
 
-	NamePrefix        types.String `tfsdk:"name_prefix"`
-	SnapshotName      types.String `tfsdk:"snapshot_name"`
-	ResourcesDeleted  types.Map    `tfsdk:"resources_deleted"`
-	DeletionTimestamp types.String `tfsdk:"deletion_timestamp"`
-	CleanupStatus     types.String `tfsdk:"cleanup_status"`
-	CleanupError      types.String `tfsdk:"cleanup_error"`
+	NamePrefix         types.String `tfsdk:"name_prefix"`
+	SnapshotName       types.String `tfsdk:"snapshot_name"`
+	ResourcesDeleted   types.Map    `tfsdk:"resources_deleted"`
+	OrphanBucketNames  types.List   `tfsdk:"orphan_bucket_names"`
+	DeletionTimestamp  types.String `tfsdk:"deletion_timestamp"`
+	CleanupStatus      types.String `tfsdk:"cleanup_status"`
+	CleanupError       types.String `tfsdk:"cleanup_error"`
 }
 
 func NewLegacyCleanupDSPMRegion() resource.Resource {
@@ -109,8 +121,13 @@ func (r *LegacyCleanupDSPMRegion) Schema(_ context.Context, _ resource.SchemaReq
 				Computed:            true,
 			},
 			"resources_deleted": schema.MapAttribute{
-				MarkdownDescription: "Count of legacy resources deleted, keyed by resource family (functions, triggers, schedulers, run_services, vms, firewalls, router_nats, routers, subnets, vpcs, connectors, disks, snapshots, resource_policies).",
+				MarkdownDescription: "Count of legacy resources deleted, keyed by resource family (functions, triggers, schedulers, run_services, vms, firewalls, router_nats, routers, subnets, vpcs, connectors, disks, snapshots, resource_policies, sinks, alert_policies, dashboards, orphan_buckets_preserved, orphan_bindings).",
 				ElementType:         types.Int64Type,
+				Computed:            true,
+			},
+			"orphan_bucket_names": schema.ListAttribute{
+				MarkdownDescription: "GCS bucket names that pre-existed for this (project, region) tuple and were intentionally **not** deleted by cleanup. Audit-log buckets are data-preservation-sensitive, and deleting them races GCP's audit-log forwarding pipeline. Consume this list from the downstream new-module via `import { for_each = ... }` blocks to adopt the buckets into the new state. Empty on fresh installs.",
+				ElementType:         types.StringType,
 				Computed:            true,
 			},
 			"deletion_timestamp": schema.StringAttribute{
@@ -149,6 +166,7 @@ func (r *LegacyCleanupDSPMRegion) Create(ctx context.Context, req resource.Creat
 	plan.CleanupError = types.StringValue("")
 
 	var clientOptions []option.ClientOption
+	var saEmail string
 	if key := plan.ServiceAccountKey.ValueString(); key != "" {
 		opt, err := newClientOptionFromEncodedServiceAccountKey(ctx, key)
 		if err != nil {
@@ -156,6 +174,13 @@ func (r *LegacyCleanupDSPMRegion) Create(ctx context.Context, req resource.Creat
 			return
 		}
 		clientOptions = append(clientOptions, opt)
+		// SA email feeds the orphan-binding janitor; on parse failure
+		// continue without it (key is still usable for cleanup ops).
+		if email, err := saEmailFromEncodedKey(key); err != nil {
+			tflog.Warn(ctx, fmt.Sprintf("[DSPM Region Cleanup] could not extract SA email for janitor: %v", err))
+		} else {
+			saEmail = email
+		}
 	}
 
 	tflog.Info(ctx, fmt.Sprintf("[DSPM Region Cleanup] start project=%s region=%s prefix=%s", projectID, region, namePrefix))
@@ -166,18 +191,22 @@ func (r *LegacyCleanupDSPMRegion) Create(ctx context.Context, req resource.Creat
 		NamePrefix:               namePrefix,
 		SnapshotDiskBeforeDelete: plan.SnapshotDiskBeforeDelete.ValueBool(),
 		ClientOptions:            clientOptions,
+		SAEmail:                  saEmail,
 	})
 
 	resourcesDeleted, diag := types.MapValueFrom(ctx, types.Int64Type, result.ResourcesDeleted)
 	resp.Diagnostics.Append(diag...)
 	plan.ResourcesDeleted = resourcesDeleted
+
+	// Always known-non-null — root module's `import { for_each }` rejects unknown / null.
+	plan.OrphanBucketNames = stringListFromSlice(result.OrphanBuckets)
+
 	plan.SnapshotName = types.StringValue(result.SnapshotName)
 	plan.DeletionTimestamp = types.StringValue(time.Now().UTC().Format(time.RFC3339))
 
 	deletedCount := totalDeleted(result.ResourcesDeleted)
 	switch {
 	case err != nil && deletedCount > 0:
-		// Some resource types succeeded, at least one failed — surface details via cleanup_error.
 		plan.CleanupStatus = types.StringValue("partial")
 		plan.CleanupError = types.StringValue(err.Error())
 	case err != nil:
@@ -191,7 +220,55 @@ func (r *LegacyCleanupDSPMRegion) Create(ctx context.Context, req resource.Creat
 
 	tflog.Info(ctx, fmt.Sprintf("[DSPM Region Cleanup] done project=%s region=%s status=%s", projectID, region, plan.CleanupStatus.ValueString()))
 
+	// Persist before hard-stop so operator can inspect cleanup_* attrs.
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+
+	// Fail fast — letting apply continue surfaces confusing 409s downstream.
+	if err != nil {
+		resp.Diagnostics.AddError(
+			fmt.Sprintf("[DSPM Region Cleanup] cleanup %s for project=%s region=%s", plan.CleanupStatus.ValueString(), projectID, region),
+			fmt.Sprintf("%s\n\nResolve the listed resources manually (or via gcloud) and re-run `terraform apply`.", err.Error()),
+		)
+	}
+}
+
+// ModifyPlan probes GCP for orphan buckets at plan time; TF forbids unknown for_each. Uses ADC (SA key may be unknown). Failure → empty list.
+func (r *LegacyCleanupDSPMRegion) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var plan legacyCleanupDSPMRegionModel
+	if diags := req.Plan.Get(ctx, &plan); diags.HasError() {
+		resp.Diagnostics.Append(diags...)
+		return
+	}
+
+	if !req.State.Raw.IsNull() {
+		var state legacyCleanupDSPMRegionModel
+		if diags := req.State.Get(ctx, &state); !diags.HasError() && !state.OrphanBucketNames.IsNull() && !state.OrphanBucketNames.IsUnknown() {
+			plan.OrphanBucketNames = state.OrphanBucketNames
+			resp.Diagnostics.Append(resp.Plan.Set(ctx, plan)...)
+			return
+		}
+	}
+
+	if plan.ProjectID.IsUnknown() || plan.Region.IsUnknown() || plan.Stage.IsUnknown() {
+		return
+	}
+
+	buckets, err := probeOrphanBuckets(
+		ctx,
+		plan.ProjectID.ValueString(),
+		plan.Region.ValueString(),
+		plan.Stage.ValueString(),
+	)
+	if err != nil {
+		tflog.Warn(ctx, fmt.Sprintf("[DSPM Region Cleanup] ModifyPlan probe failed (ADC required): %v", err))
+		buckets = nil
+	}
+	plan.OrphanBucketNames = stringListFromSlice(buckets)
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, plan)...)
 }
 
 func (r *LegacyCleanupDSPMRegion) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -213,12 +290,17 @@ func (r *LegacyCleanupDSPMRegion) Update(ctx context.Context, req resource.Updat
 	}
 	state.ServiceAccountKey = plan.ServiceAccountKey
 	state.SnapshotDiskBeforeDelete = plan.SnapshotDiskBeforeDelete
+	// Preserve plan's OrphanBucketNames (set by ModifyPlan) for TF plan/state consistency on second apply.
+	if !plan.OrphanBucketNames.IsNull() && !plan.OrphanBucketNames.IsUnknown() {
+		state.OrphanBucketNames = plan.OrphanBucketNames
+	} else if state.OrphanBucketNames.IsNull() || state.OrphanBucketNames.IsUnknown() {
+		state.OrphanBucketNames = stringListFromSlice(nil)
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 func (r *LegacyCleanupDSPMRegion) Delete(_ context.Context, _ resource.DeleteRequest, resp *resource.DeleteResponse) {
-	// No-op. Removing the resource from state does not undo the legacy GCP
-	// deletions; matches the existing legacy_cleanup_* family.
+	// No-op: removing from state does not undo legacy GCP deletions; matches legacy_cleanup_* family.
 	_ = resp
 }
 

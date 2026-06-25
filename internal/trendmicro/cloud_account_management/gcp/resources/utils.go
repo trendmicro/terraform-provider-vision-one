@@ -27,7 +27,7 @@ import (
 
 const (
 	gcpCAMProjectMutationWaitInterval = 5 * time.Second
-	gcpCAMProjectMutationWaitTimeout  = 90 * time.Second
+	gcpCAMProjectMutationWaitTimeout  = 5 * time.Minute
 	gcpProjectConnectedWaitInterval   = 10 * time.Second
 	gcpProjectConnectedWaitTimeout    = 5 * time.Minute
 	gcpCloudPlatformScope             = "https://www.googleapis.com/auth/cloud-platform"

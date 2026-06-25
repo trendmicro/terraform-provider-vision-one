@@ -1,5 +1,13 @@
 package config
 
+// FEATURE_ROLE_IDS maps feature keys to deterministic GCP custom role IDs.
+// When a role is created with feature_permissions set to one of these features
+// and no explicit role_id is given, the fixed ID is used instead of a random
+// suffix so that re-applies update the role in-place rather than creating a new one.
+var FEATURE_ROLE_IDS = map[string]string{
+	FEATURE_DATA_SECURITY_POSTURE_MANAGEMENT: "vision_one_dspm_feature_role",
+}
+
 const (
 	GCP_CUSTOM_ROLE_NAME          = "vision_one_cam_role_"
 	RESOURCE_TYPE_IAM_CUSTOM_ROLE = "cam_iam_custom_role"
@@ -71,8 +79,42 @@ var GCP_CUSTOM_ROLE_CORE_PERMISSIONS = []string{
 	"resourcemanager.tagValues.list",
 }
 
-// GCP required API services to enable
-// Note: This list can be extended when new features are added that require additional API services
+const (
+	FEATURE_DATA_SECURITY_POSTURE_MANAGEMENT = "data-security-posture-management"
+)
+
+// Per-feature permissions unioned onto GCP_CUSTOM_ROLE_CORE_PERMISSIONS; placeholder until Features API ships.
+var FEATURE_PERMISSIONS = map[string][]string{
+	// Required by visionone_dspm_legacy_cleanup_region (runs under CAM SA).
+	// Derived by `cases/05_gcp_lifecycle/scripts/derive_dspm_cleanup_perms.py`.
+	FEATURE_DATA_SECURITY_POSTURE_MANAGEMENT: {
+		"cloudfunctions.functions.delete",
+		"cloudscheduler.jobs.delete",
+		"compute.disks.createSnapshot",
+		"compute.disks.delete",
+		"compute.firewalls.delete",
+		"compute.instances.delete",
+		"compute.networks.delete",
+		"compute.networks.updatePolicy", // implicit for firewall.delete + router NAT.delete
+		"compute.resourcePolicies.delete",
+		"compute.routers.delete",
+		"compute.routers.update",
+		"compute.snapshots.create",
+		"compute.subnetworks.delete",
+		"cloudbuild.builds.list",
+		"cloudbuild.builds.update",
+		"eventarc.triggers.delete",
+		"logging.sinks.delete",
+		"monitoring.alertPolicies.delete",
+		"monitoring.dashboards.delete",
+		"run.services.delete",
+		"storage.buckets.delete",
+		"storage.objects.delete",
+		"vpcaccess.connectors.delete",
+	},
+}
+
+// GCP required API services to enable; extend when new features need additional services.
 var GCP_REQUIRED_ENABLE_API_AND_SERVICE = []string{
 	"iamcredentials.googleapis.com",
 	"cloudresourcemanager.googleapis.com",
