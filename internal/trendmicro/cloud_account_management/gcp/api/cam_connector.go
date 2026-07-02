@@ -24,6 +24,20 @@ type FolderDetails struct {
 	ID               string `json:"id,omitempty"`
 }
 
+// The API returns excludedProjects as an array on read, while write requests
+// accept a comma-separated string, so responses need separate types.
+type OrganizationDetailsResponse struct {
+	DisplayName      string   `json:"displayName,omitempty"`
+	ExcludedProjects []string `json:"excludedProjects,omitempty"`
+	ID               string   `json:"id,omitempty"`
+}
+
+type FolderDetailsResponse struct {
+	DisplayName      string   `json:"displayName,omitempty"`
+	ExcludedProjects []string `json:"excludedProjects,omitempty"`
+	ID               string   `json:"id,omitempty"`
+}
+
 type Feature struct {
 	ID      string   `json:"id"`
 	Regions []string `json:"regions,omitempty"`
@@ -87,8 +101,8 @@ type ProjectResponse struct {
 	Sources                   []string                       `json:"sources,omitempty"`
 	UpdatedDateTime           string                         `json:"updatedDateTime,omitempty"`
 	WorkloadIdentityPoolID    string                         `json:"workloadIdentityPoolId,omitempty"`
-	Folder                    *FolderDetails                 `json:"folder,omitempty"`
-	Organization              *OrganizationDetails           `json:"organization,omitempty"`
+	Folder                    *FolderDetailsResponse         `json:"folder,omitempty"`
+	Organization              *OrganizationDetailsResponse   `json:"organization,omitempty"`
 }
 
 func (c *CamClient) CreateProject(data *CreateProjectRequest) error {

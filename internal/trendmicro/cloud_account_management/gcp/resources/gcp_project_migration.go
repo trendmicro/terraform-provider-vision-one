@@ -246,15 +246,31 @@ func buildGCPProjectMigrationUpdateRequest(
 	existing *api.ProjectResponse,
 	workloadIdentityPoolID *string,
 ) *api.ModifyProjectRequest {
+	var folder *api.FolderDetails
+	if existing.Folder != nil {
+		folder = &api.FolderDetails{
+			DisplayName:      existing.Folder.DisplayName,
+			ExcludedProjects: strings.Join(existing.Folder.ExcludedProjects, ","),
+			ID:               existing.Folder.ID,
+		}
+	}
+	var organization *api.OrganizationDetails
+	if existing.Organization != nil {
+		organization = &api.OrganizationDetails{
+			DisplayName:      existing.Organization.DisplayName,
+			ExcludedProjects: strings.Join(existing.Organization.ExcludedProjects, ","),
+			ID:               existing.Organization.ID,
+		}
+	}
 	return &api.ModifyProjectRequest{
 		CamDeployedRegion:         existing.CamDeployedRegion,
 		ConnectedSecurityServices: existing.ConnectedSecurityServices,
 		Description:               existing.Description,
-		Folder:                    existing.Folder,
+		Folder:                    folder,
 		IsCAMCloudASRMEnabled:     existing.IsCAMCloudASRMEnabled,
 		IsTFProviderDeployed:      true,
 		Name:                      plan.Name.ValueString(),
-		Organization:              existing.Organization,
+		Organization:              organization,
 		ProjectNumber:             plan.ProjectNumber.ValueString(),
 		ServiceAccountId:          plan.NewServiceAccountID.ValueString(),
 		ServiceAccountKey:         plan.NewServiceAccountKey.ValueString(),
