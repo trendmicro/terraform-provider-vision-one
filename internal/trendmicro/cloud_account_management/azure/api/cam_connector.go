@@ -21,7 +21,7 @@ type CreateSubscriptionRequest struct {
 	SubscriptionID            string                         `json:"subscriptionId"`
 	TenantID                  string                         `json:"tenantId"`
 	ManagementGroup           ManagementGroupDetails         `json:"managementGroup,omitempty"`
-	IsSharedApplication       bool                           `json:"isSharedApplication,omitempty"`
+	IsSharedApplication       *bool                          `json:"isSharedApplication"`
 	CamDeployedRegion         string                         `json:"camDeployedRegion,omitempty"`
 	IsTFProviderDeployed      bool                           `json:"isTFProviderDeployed"`
 	Features                  *[]Feature                     `json:"features,omitempty"`
@@ -38,7 +38,7 @@ type ModifySubscriptionRequest struct {
 	SubscriptionID            string                         `json:"subscriptionId,omitempty"`
 	TenantID                  string                         `json:"tenantId"`
 	ManagementGroup           ManagementGroupDetails         `json:"managementGroup,omitempty"`
-	IsSharedApplication       bool                           `json:"isSharedApplication,omitempty"`
+	IsSharedApplication       *bool                          `json:"isSharedApplication"`
 	CamDeployedRegion         string                         `json:"camDeployedRegion,omitempty"`
 	IsTFProviderDeployed      bool                           `json:"isTFProviderDeployed"`
 	Features                  *[]Feature                     `json:"features,omitempty"`
