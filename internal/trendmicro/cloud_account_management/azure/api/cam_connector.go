@@ -102,6 +102,10 @@ func (c *CamClient) CreateSubscription(data *CreateSubscriptionRequest) error {
 		// If the subscription already exists, we will modify it instead of creating a new one
 		fmt.Printf("Subscription already exists, modifying subscription: %s\n", data.SubscriptionID)
 		url := fmt.Sprintf("%s/beta/cam/azureSubscriptions/%s", c.Client.HostURL, data.SubscriptionID)
+		// Preserve the backend's existing name instead of overwriting it with the plan's name.
+		if describeResp.Name != "" {
+			data.Name = describeResp.Name
+		}
 		modifyJsonData, err := json.Marshal(data)
 		if err != nil {
 			return err
