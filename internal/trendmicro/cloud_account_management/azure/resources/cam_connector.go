@@ -389,7 +389,13 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 			plan.Description = types.StringValue(res.Description)
 		}
 		plan.IsCAMCloudASRMEnabled = types.BoolValue(res.IsCAMCloudASRMEnabled)
-		plan.Name = types.StringValue(res.Name)
+		// name is Required (not Computed): Terraform requires the final state to match the
+		// planned value, so only adopt the backend's name when it agrees with the plan.
+		// Otherwise keep the configured name in state (the CreateSubscription API call above
+		// already preserved the backend's real name instead of overwriting it).
+		if res.Name == plan.Name.ValueString() {
+			plan.Name = types.StringValue(res.Name)
+		}
 		plan.TenantID = types.StringValue(res.TenantID)
 		plan.CreatedDateTime = types.StringValue(res.CreatedDateTime)
 		plan.UpdatedDateTime = types.StringValue(res.UpdatedDateTime)
@@ -700,12 +706,20 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		return
 	}
 
+	// name has RequiresReplace(), so a genuine rename never reaches Update(). Use the
+	// backend's current name instead of plan/state's, so Update() never overwrites a name
+	// that was changed out-of-band (e.g. via the console) back to Terraform's stale value.
+	targetName := plan.Name.ValueString()
+	if current, err := r.client.ReadSubscription(subscriptionID, true); err == nil && current.Name != "" {
+		targetName = current.Name
+	}
+
 	body := &api.ModifySubscriptionRequest{
 		ApplicationID:             applicationID,
 		ConnectedSecurityServices: connectedServices,
 		Description:               plan.Description.ValueString(),
 		IsCAMCloudASRMEnabled:     isCAMCloudASRMEnabled,
-		Name:                      plan.Name.ValueString(),
+		Name:                      targetName,
 		SubscriptionID:            subscriptionID,
 		TenantID:                  tenantID,
 		ManagementGroup:           managementGroup,
@@ -741,7 +755,15 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		state.State = types.StringValue(res.State)
 		state.Description = types.StringValue(res.Description)
 		state.IsCAMCloudASRMEnabled = types.BoolValue(res.IsCAMCloudASRMEnabled)
-		state.Name = types.StringValue(res.Name)
+		// name is Required (not Computed): Terraform requires the final state to match the
+		// planned value, so only adopt the backend's name when it agrees with the plan.
+		// Otherwise keep the planned name in state (the UpdateSubscription call above already
+		// sent the backend's real name in the PATCH instead of overwriting it).
+		if res.Name == plan.Name.ValueString() {
+			state.Name = types.StringValue(res.Name)
+		} else {
+			state.Name = plan.Name
+		}
 		state.TenantID = types.StringValue(res.TenantID)
 		state.CreatedDateTime = types.StringValue(res.CreatedDateTime)
 		state.UpdatedDateTime = types.StringValue(res.UpdatedDateTime)
