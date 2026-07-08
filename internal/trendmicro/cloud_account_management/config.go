@@ -11,6 +11,12 @@ type JitterConfig struct {
 }
 
 var (
+	// AWSJitterConfig is the default jitter configuration for AWS CAM API calls.
+	AWSJitterConfig = JitterConfig{
+		MinDelayMs: 100,
+		MaxDelayMs: 1000,
+	}
+
 	// AzureJitterConfig is the default jitter configuration for Azure CAM API calls.
 	AzureJitterConfig = JitterConfig{
 		MinDelayMs: 100,

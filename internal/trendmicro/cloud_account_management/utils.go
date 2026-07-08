@@ -161,6 +161,12 @@ type ConnectedSecurityService struct {
 	InstanceIds []string `json:"instanceIds"`
 }
 
+// CustomTag represents a key-value tag attached to a cloud account.
+type CustomTag struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
 // ConvertConnectedSecurityServices transforms API security services to Terraform model
 func ConvertConnectedSecurityServices(services []ConnectedSecurityService) []ConnectedSecurityServiceModel {
 	if services == nil {
