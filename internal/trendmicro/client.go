@@ -59,25 +59,19 @@ func NewClient(host, token *string, version string) (*Client, error) {
 
 func (c *Client) DoRequest(req *http.Request) (body []byte, err error) {
 	req.Header.Set("Authorization", "Bearer "+c.BearerToken)
-	req.Header.Set("HOST", c.HostURL)
 	req.Header.Set("User-Agent", UserAgentHeader+"/"+c.ProviderVersion)
 	req.Header.Set("x-tm-user-agent", c.TMUserAgent+"/"+c.ProviderVersion)
-
-	fmt.Printf("Sending HTTP Request %v", req)
 
 	res, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("HTTP Response %v", res)
 	defer res.Body.Close()
 
 	body, err = io.ReadAll(res.Body)
 	if err != nil {
 		return nil, err
 	}
-
-	fmt.Printf("HTTP %d response body: %s\n", res.StatusCode, string(body))
 
 	switch res.StatusCode {
 	case http.StatusOK, http.StatusCreated, http.StatusNoContent, http.StatusMultiStatus:
@@ -96,7 +90,6 @@ func (c *Client) DoRequest(req *http.Request) (body []byte, err error) {
 
 func (c *Client) DoRequestWithFullResponse(req *http.Request) (*http.Response, error) {
 	req.Header.Set("Authorization", "Bearer "+c.BearerToken)
-	req.Header.Set("HOST", c.HostURL)
 	req.Header.Set("User-Agent", UserAgentHeader+"/"+c.ProviderVersion)
 	req.Header.Set("x-tm-user-agent", c.TMUserAgent+"/"+c.ProviderVersion)
 
@@ -115,8 +108,6 @@ func (c *Client) DoRequestWithFullResponse(req *http.Request) (*http.Response, e
 		if err != nil {
 			return nil, err
 		}
-
-		fmt.Printf("HTTP %d response body: %s\n", res.StatusCode, string(body))
 
 		var out bytes.Buffer
 		err = json.Indent(&out, body, "", "  ")

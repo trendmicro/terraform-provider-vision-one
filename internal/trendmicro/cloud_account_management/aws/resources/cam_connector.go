@@ -987,7 +987,11 @@ func (v orgFieldsRequireOrganizationIDValidator) ValidateResource(ctx context.Co
 		return
 	}
 
-	orgIDSet := !data.OrganizationID.IsNull() && !data.OrganizationID.IsUnknown() && data.OrganizationID.ValueString() != ""
+	// An unknown organization_id (e.g. derived from a data source not yet read)
+	// is deferred to apply-time rather than treated as missing here — ValidateResource
+	// only sees the raw, unrefined config and runs before the plan graph resolves it.
+	orgIDUnknown := data.OrganizationID.IsUnknown()
+	orgIDSet := orgIDUnknown || (!data.OrganizationID.IsNull() && data.OrganizationID.ValueString() != "")
 
 	if !data.IsAwsOrgMgmtAccount.IsNull() && !data.IsAwsOrgMgmtAccount.IsUnknown() && !orgIDSet {
 		resp.Diagnostics.AddAttributeError(
