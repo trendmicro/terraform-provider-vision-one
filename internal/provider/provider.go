@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"terraform-provider-vision-one/internal/trendmicro"
+	awscamdatasources "terraform-provider-vision-one/internal/trendmicro/cloud_account_management/aws/data-sources"
+	awsresources "terraform-provider-vision-one/internal/trendmicro/cloud_account_management/aws/resources"
 	azurecamdatasources "terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/data-sources"
 	azureresources "terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/resources"
 	gcpcamdatasources "terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/data-sources"
@@ -178,6 +180,7 @@ func (p *TrendMicroProvider) Resources(ctx context.Context) []func() resource.Re
 		azureresources.NewFederatedIdentity,
 		azureresources.NewRoleDefinition,
 		azureresources.NewRoleAssignmentResource,
+		awsresources.NewCAMConnectorResource,
 		azureresources.NewCAMConnectorResource,
 		azureresources.NewLegacyCleanupCustomRole,
 		azureresources.NewLegacyCleanupResourceGroup,
@@ -207,6 +210,7 @@ func (p *TrendMicroProvider) Resources(ctx context.Context) []func() resource.Re
 
 func (p *TrendMicroProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
+		awscamdatasources.NewCAMCloudAccountsDataSource,
 		azurecamdatasources.NewCAMCloudAccountsDataSource,
 		gcpcamdatasources.NewCAMCloudAccountsDataSource,
 		gcpdspmdatasources.NewLegacyStateRegionsDataSource,
