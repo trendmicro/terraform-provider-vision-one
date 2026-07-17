@@ -41,10 +41,12 @@ type legacyCleanupDSPMRegionModel struct {
 	Stage                    types.String `tfsdk:"stage"`
 	ServiceAccountKey        types.String `tfsdk:"service_account_key"`
 	SnapshotDiskBeforeDelete types.Bool   `tfsdk:"snapshot_disk_before_delete"`
+	StateBucket              types.String `tfsdk:"state_bucket"`
 
 	NamePrefix         types.String `tfsdk:"name_prefix"`
 	SnapshotName       types.String `tfsdk:"snapshot_name"`
 	ResourcesDeleted   types.Map    `tfsdk:"resources_deleted"`
+	ResourcesPreserved types.Map    `tfsdk:"resources_preserved"`
 	OrphanBucketNames  types.List   `tfsdk:"orphan_bucket_names"`
 	DeletionTimestamp  types.String `tfsdk:"deletion_timestamp"`
 	CleanupStatus      types.String `tfsdk:"cleanup_status"`
@@ -112,6 +114,20 @@ func (r *LegacyCleanupDSPMRegion) Schema(_ context.Context, _ resource.SchemaReq
 				Computed:            true,
 				Default:             booldefault.StaticBool(true),
 			},
+			"state_bucket": schema.StringAttribute{
+				MarkdownDescription: "GCS bucket holding the *current* Provider-mode Terraform state for this deployment " +
+					"(read from `gs://{state_bucket}/terraform.tfstate/default.tfstate`). When set, cleanup checks " +
+					"each candidate resource against this state before deleting it, and skips anything already " +
+					"tracked there — this is what prevents a forced replacement of this resource (e.g. a " +
+					"`bound_projects` change rotating the CAM service account key) from deleting infrastructure " +
+					"that a Provider-mode-to-Provider-mode migration is still actively using via a shared state file. " +
+					"Omit for a legacy Package-mode migration, where no Provider-mode state exists yet and the " +
+					"unconditional-delete behavior is safe (see `visionone_dspm_legacy_state_regions` for that path). " +
+					"If the state object can't be read for a reason other than \"doesn't exist yet\" (e.g. a " +
+					"permissions error), cleanup fails closed — it reports `cleanup_status = \"failed\"` rather than " +
+					"silently deleting as if nothing were tracked.",
+				Optional: true,
+			},
 			"name_prefix": schema.StringAttribute{
 				MarkdownDescription: "The computed legacy resource prefix (e.g. `dspm-i-use1`).",
 				Computed:            true,
@@ -124,6 +140,15 @@ func (r *LegacyCleanupDSPMRegion) Schema(_ context.Context, _ resource.SchemaReq
 				MarkdownDescription: "Count of legacy resources deleted, keyed by resource family (functions, triggers, schedulers, run_services, vms, firewalls, router_nats, routers, subnets, vpcs, connectors, disks, snapshots, resource_policies, sinks, alert_policies, dashboards, orphan_buckets_preserved, orphan_bindings).",
 				ElementType:         types.Int64Type,
 				Computed:            true,
+			},
+			"resources_preserved": schema.MapAttribute{
+				MarkdownDescription: "Count of candidate resources intentionally **not** deleted because `state_bucket` " +
+					"lookup found them already tracked in the current Provider-mode state, keyed by the same resource " +
+					"family names used in `resources_deleted` (only families that can be state-checked appear: " +
+					"firewalls, router_nats, routers, subnets, vpcs, connectors, disks, resource_policies, sinks, " +
+					"alert_policies, dashboards). Empty when `state_bucket` is unset.",
+				ElementType: types.Int64Type,
+				Computed:    true,
 			},
 			"orphan_bucket_names": schema.ListAttribute{
 				MarkdownDescription: "GCS bucket names that pre-existed for this (project, region) tuple and were intentionally **not** deleted by cleanup. Audit-log buckets are data-preservation-sensitive, and deleting them races GCP's audit-log forwarding pipeline. Consume this list from the downstream new-module via `import { for_each = ... }` blocks to adopt the buckets into the new state. Empty on fresh installs.",
@@ -192,11 +217,16 @@ func (r *LegacyCleanupDSPMRegion) Create(ctx context.Context, req resource.Creat
 		SnapshotDiskBeforeDelete: plan.SnapshotDiskBeforeDelete.ValueBool(),
 		ClientOptions:            clientOptions,
 		SAEmail:                  saEmail,
+		StateBucket:              plan.StateBucket.ValueString(),
 	})
 
 	resourcesDeleted, diag := types.MapValueFrom(ctx, types.Int64Type, result.ResourcesDeleted)
 	resp.Diagnostics.Append(diag...)
 	plan.ResourcesDeleted = resourcesDeleted
+
+	resourcesPreserved, diag := types.MapValueFrom(ctx, types.Int64Type, result.ResourcesPreserved)
+	resp.Diagnostics.Append(diag...)
+	plan.ResourcesPreserved = resourcesPreserved
 
 	// Always known-non-null — root module's `import { for_each }` rejects unknown / null.
 	plan.OrphanBucketNames = stringListFromSlice(result.OrphanBuckets)
@@ -290,6 +320,7 @@ func (r *LegacyCleanupDSPMRegion) Update(ctx context.Context, req resource.Updat
 	}
 	state.ServiceAccountKey = plan.ServiceAccountKey
 	state.SnapshotDiskBeforeDelete = plan.SnapshotDiskBeforeDelete
+	state.StateBucket = plan.StateBucket
 	// Preserve plan's OrphanBucketNames (set by ModifyPlan) for TF plan/state consistency on second apply.
 	if !plan.OrphanBucketNames.IsNull() && !plan.OrphanBucketNames.IsUnknown() {
 		state.OrphanBucketNames = plan.OrphanBucketNames

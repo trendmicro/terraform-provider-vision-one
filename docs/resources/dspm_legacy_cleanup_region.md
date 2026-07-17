@@ -52,6 +52,9 @@ resource "visionone_dspm_legacy_cleanup_region" "example" {
   )
   snapshot_disk_before_delete = true
 
+  # Skips deleting resources still tracked in the current Provider-mode state (safe on Package-mode too).
+  state_bucket = "trendai-v1-terraform-state-${substr(sha256(var.primary_project_id), 0, 16)}"
+
   depends_on = [visionone_cam_service_account_integration.comprehensive]
 }
 
@@ -111,6 +114,7 @@ resource "visionone_dspm_legacy_cleanup_region" "per_region" {
 - **BYO key**: set to a base64-encoded JSON key for any service account with delete permissions on the legacy DSPM resources. Use this when operator policy forbids using the CAM-minted SA or ADC for delete operations (e.g. enterprise-managed credentials, scope-limited audit trail).
 - **ADC**: omit the attribute entirely. The provider falls back to Application Default Credentials (gcloud, workload identity, GCE metadata).
 - `snapshot_disk_before_delete` (Boolean) When true (default), the persistent scan-job disk is snapshotted as `{name_prefix}-disk-pre-upgrade` before deletion. Keep enabled so main-app can migrate scan data on first boot of the new stack.
+- `state_bucket` (String) GCS bucket holding the *current* Provider-mode Terraform state for this deployment (read from `gs://{state_bucket}/terraform.tfstate/default.tfstate`). When set, cleanup checks each candidate resource against this state before deleting it, and skips anything already tracked there — this is what prevents a forced replacement of this resource (e.g. a `bound_projects` change rotating the CAM service account key) from deleting infrastructure that a Provider-mode-to-Provider-mode migration is still actively using via a shared state file. Omit for a legacy Package-mode migration, where no Provider-mode state exists yet and the unconditional-delete behavior is safe (see `visionone_dspm_legacy_state_regions` for that path). If the state object can't be read for a reason other than "doesn't exist yet" (e.g. a permissions error), cleanup fails closed — it reports `cleanup_status = "failed"` rather than silently deleting as if nothing were tracked.
 
 ### Read-Only
 
@@ -119,7 +123,9 @@ resource "visionone_dspm_legacy_cleanup_region" "per_region" {
 - `deletion_timestamp` (String) RFC3339 timestamp when cleanup was performed.
 - `id` (String) `{project_id}/{region}`.
 - `name_prefix` (String) The computed legacy resource prefix (e.g. `dspm-i-use1`).
-- `resources_deleted` (Map of Number) Count of legacy resources deleted, keyed by resource family (functions, triggers, schedulers, run_services, vms, firewalls, router_nats, routers, subnets, vpcs, connectors, disks, snapshots, resource_policies).
+- `orphan_bucket_names` (List of String) GCS bucket names that pre-existed for this (project, region) tuple and were intentionally **not** deleted by cleanup. Audit-log buckets are data-preservation-sensitive, and deleting them races GCP's audit-log forwarding pipeline. Consume this list from the downstream new-module via `import { for_each = ... }` blocks to adopt the buckets into the new state. Empty on fresh installs.
+- `resources_deleted` (Map of Number) Count of legacy resources deleted, keyed by resource family (functions, triggers, schedulers, run_services, vms, firewalls, router_nats, routers, subnets, vpcs, connectors, disks, snapshots, resource_policies, sinks, alert_policies, dashboards, orphan_buckets_preserved, orphan_bindings).
+- `resources_preserved` (Map of Number) Count of candidate resources intentionally **not** deleted because `state_bucket` lookup found them already tracked in the current Provider-mode state, keyed by the same resource family names used in `resources_deleted` (only families that can be state-checked appear: firewalls, router_nats, routers, subnets, vpcs, connectors, disks, resource_policies, sinks, alert_policies, dashboards). Empty when `state_bucket` is unset.
 - `snapshot_name` (String) The disk snapshot name created before disk deletion (empty if no disk existed or snapshot was disabled).
 
 ## Required Permissions

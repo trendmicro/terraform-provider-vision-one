@@ -25,6 +25,9 @@ resource "visionone_dspm_legacy_cleanup_region" "example" {
   )
   snapshot_disk_before_delete = true
 
+  # Skips deleting resources still tracked in the current Provider-mode state (safe on Package-mode too).
+  state_bucket = "trendai-v1-terraform-state-${substr(sha256(var.primary_project_id), 0, 16)}"
+
   depends_on = [visionone_cam_service_account_integration.comprehensive]
 }
 
