@@ -9,4 +9,7 @@ const (
 	// Legacy GCS bucket prefix; intentional copy from CAM config — frozen by legacy Package naming, will not change.
 	LEGACY_GCP_GCS_BUCKET_PREFIX = "trendmicro-v1-"
 	LEGACY_GCP_STATE_FILE_NAME   = "default.tfstate"
+
+	// GCS object path for the Provider-mode state within a customer's state_bucket.
+	PROVIDER_STATE_OBJECT_NAME = "terraform.tfstate/default.tfstate"
 )

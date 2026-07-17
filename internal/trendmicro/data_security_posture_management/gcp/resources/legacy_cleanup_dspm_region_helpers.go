@@ -2,8 +2,10 @@ package resources
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -13,15 +15,15 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	cloudbuild "google.golang.org/api/cloudbuild/v1"
 	cloudfunctions "google.golang.org/api/cloudfunctions/v2"
+	crm "google.golang.org/api/cloudresourcemanager/v1"
 	scheduler "google.golang.org/api/cloudscheduler/v1"
 	compute "google.golang.org/api/compute/v1"
-	crm "google.golang.org/api/cloudresourcemanager/v1"
 	eventarc "google.golang.org/api/eventarc/v1"
 	"google.golang.org/api/googleapi"
 	iam "google.golang.org/api/iam/v1"
 	logging "google.golang.org/api/logging/v2"
-	monitoring   "google.golang.org/api/monitoring/v3"
 	monitoringv1 "google.golang.org/api/monitoring/v1"
+	monitoring "google.golang.org/api/monitoring/v3"
 	"google.golang.org/api/option"
 	run "google.golang.org/api/run/v2"
 	storagev1 "google.golang.org/api/storage/v1"
@@ -90,6 +92,8 @@ type dspmRegionCleanupOptions struct {
 	ClientOptions            []option.ClientOption
 	// SAEmail is the client_email from ServiceAccountKey; empty skips the orphan-binding janitor.
 	SAEmail string
+	// StateBucket, when non-empty, gates deletes against the current Provider-mode tfstate — see fetchTrackedResources.
+	StateBucket string
 }
 
 type dspmRegionCleanupResult struct {
@@ -97,6 +101,104 @@ type dspmRegionCleanupResult struct {
 	SnapshotName     string
 	// OrphanBuckets lists pre-existing audit-log buckets; NOT deleted (compliance) — downstream module adopts via import { for_each }.
 	OrphanBuckets []string
+	// ResourcesPreserved counts candidates skipped because StateBucket already tracked them.
+	ResourcesPreserved map[string]int
+}
+
+// trackedResourceSet indexes a Terraform state's resources by (type, name), matched against
+// both the `name` and `display_name` instance attributes since families differ on which one they use.
+type trackedResourceSet map[string]map[string]bool
+
+func (t trackedResourceSet) has(resourceType, name string) bool {
+	if t == nil || name == "" {
+		return false
+	}
+	return t[resourceType][name]
+}
+
+type tfStateInstance struct {
+	Attributes struct {
+		Name        string `json:"name"`
+		DisplayName string `json:"display_name"`
+	} `json:"attributes"`
+}
+
+type tfStateResource struct {
+	Type      string            `json:"type"`
+	Instances []tfStateInstance `json:"instances"`
+}
+
+type tfState struct {
+	Resources []tfStateResource `json:"resources"`
+}
+
+// isStateBucketNotFound reports a genuine 404 only — unlike isGCSNotFound/isStorageNotFound,
+// a 403 here must fail closed rather than be treated as "nothing tracked" (it could be
+// masking a real state file we lack permission to read).
+func isStateBucketNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	var gerr *googleapi.Error
+	if errors.As(err, &gerr) {
+		return gerr.Code == 404
+	}
+	return strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "notFound")
+}
+
+// fetchTrackedResources downloads gs://{bucket}/terraform.tfstate/default.tfstate into a
+// trackedResourceSet. A genuine 404 (no Provider-mode state yet) returns an empty set; any
+// other error is returned as-is — see isStateBucketNotFound.
+func fetchTrackedResources(ctx context.Context, bucket string, clientOptions []option.ClientOption) (trackedResourceSet, error) {
+	svc, err := storagev1.NewService(ctx, clientOptions...)
+	if err != nil {
+		return nil, fmt.Errorf("storage client: %w", err)
+	}
+
+	rc, err := svc.Objects.Get(bucket, config.PROVIDER_STATE_OBJECT_NAME).Context(ctx).Download()
+	if err != nil {
+		if isStateBucketNotFound(err) {
+			return trackedResourceSet{}, nil
+		}
+		return nil, fmt.Errorf("download provider-mode state gs://%s/%s: %w", bucket, config.PROVIDER_STATE_OBJECT_NAME, err)
+	}
+	defer rc.Body.Close()
+
+	body, err := io.ReadAll(rc.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read provider-mode state: %w", err)
+	}
+
+	return parseTfStateTrackedResources(body)
+}
+
+// parseTfStateTrackedResources extracts a trackedResourceSet from raw Terraform state JSON (v4 format).
+func parseTfStateTrackedResources(body []byte) (trackedResourceSet, error) {
+	var state tfState
+	if err := json.Unmarshal(body, &state); err != nil {
+		return nil, fmt.Errorf("parse provider-mode state: %w", err)
+	}
+
+	tracked := make(trackedResourceSet)
+	index := func(resourceType, name string) {
+		if name == "" {
+			return
+		}
+		if tracked[resourceType] == nil {
+			tracked[resourceType] = make(map[string]bool)
+		}
+		tracked[resourceType][name] = true
+	}
+	for _, r := range state.Resources {
+		if r.Type == "" {
+			continue
+		}
+		for _, inst := range r.Instances {
+			index(r.Type, inst.Attributes.Name)
+			index(r.Type, inst.Attributes.DisplayName)
+		}
+	}
+	return tracked, nil
 }
 
 const (
@@ -411,26 +513,39 @@ func probeForLegacyDSPMResources(ctx context.Context, projectID, region, namePre
 func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (dspmRegionCleanupResult, error) {
 	result := dspmRegionCleanupResult{
 		ResourcesDeleted: map[string]int{
-			"triggers":          0,
-			"functions":         0,
-			"run_services":      0,
-			"schedulers":        0,
-			"disks":             0,
-			"snapshots":         0,
-			"resource_policies": 0,
-			"vms":               0,
-			"connectors":        0,
-			"firewalls":         0,
-			"router_nats":       0,
-			"routers":           0,
-			"subnets":           0,
-			"vpcs":              0,
+			"triggers":                 0,
+			"functions":                0,
+			"run_services":             0,
+			"schedulers":               0,
+			"disks":                    0,
+			"snapshots":                0,
+			"resource_policies":        0,
+			"vms":                      0,
+			"connectors":               0,
+			"firewalls":                0,
+			"router_nats":              0,
+			"routers":                  0,
+			"subnets":                  0,
+			"vpcs":                     0,
 			"sinks":                    0,
 			"buckets":                  0,
 			"alert_policies":           0,
 			"dashboards":               0,
 			"orphan_buckets_preserved": 0,
 			"orphan_bindings":          0,
+		},
+		ResourcesPreserved: map[string]int{
+			"firewalls":         0,
+			"router_nats":       0,
+			"routers":           0,
+			"subnets":           0,
+			"vpcs":              0,
+			"connectors":        0,
+			"disks":             0,
+			"resource_policies": 0,
+			"sinks":             0,
+			"alert_policies":    0,
+			"dashboards":        0,
 		},
 	}
 	var errs []string
@@ -449,6 +564,31 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 
 	pfx := opts.NamePrefix
 	parent := fmt.Sprintf("projects/%s/locations/%s", opts.ProjectID, opts.Region)
+
+	// Skip deleting anything the current Provider-mode state still tracks (it's live, not an orphan).
+	var tracked trackedResourceSet
+	if opts.StateBucket != "" {
+		var trackedErr error
+		tracked, trackedErr = fetchTrackedResources(ctx, opts.StateBucket, opts.ClientOptions)
+		if trackedErr != nil {
+			return result, fmt.Errorf("check provider-mode state (state_bucket=%s) before cleanup: %w", opts.StateBucket, trackedErr)
+		}
+		tflog.Info(ctx, fmt.Sprintf("[DSPM Region Cleanup] state_bucket=%s tracked %d resource types for %s/%s", opts.StateBucket, len(tracked), opts.ProjectID, opts.Region))
+	}
+	preserve := func(family string) {
+		result.ResourcesPreserved[family]++
+		tflog.Info(ctx, fmt.Sprintf("[DSPM Region Cleanup] %s preserved on %s/%s — still tracked in provider-mode state", family, opts.ProjectID, opts.Region))
+	}
+	// gatedDelete preserves instead of running del when resourceType/name is already tracked.
+	gatedDelete := func(resourceType, name, family string, del func() (bool, error)) {
+		if tracked.has(resourceType, name) {
+			preserve(family)
+			return
+		}
+		deleted, err := del()
+		tally(family, deleted)
+		noteErr(family, name, err)
+	}
 
 	// Quick probe: check if legacy resources exist before spending 3 min on IAM.
 	// If VPC and instances both absent, this is a no-op cleanup (fresh install).
@@ -520,105 +660,30 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 		}
 	}
 
-	cSvc, computeErr := compute.NewService(ctx, opts.ClientOptions...)
-	if computeErr != nil {
-		errs = append(errs, fmt.Sprintf("compute client: %v", computeErr))
-	} else {
-		// VMs must be deleted before the disk — if a VM holds the disk, disk delete returns 400 "in use".
-		instances, err := listDSPMInstances(ctx, cSvc, opts.ProjectID, opts.Region)
-		noteErr("instances_list", opts.Region, err)
-		vmDelErrs := 0
-		for _, inst := range instances {
-			delErr := deleteAndWaitComputeInstance(ctx, cSvc, opts.ProjectID, inst.zone, inst.name)
-			tally("vms", delErr == nil)
-			noteErr("vm", inst.name, delErr)
-			if delErr != nil {
-				vmDelErrs++
-			}
-		}
-
-		diskName := fmt.Sprintf("%s-persistent-scan-job-disk", pfx)
-		diskZone := opts.Region + "-b"
-		snapName := fmt.Sprintf("%s-disk-pre-upgrade", pfx)
-
-		diskExists, err := computeDiskExists(ctx, cSvc, opts.ProjectID, diskZone, diskName)
-		noteErr("disk_describe", diskName, err)
-
-		// Snapshot is safe even while a VM holds the disk; do it regardless of VM deletion outcome.
-		if diskExists && opts.SnapshotDiskBeforeDelete {
-			if snapErr := snapshotDiskAndWait(ctx, cSvc, opts.ProjectID, diskZone, diskName, snapName); snapErr != nil {
-				noteErr("disk_snapshot", snapName, snapErr)
-			} else {
-				result.SnapshotName = snapName
-				tally("snapshots", true)
-			}
-		}
-
-		// Only delete the disk once all VMs have been confirmed gone; if any VM deletion
-		// failed the disk is still attached and the delete would return 400 "in use".
-		if diskExists {
-			if vmDelErrs > 0 {
-				noteErr("disk", diskName, fmt.Errorf("skipped: %d VM deletion(s) failed — disk may still be attached", vmDelErrs))
-			} else {
-				delErr := deleteAndWaitComputeDisk(ctx, cSvc, opts.ProjectID, diskZone, diskName)
-				tally("disks", delErr == nil)
-				noteErr("disk", diskName, delErr)
-			}
-		}
-
-		policyName := fmt.Sprintf("%s-disk-snapshot-schedule", pfx)
-		deleted, err := deleteAndWaitResourcePolicy(ctx, cSvc, opts.ProjectID, opts.Region, policyName)
-		tally("resource_policies", deleted)
-		noteErr("resource_policy", policyName, err)
+	snapshotName, computeErrs := runComputeTeardown(ctx, opts, pfx, tally, noteErr, gatedDelete)
+	if snapshotName != "" {
+		result.SnapshotName = snapshotName
 	}
+	errs = append(errs, computeErrs...)
 
 	// VPC connector must drain before VPC can be deleted (async).
 	if vpcSvc, err := vpcaccess.NewService(ctx, opts.ClientOptions...); err != nil {
 		errs = append(errs, fmt.Sprintf("vpcaccess client: %v", err))
 	} else {
-		name := fmt.Sprintf("%s/connectors/%s-vpc-conn", parent, pfx)
-		deleted, err := deleteAndWaitVPCConnector(ctx, vpcSvc, name)
-		tally("connectors", deleted)
-		noteErr("connector", name, err)
-	}
-
-	if computeErr == nil {
-		for _, fw := range []string{"-egress-dns-internal", "-egress-ntp-internal", "-egress-web", "-allow-iap-ssh"} {
-			name := pfx + fw
-			deleted, err := deleteAndWaitFirewall(ctx, cSvc, opts.ProjectID, name)
-			tally("firewalls", deleted)
-			noteErr("firewall", name, err)
-		}
-
-		routerName := pfx + "-router"
-		natName := pfx + "-nat"
-		deleted, err := deleteRouterNAT(ctx, cSvc, opts.ProjectID, opts.Region, routerName, natName)
-		tally("router_nats", deleted)
-		noteErr("router_nat", natName, err)
-
-		deleted, err = deleteAndWaitRouter(ctx, cSvc, opts.ProjectID, opts.Region, routerName)
-		tally("routers", deleted)
-		noteErr("router", routerName, err)
-
-		subnetName := pfx + "-subnet"
-		deleted, err = deleteAndWaitSubnet(ctx, cSvc, opts.ProjectID, opts.Region, subnetName)
-		tally("subnets", deleted)
-		noteErr("subnet", subnetName, err)
-
-		vpcName := pfx + "-vpc"
-		deleted, err = deleteAndWaitVPC(ctx, cSvc, opts.ProjectID, vpcName)
-		tally("vpcs", deleted)
-		noteErr("vpc", vpcName, err)
+		connName := pfx + "-vpc-conn"
+		gatedDelete("google_vpc_access_connector", connName, "connectors", func() (bool, error) {
+			return deleteAndWaitVPCConnector(ctx, vpcSvc, fmt.Sprintf("%s/connectors/%s", parent, connName))
+		})
 	}
 
 	// Delete audit-logs sink before its destination bucket — in-flight writes would repopulate it. Name: ${pfx}-audit-sink.
 	if logSvc, err := logging.NewService(ctx, opts.ClientOptions...); err != nil {
 		errs = append(errs, fmt.Sprintf("logging client: %v", err))
 	} else {
-		sinkName := fmt.Sprintf("projects/%s/sinks/%s-audit-sink", opts.ProjectID, pfx)
-		deleted, err := deleteLoggingSink(ctx, logSvc, sinkName)
-		tally("sinks", deleted)
-		noteErr("sink", sinkName, err)
+		sinkShortName := pfx + "-audit-sink"
+		gatedDelete("google_logging_project_sink", sinkShortName, "sinks", func() (bool, error) {
+			return deleteLoggingSink(ctx, logSvc, fmt.Sprintf("projects/%s/sinks/%s", opts.ProjectID, sinkShortName))
+		})
 	}
 
 	// Delete monitoring alert policies and dashboards whose display name starts with the
@@ -629,15 +694,17 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 	if monSvc, err := monitoring.NewService(ctx, opts.ClientOptions...); err != nil {
 		errs = append(errs, fmt.Sprintf("monitoring client: %v", err))
 	} else {
-		deleted, err := deleteAlertPoliciesByPrefix(ctx, monSvc, opts.ProjectID, pfx)
+		deleted, preserved, err := deleteAlertPoliciesByPrefix(ctx, monSvc, opts.ProjectID, pfx, tracked)
 		result.ResourcesDeleted["alert_policies"] += deleted
+		result.ResourcesPreserved["alert_policies"] += preserved
 		noteErr("alert_policies", pfx, err)
 
 		if dashSvc, dashErr := monitoringv1.NewService(ctx, opts.ClientOptions...); dashErr != nil {
 			errs = append(errs, fmt.Sprintf("monitoring/v1 client: %v", dashErr))
 		} else {
-			deleted, err = deleteDashboardsByPrefix(ctx, dashSvc, opts.ProjectID, pfx)
+			deleted, preserved, err = deleteDashboardsByPrefix(ctx, dashSvc, opts.ProjectID, pfx, tracked)
 			result.ResourcesDeleted["dashboards"] += deleted
+			result.ResourcesPreserved["dashboards"] += preserved
 			noteErr("dashboards", pfx, err)
 		}
 	}
@@ -689,6 +756,98 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 		combinedErr = errors.New(strings.Join(errs, "; "))
 	}
 	return result, combinedErr
+}
+
+// runComputeTeardown deletes the compute-API resources (VMs, disk, resource policy, firewalls,
+// router NAT, router, subnet, VPC) — split out of runDSPMRegionCleanup to stay under gocyclo's limit.
+func runComputeTeardown(
+	ctx context.Context,
+	opts dspmRegionCleanupOptions,
+	pfx string,
+	tally func(string, bool),
+	noteErr func(string, string, error),
+	gatedDelete func(resourceType, name, family string, del func() (bool, error)),
+) (snapshotName string, errs []string) {
+	cSvc, computeErr := compute.NewService(ctx, opts.ClientOptions...)
+	if computeErr != nil {
+		return "", []string{fmt.Sprintf("compute client: %v", computeErr)}
+	}
+
+	// VMs must be deleted before the disk — if a VM holds the disk, disk delete returns 400 "in use".
+	instances, err := listDSPMInstances(ctx, cSvc, opts.ProjectID, opts.Region)
+	noteErr("instances_list", opts.Region, err)
+	vmDelErrs := 0
+	for _, inst := range instances {
+		delErr := deleteAndWaitComputeInstance(ctx, cSvc, opts.ProjectID, inst.zone, inst.name)
+		tally("vms", delErr == nil)
+		noteErr("vm", inst.name, delErr)
+		if delErr != nil {
+			vmDelErrs++
+		}
+	}
+
+	diskName := fmt.Sprintf("%s-persistent-scan-job-disk", pfx)
+	diskZone := opts.Region + "-b"
+	snapName := fmt.Sprintf("%s-disk-pre-upgrade", pfx)
+
+	diskExists, err := computeDiskExists(ctx, cSvc, opts.ProjectID, diskZone, diskName)
+	noteErr("disk_describe", diskName, err)
+
+	// Snapshot is safe even while a VM holds the disk; do it regardless of VM deletion outcome.
+	if diskExists && opts.SnapshotDiskBeforeDelete {
+		if snapErr := snapshotDiskAndWait(ctx, cSvc, opts.ProjectID, diskZone, diskName, snapName); snapErr != nil {
+			noteErr("disk_snapshot", snapName, snapErr)
+		} else {
+			snapshotName = snapName
+			tally("snapshots", true)
+		}
+	}
+
+	// Only delete the disk once all VMs have been confirmed gone; if any VM deletion
+	// failed the disk is still attached and the delete would return 400 "in use".
+	if diskExists {
+		gatedDelete("google_compute_disk", diskName, "disks", func() (bool, error) {
+			if vmDelErrs > 0 {
+				return false, fmt.Errorf("skipped: %d VM deletion(s) failed — disk may still be attached", vmDelErrs)
+			}
+			delErr := deleteAndWaitComputeDisk(ctx, cSvc, opts.ProjectID, diskZone, diskName)
+			return delErr == nil, delErr
+		})
+	}
+
+	policyName := fmt.Sprintf("%s-disk-snapshot-schedule", pfx)
+	gatedDelete("google_compute_resource_policy", policyName, "resource_policies", func() (bool, error) {
+		return deleteAndWaitResourcePolicy(ctx, cSvc, opts.ProjectID, opts.Region, policyName)
+	})
+
+	for _, fw := range []string{"-egress-dns-internal", "-egress-ntp-internal", "-egress-web", "-allow-iap-ssh"} {
+		name := pfx + fw
+		gatedDelete("google_compute_firewall", name, "firewalls", func() (bool, error) {
+			return deleteAndWaitFirewall(ctx, cSvc, opts.ProjectID, name)
+		})
+	}
+
+	routerName := pfx + "-router"
+	natName := pfx + "-nat"
+	gatedDelete("google_compute_router_nat", natName, "router_nats", func() (bool, error) {
+		return deleteRouterNAT(ctx, cSvc, opts.ProjectID, opts.Region, routerName, natName)
+	})
+
+	gatedDelete("google_compute_router", routerName, "routers", func() (bool, error) {
+		return deleteAndWaitRouter(ctx, cSvc, opts.ProjectID, opts.Region, routerName)
+	})
+
+	subnetName := pfx + "-subnet"
+	gatedDelete("google_compute_subnetwork", subnetName, "subnets", func() (bool, error) {
+		return deleteAndWaitSubnet(ctx, cSvc, opts.ProjectID, opts.Region, subnetName)
+	})
+
+	vpcName := pfx + "-vpc"
+	gatedDelete("google_compute_network", vpcName, "vpcs", func() (bool, error) {
+		return deleteAndWaitVPC(ctx, cSvc, opts.ProjectID, vpcName)
+	})
+
+	return snapshotName, nil
 }
 
 // purgeOrphanDSPMFeatureRoleBindings strips saEmail from bindings pointing at soft-deleted DSPM Feature Roles via ADC; scoped to (projectID, title, saEmail).
@@ -1012,7 +1171,7 @@ func listRegionZones(ctx context.Context, svc *compute.Service, projectID, regio
 	var zones []string
 	regionURL := fmt.Sprintf("https://www.googleapis.com/compute/v1/projects/%s/regions/%s", projectID, region)
 	err := svc.Zones.List(projectID).
-		Filter(fmt.Sprintf(`region eq "%s"`, regionURL)).
+		Filter(fmt.Sprintf(`region eq %q`, regionURL)).
 		Pages(ctx, func(page *compute.ZoneList) error {
 			for _, z := range page.Items {
 				zones = append(zones, z.Name)
@@ -1375,16 +1534,20 @@ func deleteLoggingSink(ctx context.Context, svc *logging.Service, sinkName strin
 }
 
 // deleteAlertPoliciesByPrefix lists and deletes all monitoring alert policies in the project
-// whose display name starts with namePrefix. Idempotent — 404 is treated as success.
-func deleteAlertPoliciesByPrefix(ctx context.Context, svc *monitoring.Service, projectID, namePrefix string) (int, error) {
+// whose display name starts with namePrefix, skipping any still tracked in the current
+// Provider-mode state (see tracked). Idempotent — 404 is treated as success.
+func deleteAlertPoliciesByPrefix(ctx context.Context, svc *monitoring.Service, projectID, namePrefix string, tracked trackedResourceSet) (deleted, preserved int, err error) {
 	project := fmt.Sprintf("projects/%s", projectID)
-	deleted := 0
 	var errs []string
 
-	err := svc.Projects.AlertPolicies.List(project).
-		Filter(fmt.Sprintf(`display_name=starts_with("%s")`, namePrefix)).
+	listErr := svc.Projects.AlertPolicies.List(project).
+		Filter(fmt.Sprintf(`display_name=starts_with(%q)`, namePrefix)).
 		Pages(ctx, func(page *monitoring.ListAlertPoliciesResponse) error {
 			for _, policy := range page.AlertPolicies {
+				if tracked.has("google_monitoring_alert_policy", policy.DisplayName) {
+					preserved++
+					continue
+				}
 				if _, delErr := svc.Projects.AlertPolicies.Delete(policy.Name).Context(ctx).Do(); delErr != nil {
 					if isGCPNotFound(delErr) {
 						continue
@@ -1396,27 +1559,31 @@ func deleteAlertPoliciesByPrefix(ctx context.Context, svc *monitoring.Service, p
 			}
 			return nil
 		})
-	if err != nil {
-		errs = append(errs, fmt.Sprintf("list alert policies: %v", err))
+	if listErr != nil {
+		errs = append(errs, fmt.Sprintf("list alert policies: %v", listErr))
 	}
 	if len(errs) > 0 {
-		return deleted, errors.New(strings.Join(errs, "; "))
+		return deleted, preserved, errors.New(strings.Join(errs, "; "))
 	}
-	return deleted, nil
+	return deleted, preserved, nil
 }
 
 // deleteDashboardsByPrefix lists and deletes all monitoring dashboards in the project
-// whose display name starts with namePrefix. Client-side filter (dashboards API has no
-// server-side displayName filter). Idempotent — 404 is treated as success.
-func deleteDashboardsByPrefix(ctx context.Context, svc *monitoringv1.Service, projectID, namePrefix string) (int, error) {
+// whose display name starts with namePrefix, skipping any still tracked in the current
+// Provider-mode state (see tracked). Client-side filter (dashboards API has no server-side
+// displayName filter). Idempotent — 404 is treated as success.
+func deleteDashboardsByPrefix(ctx context.Context, svc *monitoringv1.Service, projectID, namePrefix string, tracked trackedResourceSet) (deleted, preserved int, err error) {
 	project := fmt.Sprintf("projects/%s", projectID)
-	deleted := 0
 	var errs []string
 
-	err := svc.Projects.Dashboards.List(project).
+	listErr := svc.Projects.Dashboards.List(project).
 		Pages(ctx, func(page *monitoringv1.ListDashboardsResponse) error {
 			for _, dash := range page.Dashboards {
 				if !strings.HasPrefix(dash.DisplayName, namePrefix) {
+					continue
+				}
+				if tracked.has("google_monitoring_dashboard", dash.DisplayName) {
+					preserved++
 					continue
 				}
 				if _, delErr := svc.Projects.Dashboards.Delete(dash.Name).Context(ctx).Do(); delErr != nil {
@@ -1430,13 +1597,13 @@ func deleteDashboardsByPrefix(ctx context.Context, svc *monitoringv1.Service, pr
 			}
 			return nil
 		})
-	if err != nil {
-		errs = append(errs, fmt.Sprintf("list dashboards: %v", err))
+	if listErr != nil {
+		errs = append(errs, fmt.Sprintf("list dashboards: %v", listErr))
 	}
 	if len(errs) > 0 {
-		return deleted, errors.New(strings.Join(errs, "; "))
+		return deleted, preserved, errors.New(strings.Join(errs, "; "))
 	}
-	return deleted, nil
+	return deleted, preserved, nil
 }
 
 func isGCSNotFound(err error) bool {
