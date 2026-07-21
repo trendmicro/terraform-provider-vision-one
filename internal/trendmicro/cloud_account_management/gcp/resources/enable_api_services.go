@@ -521,9 +521,10 @@ func (r *EnableAPIServices) Delete(ctx context.Context, req resource.DeleteReque
 
 	disableErrors := r.runDisableServices(ctx, serviceUsageClient, gcpClients.ProjectID, enabledByResource)
 	if len(disableErrors) > 0 {
-		resp.Diagnostics.AddError(
-			"[Enable API Services][Delete]",
-			strings.Join(disableErrors, "; "),
+		resp.Diagnostics.AddWarning(
+			"[Enable API Services][Delete] Some services could not be disabled",
+			fmt.Sprintf("%s. These APIs remain enabled but are harmless; the resource has been removed from state.",
+				strings.Join(disableErrors, "; ")),
 		)
 	}
 }
