@@ -58,6 +58,9 @@ type CreateProjectRequest struct {
 	ProjectNumber             string                         `json:"projectNumber" validate:"omitempty,max=254"`
 	ServiceAccountId          string                         `json:"serviceAccountId" validate:"omitempty,max=254"`
 	ServiceAccountKey         string                         `json:"serviceAccountKey,omitempty"`
+	// JSON tag stays isGCPAutoDetectEnabled to match the CAM backend field; do not rename.
+	IsAutoDetectEnabled    *bool  `json:"isGCPAutoDetectEnabled,omitempty"`
+	ScanRoleOrganizationId string `json:"scanRoleOrganizationId,omitempty"`
 }
 
 type ModifyProjectRequest struct {
@@ -76,6 +79,9 @@ type ModifyProjectRequest struct {
 	ServiceAccountId          string                         `json:"serviceAccountId" validate:"omitempty,max=254"`
 	ServiceAccountKey         string                         `json:"serviceAccountKey,omitempty"`
 	WorkloadIdentityPoolId    *string                        `json:"workloadIdentityPoolId,omitempty"`
+	// JSON tag stays isGCPAutoDetectEnabled to match the CAM backend field; do not rename.
+	IsAutoDetectEnabled    *bool  `json:"isGCPAutoDetectEnabled,omitempty"`
+	ScanRoleOrganizationId string `json:"scanRoleOrganizationId,omitempty"`
 }
 
 type ProjectResponse struct {
@@ -251,7 +257,7 @@ func (c *CamClient) DeleteProject(projectNumber string) error {
 
 	resp, err := c.Client.DoRequestWithFullResponse(req)
 	if err != nil {
-		if resp != nil && resp.StatusCode == http.StatusNotFound {
+		if strings.Contains(err.Error(), `"code": "NotFound"`) {
 			return nil
 		}
 		return err

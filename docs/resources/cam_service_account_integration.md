@@ -22,6 +22,7 @@ The resource automatically:
 - Generates and manages service account keys and supports automatic key rotation based on a configurable schedule
 - Registers the service account with Vision One
 - Creates custom IAM roles which will use to centralize permissions for the service account, and assign them at the appropriate level (project, folder, or organization)
+- (Folder/Organization) Optionally binds read-only **node scan roles** once at the Org/Folder node via `node_scan_roles`, so new projects under the node — including projects created later — are covered for discovery and scanning through IAM inheritance
 
 ## Example Usage
 
@@ -152,6 +153,18 @@ resource "visionone_cam_iam_custom_role" "cam_role" {
   description = "Custom role for Vision One CAM service account in central management project"
 }
 
+# Org-level scan role for read-only discovery and scanning, granted once at the folder node.
+# Custom roles have no folder scope, so this role is DEFINED at the organization level
+# (organization_id) and BOUND at the folder node via node_scan_roles below. Defining an
+# org-level role requires organization-level permission.
+resource "visionone_cam_gcp_scan_role" "scan_role" {
+  project_id      = "my-management-project" # used for GCP authentication
+  organization_id = "123456789012"
+  role_id         = "trend_ai_auto_detect"
+  title           = "Trend Vision One Auto-Detect Scan Role"
+  description     = "Read-only discovery and scanning role bound at the folder node"
+}
+
 # Configure automatic key rotation every 90 days
 resource "time_rotating" "key_rotation" {
   rotation_days = 90
@@ -159,7 +172,7 @@ resource "time_rotating" "key_rotation" {
 
 # Create a service account with folder-level access
 resource "visionone_cam_service_account_integration" "folder_level" {
-  depends_on = [visionone_cam_iam_custom_role.cam_role, time_rotating.key_rotation]
+  depends_on = [visionone_cam_iam_custom_role.cam_role, visionone_cam_gcp_scan_role.scan_role, time_rotating.key_rotation]
 
   # Central management project where the service account will be created
   central_management_project_id_in_folder = "my-management-project"
@@ -179,6 +192,15 @@ resource "visionone_cam_service_account_integration" "folder_level" {
   primary_project_roles = [
     "roles/viewer",
     visionone_cam_iam_custom_role.cam_role.name,
+  ]
+
+  # node_scan_roles are granted ONCE at the folder node for read-only discovery and scanning.
+  # All projects under the folder, including projects created later, inherit these roles, so
+  # new projects are covered without a per-project binding. roles/viewer is added here because
+  # a basic role cannot be inlined into the scan custom role.
+  node_scan_roles = [
+    visionone_cam_gcp_scan_role.scan_role.name,
+    "roles/viewer",
   ]
 
   # Optional: Exclude specific projects from monitoring
@@ -289,6 +311,16 @@ resource "visionone_cam_iam_custom_role" "cam_role" {
   description     = "Custom role for Vision One CAM across the entire organization"
 }
 
+# Org-level scan role for read-only discovery and scanning, granted once at the organization node.
+# Bound at the org node via node_scan_roles below; all projects in the org inherit it.
+resource "visionone_cam_gcp_scan_role" "scan_role" {
+  project_id      = "my-management-project" # used for GCP authentication
+  organization_id = "123456789012"
+  role_id         = "trend_ai_auto_detect"
+  title           = "Trend Vision One Auto-Detect Scan Role"
+  description     = "Read-only discovery and scanning role bound at the organization node"
+}
+
 # Optional: Configure automatic key rotation every 90 days
 resource "time_rotating" "key_rotation" {
   rotation_days = 90
@@ -296,7 +328,7 @@ resource "time_rotating" "key_rotation" {
 
 # Create a service account with organization-level access
 resource "visionone_cam_service_account_integration" "organization_level" {
-  depends_on = [visionone_cam_iam_custom_role.cam_role, time_rotating.key_rotation]
+  depends_on = [visionone_cam_iam_custom_role.cam_role, visionone_cam_gcp_scan_role.scan_role, time_rotating.key_rotation]
 
   # Central management project where the service account will be created
   central_management_project_id_in_org = "my-management-project"
@@ -316,6 +348,15 @@ resource "visionone_cam_service_account_integration" "organization_level" {
   primary_project_roles = [
     "roles/viewer",
     visionone_cam_iam_custom_role.cam_role.name,
+  ]
+
+  # node_scan_roles are granted ONCE at the organization node for read-only discovery and scanning.
+  # All projects in the organization, including projects created later, inherit these roles, so
+  # new projects are covered without a per-project binding. roles/viewer is added here because
+  # a basic role cannot be inlined into the scan custom role.
+  node_scan_roles = [
+    visionone_cam_gcp_scan_role.scan_role.name,
+    "roles/viewer",
   ]
 
   # Optional: Exclude specific projects from monitoring
@@ -476,6 +517,36 @@ resource "visionone_cam_service_account_integration" "main" {
 ```
 
 
+### Node Scan Roles (read-only auto-detect)
+
+`node_scan_roles` grants roles **once at the Org/Folder node**, so discovery and read-only scanning cover every project under the node — including projects created later — through IAM inheritance, with no per-project scan binding. Only applies in folder or organization mode; ignored for single-project.
+
+Typically set it to the organization-level `visionone_cam_gcp_scan_role` (read-only) plus the predefined `roles/viewer`:
+
+```hcl
+resource "visionone_cam_gcp_scan_role" "scan_role" {
+  project_id      = "my-management-project" # used for GCP authentication
+  organization_id = "123456789012"          # org-level: GCP custom roles have no folder scope
+  role_id         = "trend_ai_auto_detect"
+}
+
+resource "visionone_cam_service_account_integration" "main" {
+  node_scan_roles = [
+    visionone_cam_gcp_scan_role.scan_role.name,
+    "roles/viewer", # basic role granted at the node (cannot be inlined into a custom role)
+  ]
+}
+```
+
+For folder deployments the scan role is still defined at the organization level (requires organization-level permission) and bound at the folder node. See `visionone_cam_gcp_scan_role` for the exact read-only permissions it grants.
+
+#### Coverage of projects added later
+
+The node scan roles and the per-project bindings cover newly added projects differently:
+
+- **Read-only scanning is automatic.** A project created under the folder or organization inherits `node_scan_roles` through GCP IAM immediately, and — when `is_auto_detect_enabled` is set on `visionone_cam_connector_gcp` — is onboarded for scanning by Vision One automatically. No `terraform apply` is required.
+- **Per-project deploy/feature bindings are not extended automatically.** `roles` and `primary_project_roles` are bound only to the projects discovered when the integration is created. Projects added later are not bound, and `terraform plan` will not report them (the resource does not re-enumerate the node on refresh). To grant deploy/feature permissions on newly added projects, re-provision the integration — changing `roles`, `primary_project_roles`, or `node_scan_roles` forces replacement, which re-discovers the current set of projects.
+
 ## Key Rotation
 Automatic key rotation is recommended for security best practices:
 
@@ -592,6 +663,7 @@ resource "visionone_cam_connector_gcp" "connectors" {
 - `display_name` (String) Display name for the service account. If not specified, defaults to 'Vision One CAM Service Account'.
 - `exclude_free_trial_projects` (Boolean) If true, exclude free trial projects when applying IAM bindings across multiple projects. Only applies when using central_management_project_id_in_folder or central_management_project_id_in_org.
 - `exclude_projects` (List of String) List of project IDs to exclude from IAM bindings. Only applies when using central_management_project_id_in_folder or central_management_project_id_in_org.
+- `node_scan_roles` (List of String) List of IAM role resource names to grant once at the folder or organization node for read-only discovery and scanning. Projects under the node, including projects created later, inherit these roles through IAM, so no per-project scan binding is required. Typically the organization-level scan custom role plus the predefined roles/viewer (a basic role cannot be inlined into a custom role, so it must be granted separately). Only applies in folder or organization mode (central_management_project_id_in_folder or central_management_project_id_in_org); ignored for single-project integrations.
 - `primary_project_roles` (List of String) List of IAM role resource names to bind ONLY to the primary project (the service account's home project). These roles will NOT be replicated to sub-projects. Typically used for roles containing elevated permissions such as service account key management (e.g., iam.serviceAccountKeys.create/delete, iam.serviceAccounts.getAccessToken).
 - `project_id` (String) The GCP project where the service account will be created. Defaults to provider project configuration.
 - `rotation_time` (String) RFC3339 timestamp from time_rotating resource to trigger key rotation. When this value changes, the old key is deleted and a new key is created. Use with time_rotating resource's rotation_rfc3339 output.
@@ -601,6 +673,7 @@ resource "visionone_cam_connector_gcp" "connectors" {
 - `bound_project_numbers` (List of String) List of project numbers corresponding to bound_projects, in the same order.
 - `bound_projects` (List of String) List of project IDs where IAM role bindings were created for this service account.
 - `key_name` (String) The resource name of the service account key.
+- `node_scan_binding_resource` (String) The folder or organization resource (folders/{id} or organizations/{id}) where the node scan roles were granted. Set when central_management_project_id_in_folder or central_management_project_id_in_org is used together with node_scan_roles.
 - `private_key` (String, Sensitive) The private key in JSON format, base64 encoded. This is sensitive and should be stored securely.
 - `service_account_email` (String) The email address of the created service account.
 - `service_account_name` (String) The fully-qualified name of the service account (projects/{project}/serviceAccounts/{email}).

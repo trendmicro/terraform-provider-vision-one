@@ -19,6 +19,18 @@ resource "visionone_cam_iam_custom_role" "cam_role" {
   description = "Custom role for Vision One CAM service account in central management project"
 }
 
+# Org-level scan role for read-only discovery and scanning, granted once at the folder node.
+# Custom roles have no folder scope, so this role is DEFINED at the organization level
+# (organization_id) and BOUND at the folder node via node_scan_roles below. Defining an
+# org-level role requires organization-level permission.
+resource "visionone_cam_gcp_scan_role" "scan_role" {
+  project_id      = "my-management-project" # used for GCP authentication
+  organization_id = "123456789012"
+  role_id         = "trend_ai_auto_detect"
+  title           = "Trend Vision One Auto-Detect Scan Role"
+  description     = "Read-only discovery and scanning role bound at the folder node"
+}
+
 # Configure automatic key rotation every 90 days
 resource "time_rotating" "key_rotation" {
   rotation_days = 90
@@ -26,7 +38,7 @@ resource "time_rotating" "key_rotation" {
 
 # Create a service account with folder-level access
 resource "visionone_cam_service_account_integration" "folder_level" {
-  depends_on = [visionone_cam_iam_custom_role.cam_role, time_rotating.key_rotation]
+  depends_on = [visionone_cam_iam_custom_role.cam_role, visionone_cam_gcp_scan_role.scan_role, time_rotating.key_rotation]
 
   # Central management project where the service account will be created
   central_management_project_id_in_folder = "my-management-project"
@@ -36,10 +48,25 @@ resource "visionone_cam_service_account_integration" "folder_level" {
   display_name = "Vision One CAM Service Account - Folder Level"
   description  = "Service account for monitoring all projects in the folder"
 
-  # Use both predefined viewer role and custom role
+  # roles/viewer is bound to all projects in the folder (sub-projects + primary project)
   roles = [
     "roles/viewer",
+  ]
+
+  # primary_project_roles are bound only to the primary project (where the service account lives)
+  # This follows least-privilege: elevated permissions are not replicated to sub-projects
+  primary_project_roles = [
+    "roles/viewer",
     visionone_cam_iam_custom_role.cam_role.name,
+  ]
+
+  # node_scan_roles are granted ONCE at the folder node for read-only discovery and scanning.
+  # All projects under the folder, including projects created later, inherit these roles, so
+  # new projects are covered without a per-project binding. roles/viewer is added here because
+  # a basic role cannot be inlined into the scan custom role.
+  node_scan_roles = [
+    visionone_cam_gcp_scan_role.scan_role.name,
+    "roles/viewer",
   ]
 
   # Optional: Exclude specific projects from monitoring

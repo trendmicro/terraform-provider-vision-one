@@ -35,8 +35,14 @@ resource "visionone_cam_service_account_integration" "single_project" {
   display_name = "Vision One CAM Service Account"
   description  = "Service account for Trend Micro Vision One Cloud Account Management"
 
-  # Use predefined viewer role for read-only access
+  # roles/viewer is bound to all projects (including sub-projects in multi-project mode)
   roles = [
+    "roles/viewer",
+  ]
+
+  # primary_project_roles are bound only to the primary project (where the service account lives)
+  # This follows least-privilege: elevated permissions are not replicated to sub-projects
+  primary_project_roles = [
     "roles/viewer",
     visionone_cam_iam_custom_role.cam_role.name,
   ]
