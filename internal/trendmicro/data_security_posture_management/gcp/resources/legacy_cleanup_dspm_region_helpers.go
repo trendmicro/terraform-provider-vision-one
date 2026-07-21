@@ -94,6 +94,8 @@ type dspmRegionCleanupOptions struct {
 	SAEmail string
 	// StateBucket, when non-empty, gates deletes against the current Provider-mode tfstate — see fetchTrackedResources.
 	StateBucket string
+	// IsPrimaryProject gates deletion of the legacy per-project SA — a member's copy is adopted in place by the new install, not deleted.
+	IsPrimaryProject bool
 }
 
 type dspmRegionCleanupResult struct {
@@ -533,6 +535,7 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 			"dashboards":               0,
 			"orphan_buckets_preserved": 0,
 			"orphan_bindings":          0,
+			"service_accounts":         0,
 		},
 		ResourcesPreserved: map[string]int{
 			"firewalls":         0,
@@ -741,6 +744,18 @@ func runDSPMRegionCleanup(ctx context.Context, opts dspmRegionCleanupOptions) (d
 		}
 	}
 
+	// Legacy Package's own per-project DSPM SA — only safe to delete on the primary project; members adopt this object in place.
+	if opts.IsPrimaryProject {
+		if iamSvc, err := iam.NewService(ctx, opts.ClientOptions...); err != nil {
+			errs = append(errs, fmt.Sprintf("iam client: %v", err))
+		} else {
+			saEmail := fmt.Sprintf("%s-sa@%s.iam.gserviceaccount.com", pfx, opts.ProjectID)
+			deleted, delErr := deleteLegacyDSPMServiceAccount(ctx, iamSvc, opts.ProjectID, saEmail)
+			tally("service_accounts", deleted)
+			noteErr("service_account", saEmail, delErr)
+		}
+	}
+
 	// Best-effort janitor: strip stale SA bindings to soft-deleted DSPM Feature Roles via ADC; failure doesn't fail cleanup.
 	if opts.SAEmail != "" {
 		purged, err := purgeOrphanDSPMFeatureRoleBindings(ctx, opts.ProjectID, opts.SAEmail)
@@ -848,6 +863,34 @@ func runComputeTeardown(
 	})
 
 	return snapshotName, nil
+}
+
+// deleteLegacyDSPMServiceAccount deletes the legacy per-project DSPM SA and its user-managed keys, mirroring cloud_account_management/gcp/resources/legacy_cleanup_service_account.go.
+func deleteLegacyDSPMServiceAccount(ctx context.Context, iamSvc *iam.Service, projectID, saEmail string) (bool, error) {
+	saName := fmt.Sprintf("projects/%s/serviceAccounts/%s", projectID, saEmail)
+
+	if _, err := iamSvc.Projects.ServiceAccounts.Get(saName).Context(ctx).Do(); err != nil {
+		if isGCPNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	if keysResp, err := iamSvc.Projects.ServiceAccounts.Keys.List(saName).KeyTypes("USER_MANAGED").Context(ctx).Do(); err == nil {
+		for _, key := range keysResp.Keys {
+			if _, delErr := iamSvc.Projects.ServiceAccounts.Keys.Delete(key.Name).Context(ctx).Do(); delErr != nil {
+				tflog.Warn(ctx, fmt.Sprintf("[DSPM Region Cleanup] failed to delete key %s: %v", key.Name, delErr))
+			}
+		}
+	}
+
+	if _, err := iamSvc.Projects.ServiceAccounts.Delete(saName).Context(ctx).Do(); err != nil {
+		if isGCPNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // purgeOrphanDSPMFeatureRoleBindings strips saEmail from bindings pointing at soft-deleted DSPM Feature Roles via ADC; scoped to (projectID, title, saEmail).
