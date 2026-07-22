@@ -104,6 +104,8 @@ var FEATURE_PERMISSIONS = map[string][]string{
 		"cloudbuild.builds.list",
 		"cloudbuild.builds.update",
 		"eventarc.triggers.delete",
+		"iam.serviceAccountKeys.list",
+		"iam.serviceAccounts.delete",
 		"logging.sinks.delete",
 		"monitoring.alertPolicies.delete",
 		"monitoring.dashboards.delete",
