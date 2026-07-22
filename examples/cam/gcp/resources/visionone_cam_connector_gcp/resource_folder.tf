@@ -14,6 +14,7 @@ provider "visionone" {
 # GCP connector with folder-level configuration
 # This allows CAM to manage all projects under a specific GCP folder
 # Use excluded_projects to skip specific project numbers from the folder scope
+# When automatic onboarding is enabled, projects created later under this folder are covered too.
 resource "visionone_cam_connector_gcp" "cam_connector_with_folder" {
   name                      = "CAM GCP Connector with Folder"
   project_number            = "123456789012"
@@ -21,6 +22,9 @@ resource "visionone_cam_connector_gcp" "cam_connector_with_folder" {
   service_account_key       = base64encode(file("service-account-key.json"))
   is_cam_cloud_asrm_enabled = true
   description               = "CAM connector with folder-level configuration"
+
+  # Opt in to automatic onboarding of new projects under the folder (honored on the primary project).
+  is_auto_detect_enabled = true
 
   folder = {
     id                = "123456789"

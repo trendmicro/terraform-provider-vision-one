@@ -18,6 +18,8 @@ When configuring the `permissions` field, please note:
 
 For detailed permission requirements, refer to the [Permissions API](coming-soon).
 
+This resource creates the **deploy** custom role (self-maintenance and feature-deployment permissions). For the read-only scan role used by GCP auto-detection — granted once at the Org/Folder node via `node_scan_roles` on `visionone_cam_service_account_integration` — use the dedicated `visionone_cam_gcp_scan_role` resource, which never includes deploy/write permissions.
+
 ## Example Usage
 
 ### Basic Usage
@@ -282,7 +284,7 @@ output "role_deleted" {
 - `description` (String) Description of the Trend Micro Vision One Cloud Account Management custom role definition.
 - `feature_permissions` (Set of String) Set of features associated with the Trend Micro Vision One Cloud Account Management custom role definition. When specified, the role will include all permissions required by the specified features in addition to the base permissions (either default core permissions or your custom permissions list). The permissions are automatically retrieved and aggregated according to the Trend Micro Vision One GCP required permissions documentation. For available features, see the [Features API](coming-soon). Example: `["cloud-sentry", "real-time-posture-monitoring"]`.
 - `organization_id` (String) The organization ID where the custom role will be created. When specified, creates an organization-level custom role that can be used across all projects in the organization. **Recommended for multi-project deployments** to allow the same custom role to be used across all projects in a folder. When this is set, project_id is still required for GCP authentication.
-- `permissions` (List of String) List of permissions associated with the Trend Micro Vision One Cloud Account Management custom role definition. **IMPORTANT**: If specified, this list will OVERWRITE (not append to) the default core permissions. If not specified, the role will include the core permissions appropriate for the parent level (organization or project). Organization-level roles include organization, folder, and project permissions, while project-level roles include only project permissions. For detailed permission requirements, refer to the [Permissions API](coming-soon).
+- `permissions` (List of String) Role permissions. If set, **overwrites** the default core permissions. If omitted, defaults to core permissions for the parent level (organization or project) plus any contributed by `feature_permissions`.
 - `project_id` (String) The project ID used for GCP authentication and API calls. When creating a project-level custom role, this is where the role will be created. When creating an organization-level custom role (with organization_id), this project is used only for authentication. Required in all cases.
 - `role_id` (String) Role ID to use for this custom role. If not specified, a Trend Micro Vision One Cloud Account Management Custom Role ID will be generated.
 - `stage` (String) Current launch stage of the Trend Micro Vision One Cloud Account Management custom role (e.g., ALPHA, BETA, GA, DEPRECATED).

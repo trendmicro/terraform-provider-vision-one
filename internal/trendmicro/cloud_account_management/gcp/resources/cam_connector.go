@@ -66,6 +66,8 @@ type CAMConnectorResourceModel struct {
 	FeaturesConfigFilePath    types.String              `tfsdk:"features_config_file_path"`
 	IsCAMCloudASRMEnabled     types.Bool                `tfsdk:"is_cam_cloud_asrm_enabled"`
 	IsPrimary                 types.Bool                `tfsdk:"is_primary"`
+	IsAutoDetectEnabled       types.Bool                `tfsdk:"is_auto_detect_enabled"`
+	ScanRoleOrganizationID    types.String              `tfsdk:"scan_role_organization_id"`
 	ServiceAccountKey         types.String              `tfsdk:"service_account_key"`
 	Folder                    *FolderDetailsModel       `tfsdk:"folder"`
 	Organization              *OrganizationDetailsModel `tfsdk:"organization"`
@@ -205,6 +207,17 @@ func (r *CAMConnectorResource) Schema(ctx context.Context, req resource.SchemaRe
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
 				},
+			},
+			"is_auto_detect_enabled": schema.BoolAttribute{
+				Optional: true,
+				MarkdownDescription: "Opt-in for automatic onboarding of new projects under the folder or organization. " +
+					"Only applied on the primary project; set to `false` to stop automatic syncing. Defaults to off when omitted.",
+			},
+			"scan_role_organization_id": schema.StringAttribute{
+				Optional: true,
+				MarkdownDescription: "GCP organization ID used to define the organization-level auto-detect scan role for a folder onboarding. " +
+					"Required when `is_auto_detect_enabled` is true and the connector targets a folder, because a custom role cannot be defined at the folder level. " +
+					"The scan node itself stays the folder; this only tells the backend where the scan role lives.",
 			},
 			"name": schema.StringAttribute{
 				Required:            true,
@@ -418,6 +431,19 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 
+	// Auto-detect is a primary-only opt-in; only send the flag when the user set it on the primary.
+	var autoDetectEnabledPtr *bool
+	if isPrimaryPtr != nil && *isPrimaryPtr && !plan.IsAutoDetectEnabled.IsNull() && !plan.IsAutoDetectEnabled.IsUnknown() {
+		v := plan.IsAutoDetectEnabled.ValueBool()
+		autoDetectEnabledPtr = &v
+	}
+
+	// The scan-role org id only matters on the primary of a folder onboarding; omit it elsewhere.
+	var scanRoleOrgID string
+	if isPrimaryPtr != nil && *isPrimaryPtr {
+		scanRoleOrgID = plan.ScanRoleOrganizationID.ValueString()
+	}
+
 	body := &api.CreateProjectRequest{
 		CamDeployedRegion:         plan.CamDeployedRegion.ValueString(),
 		ConnectedSecurityServices: connectedServices,
@@ -427,6 +453,8 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		Folder:                    folder,
 		IsCAMCloudASRMEnabled:     plan.IsCAMCloudASRMEnabled.ValueBool(),
 		IsPrimary:                 isPrimaryPtr,
+		IsAutoDetectEnabled:       autoDetectEnabledPtr,
+		ScanRoleOrganizationId:    scanRoleOrgID,
 		IsTFProviderDeployed:      true,
 		Name:                      plan.Name.ValueString(),
 		Organization:              organization,
@@ -604,6 +632,19 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		return
 	}
 
+	// Auto-detect is a primary-only opt-in; only send the flag when the user set it on the primary.
+	var autoDetectEnabledPtr *bool
+	if isPrimaryPtr != nil && *isPrimaryPtr && !plan.IsAutoDetectEnabled.IsNull() && !plan.IsAutoDetectEnabled.IsUnknown() {
+		v := plan.IsAutoDetectEnabled.ValueBool()
+		autoDetectEnabledPtr = &v
+	}
+
+	// The scan-role org id only matters on the primary of a folder onboarding; omit it elsewhere.
+	var scanRoleOrgID string
+	if isPrimaryPtr != nil && *isPrimaryPtr {
+		scanRoleOrgID = plan.ScanRoleOrganizationID.ValueString()
+	}
+
 	body := &api.ModifyProjectRequest{
 		CamDeployedRegion:         plan.CamDeployedRegion.ValueString(),
 		ConnectedSecurityServices: connectedServices,
@@ -613,6 +654,8 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		Folder:                    folder,
 		IsCAMCloudASRMEnabled:     isCAMCloudASRMEnabled,
 		IsPrimary:                 isPrimaryPtr,
+		IsAutoDetectEnabled:       autoDetectEnabledPtr,
+		ScanRoleOrganizationId:    scanRoleOrgID,
 		IsTFProviderDeployed:      true,
 		Name:                      plan.Name.ValueString(),
 		Organization:              organization,

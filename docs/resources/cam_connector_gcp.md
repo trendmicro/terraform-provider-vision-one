@@ -38,6 +38,7 @@ For a complete CAM setup, resources should be created in this order:
 - **`organization` block**: Set this when you want CAM to discover and manage ALL projects under your GCP organization, not just the single project specified in `project_number`.
 - **`folder` block**: Set this when you want CAM to discover and manage ALL projects under a specific GCP folder, not just the single project specified in `project_number`.
 - **`organization` and `folder` are mutually exclusive**: Only one of these blocks should be set per connector.
+- **`is_auto_detect_enabled`**: Opt-in for automatic onboarding of new projects under the folder or organization. Honored on the primary project only; set to `false` to stop syncing. New projects are discovered and scanned read-only through the node scan role — see `node_scan_roles` on `visionone_cam_service_account_integration`.
 
 ## Example Usage
 
@@ -104,6 +105,7 @@ provider "visionone" {
 # GCP connector with organization-level configuration
 # This allows CAM to manage all projects under the organization
 # Use excluded_projects to skip specific project numbers from the organization scope
+# When automatic onboarding is enabled, projects created later under this organization are covered too.
 resource "visionone_cam_connector_gcp" "cam_connector_with_organization" {
   name                      = "CAM GCP Connector with Organization"
   project_number            = "123456789012"
@@ -111,6 +113,9 @@ resource "visionone_cam_connector_gcp" "cam_connector_with_organization" {
   service_account_key       = base64encode(file("service-account-key.json"))
   is_cam_cloud_asrm_enabled = true
   description               = "CAM connector with organization-level configuration"
+
+  # Opt in to automatic onboarding of new projects under the organization (honored on the primary project).
+  is_auto_detect_enabled = true
 
   organization = {
     id                = "123456789"
@@ -139,6 +144,7 @@ provider "visionone" {
 # GCP connector with folder-level configuration
 # This allows CAM to manage all projects under a specific GCP folder
 # Use excluded_projects to skip specific project numbers from the folder scope
+# When automatic onboarding is enabled, projects created later under this folder are covered too.
 resource "visionone_cam_connector_gcp" "cam_connector_with_folder" {
   name                      = "CAM GCP Connector with Folder"
   project_number            = "123456789012"
@@ -146,6 +152,9 @@ resource "visionone_cam_connector_gcp" "cam_connector_with_folder" {
   service_account_key       = base64encode(file("service-account-key.json"))
   is_cam_cloud_asrm_enabled = true
   description               = "CAM connector with folder-level configuration"
+
+  # Opt in to automatic onboarding of new projects under the folder (honored on the primary project).
+  is_auto_detect_enabled = true
 
   folder = {
     id                = "123456789"
@@ -440,6 +449,7 @@ output "tag_value_names" {
 - `features` (Attributes List) List of features to enable for the connector (see [below for nested schema](#nestedatt--features))
 - `features_config_file_path` (String) Path to the features configuration file
 - `folder` (Attributes) GCP folder details for the connector (see [below for nested schema](#nestedatt--folder))
+- `is_auto_detect_enabled` (Boolean) Opt-in for automatic onboarding of new projects under the folder or organization. Only applied on the primary project; set to `false` to stop automatic syncing. Defaults to off when omitted.
 - `organization` (Attributes) GCP organization details for the connector (see [below for nested schema](#nestedatt--organization))
 - `service_account_key` (String, Sensitive) GCP service account key (JSON credentials) used to authenticate with the GCP project. Must be provided as a base64-encoded string. Required for legacy single-project deployments and for primary projects (`is_primary = true`). Must be omitted for member projects (`is_primary = false`), which share the primary's service account.
 

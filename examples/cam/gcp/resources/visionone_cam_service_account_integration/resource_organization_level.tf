@@ -21,6 +21,16 @@ resource "visionone_cam_iam_custom_role" "cam_role" {
   description     = "Custom role for Vision One CAM across the entire organization"
 }
 
+# Org-level scan role for read-only discovery and scanning, granted once at the organization node.
+# Bound at the org node via node_scan_roles below; all projects in the org inherit it.
+resource "visionone_cam_gcp_scan_role" "scan_role" {
+  project_id      = "my-management-project" # used for GCP authentication
+  organization_id = "123456789012"
+  role_id         = "trend_ai_auto_detect"
+  title           = "Trend Vision One Auto-Detect Scan Role"
+  description     = "Read-only discovery and scanning role bound at the organization node"
+}
+
 # Optional: Configure automatic key rotation every 90 days
 resource "time_rotating" "key_rotation" {
   rotation_days = 90
@@ -28,7 +38,7 @@ resource "time_rotating" "key_rotation" {
 
 # Create a service account with organization-level access
 resource "visionone_cam_service_account_integration" "organization_level" {
-  depends_on = [visionone_cam_iam_custom_role.cam_role, time_rotating.key_rotation]
+  depends_on = [visionone_cam_iam_custom_role.cam_role, visionone_cam_gcp_scan_role.scan_role, time_rotating.key_rotation]
 
   # Central management project where the service account will be created
   central_management_project_id_in_org = "my-management-project"
@@ -38,11 +48,25 @@ resource "visionone_cam_service_account_integration" "organization_level" {
   display_name = "Vision One CAM Service Account - Organization Level"
   description  = "Service account for monitoring all projects in the organization"
 
-  # Use both predefined viewer role and custom role
-  # Remove custom role line if you only want to use roles/viewer
+  # roles/viewer is bound to all projects in the organization (sub-projects + primary project)
   roles = [
     "roles/viewer",
+  ]
+
+  # primary_project_roles are bound only to the primary project (where the service account lives)
+  # This follows least-privilege: elevated permissions are not replicated to sub-projects
+  primary_project_roles = [
+    "roles/viewer",
     visionone_cam_iam_custom_role.cam_role.name,
+  ]
+
+  # node_scan_roles are granted ONCE at the organization node for read-only discovery and scanning.
+  # All projects in the organization, including projects created later, inherit these roles, so
+  # new projects are covered without a per-project binding. roles/viewer is added here because
+  # a basic role cannot be inlined into the scan custom role.
+  node_scan_roles = [
+    visionone_cam_gcp_scan_role.scan_role.name,
+    "roles/viewer",
   ]
 
   # Optional: Exclude specific projects from monitoring
