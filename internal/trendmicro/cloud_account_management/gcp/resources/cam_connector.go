@@ -54,7 +54,6 @@ type CAMConnectorResource struct {
 // CAMConnectorResourceModel describes the resource data model for GCP connector.
 type CAMConnectorResourceModel struct {
 	// Required fields
-	Name             types.String `tfsdk:"name"`
 	ProjectNumber    types.String `tfsdk:"project_number"`
 	ServiceAccountID types.String `tfsdk:"service_account_id"`
 
@@ -66,6 +65,9 @@ type CAMConnectorResourceModel struct {
 	FeaturesConfigFilePath    types.String              `tfsdk:"features_config_file_path"`
 	IsCAMCloudASRMEnabled     types.Bool                `tfsdk:"is_cam_cloud_asrm_enabled"`
 	IsPrimary                 types.Bool                `tfsdk:"is_primary"`
+	IsAutoDetectEnabled       types.Bool                `tfsdk:"is_auto_detect_enabled"`
+	Name                      types.String              `tfsdk:"name"`
+	ScanRoleOrganizationID    types.String              `tfsdk:"scan_role_organization_id"`
 	ServiceAccountKey         types.String              `tfsdk:"service_account_key"`
 	Folder                    *FolderDetailsModel       `tfsdk:"folder"`
 	Organization              *OrganizationDetailsModel `tfsdk:"organization"`
@@ -206,12 +208,20 @@ func (r *CAMConnectorResource) Schema(ctx context.Context, req resource.SchemaRe
 					boolplanmodifier.UseStateForUnknown(),
 				},
 			},
+			"is_auto_detect_enabled": schema.BoolAttribute{
+				Optional: true,
+				MarkdownDescription: "Opt-in for automatic onboarding of new projects under the folder or organization. " +
+					"Only applied on the primary project; set to `false` to stop automatic syncing. Defaults to off when omitted.",
+			},
+			"scan_role_organization_id": schema.StringAttribute{
+				Optional: true,
+				MarkdownDescription: "GCP organization ID used to define the organization-level auto-detect scan role for a folder onboarding. " +
+					"Required when `is_auto_detect_enabled` is true and the connector targets a folder, because a custom role cannot be defined at the folder level. " +
+					"The scan node itself stays the folder; this only tells the backend where the scan role lives.",
+			},
 			"name": schema.StringAttribute{
-				Required:            true,
-				MarkdownDescription: "Name of the connector",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
+				Optional:            true,
+				MarkdownDescription: "Optional Vision One display name. When omitted, Vision One uses the GCP project display name on creation and preserves later UI changes.",
 			},
 			"organization": schema.SingleNestedAttribute{
 				Optional:            true,
@@ -418,6 +428,19 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 
+	// Auto-detect is a primary-only opt-in; only send the flag when the user set it on the primary.
+	var autoDetectEnabledPtr *bool
+	if isPrimaryPtr != nil && *isPrimaryPtr && !plan.IsAutoDetectEnabled.IsNull() && !plan.IsAutoDetectEnabled.IsUnknown() {
+		v := plan.IsAutoDetectEnabled.ValueBool()
+		autoDetectEnabledPtr = &v
+	}
+
+	// The scan-role org id only matters on the primary of a folder onboarding; omit it elsewhere.
+	var scanRoleOrgID string
+	if isPrimaryPtr != nil && *isPrimaryPtr {
+		scanRoleOrgID = plan.ScanRoleOrganizationID.ValueString()
+	}
+
 	body := &api.CreateProjectRequest{
 		CamDeployedRegion:         plan.CamDeployedRegion.ValueString(),
 		ConnectedSecurityServices: connectedServices,
@@ -427,8 +450,10 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		Folder:                    folder,
 		IsCAMCloudASRMEnabled:     plan.IsCAMCloudASRMEnabled.ValueBool(),
 		IsPrimary:                 isPrimaryPtr,
+		IsAutoDetectEnabled:       autoDetectEnabledPtr,
+		ScanRoleOrganizationId:    scanRoleOrgID,
 		IsTFProviderDeployed:      true,
-		Name:                      plan.Name.ValueString(),
+		Name:                      optionalString(plan.Name),
 		Organization:              organization,
 		ProjectNumber:             plan.ProjectNumber.ValueString(),
 		ServiceAccountId:          plan.ServiceAccountID.ValueString(),
@@ -438,31 +463,23 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 	unlock := lockGCPCAMProjectMutation(plan.ProjectNumber.ValueString())
 	defer unlock()
 
-	createErr := r.client.CreateProject(body)
-	if createErr != nil {
-		// If the project already exists, adopt it instead of failing
-		if strings.Contains(createErr.Error(), "account-exist") {
-			tflog.Info(ctx, fmt.Sprintf("[CAM Connector GCP][Create] Project %s already exists, adopting existing resource",
-				plan.ProjectNumber.ValueString()))
-		} else if addGCPNetworkRetryDiagnostic(&resp.Diagnostics, "Create", createErr) {
-			return
-		} else {
-			resp.Diagnostics.AddError(
-				"[CAM Connector GCP][Create] Error Adding Project",
-				fmt.Sprintf("[CAM Connector GCP][Create] Failed to add project: %s", createErr),
-			)
-			return
-		}
-	}
-
-	res, err := waitForGCPProjectConnected(ctx, r.client, plan.ProjectNumber.ValueString())
+	res, err := createProjectAndWaitConnected(ctx, r.client, body, plan.ProjectNumber.ValueString(),
+		gcpProjectConnectMaxAttempts, gcpProjectConnectRetryBackoff, gcpProjectConnectedWaitTimeout, gcpProjectConnectedWaitInterval)
 	if err != nil {
 		if addGCPNetworkRetryDiagnostic(&resp.Diagnostics, "Create", err) {
 			return
 		}
+		var notConnected *projectNotConnectedError
+		if errors.As(err, &notConnected) {
+			resp.Diagnostics.AddError(
+				"[CAM Connector GCP][Create] Project Not Connected",
+				fmt.Sprintf("[CAM Connector GCP][Create] %s", err),
+			)
+			return
+		}
 		resp.Diagnostics.AddError(
-			"[CAM Connector GCP][Create] Project Not Connected",
-			fmt.Sprintf("[CAM Connector GCP][Create] %s", err),
+			"[CAM Connector GCP][Create] Error Adding Project",
+			fmt.Sprintf("[CAM Connector GCP][Create] Failed to add project: %s", err),
 		)
 		return
 	}
@@ -604,6 +621,19 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		return
 	}
 
+	// Auto-detect is a primary-only opt-in; only send the flag when the user set it on the primary.
+	var autoDetectEnabledPtr *bool
+	if isPrimaryPtr != nil && *isPrimaryPtr && !plan.IsAutoDetectEnabled.IsNull() && !plan.IsAutoDetectEnabled.IsUnknown() {
+		v := plan.IsAutoDetectEnabled.ValueBool()
+		autoDetectEnabledPtr = &v
+	}
+
+	// The scan-role org id only matters on the primary of a folder onboarding; omit it elsewhere.
+	var scanRoleOrgID string
+	if isPrimaryPtr != nil && *isPrimaryPtr {
+		scanRoleOrgID = plan.ScanRoleOrganizationID.ValueString()
+	}
+
 	body := &api.ModifyProjectRequest{
 		CamDeployedRegion:         plan.CamDeployedRegion.ValueString(),
 		ConnectedSecurityServices: connectedServices,
@@ -613,8 +643,10 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		Folder:                    folder,
 		IsCAMCloudASRMEnabled:     isCAMCloudASRMEnabled,
 		IsPrimary:                 isPrimaryPtr,
+		IsAutoDetectEnabled:       autoDetectEnabledPtr,
+		ScanRoleOrganizationId:    scanRoleOrgID,
 		IsTFProviderDeployed:      true,
-		Name:                      plan.Name.ValueString(),
+		Name:                      optionalString(plan.Name),
 		Organization:              organization,
 		ProjectNumber:             projectNumber,
 		ServiceAccountId:          serviceAccountID,
@@ -653,6 +685,7 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 
 	if res != nil {
 		state.ID = types.StringValue(plan.ID.ValueString())
+		state.Name = plan.Name
 		r.mapResponseToModel(ctx, res, &state, &resp.Diagnostics)
 		if resp.Diagnostics.HasError() {
 			return
@@ -905,6 +938,15 @@ func (r *CAMConnectorResource) validateBase64ServiceAccountKey(key string) error
 	return nil
 }
 
+func optionalString(value types.String) *string {
+	if value.IsNull() || value.IsUnknown() {
+		return nil
+	}
+
+	v := value.ValueString()
+	return &v
+}
+
 // mapResponseToModel maps the API response to the Terraform model
 func (r *CAMConnectorResource) mapResponseToModel(ctx context.Context, res *api.ProjectResponse, model *CAMConnectorResourceModel, diags *diag.Diagnostics) {
 	model.ID = types.StringValue(res.ProjectNumber)
@@ -915,7 +957,7 @@ func (r *CAMConnectorResource) mapResponseToModel(ctx context.Context, res *api.
 		model.Description = types.StringValue(res.Description)
 	}
 
-	// Note: IsCAMCloudASRMEnabled and Name are user-provided required fields.
+	// Note: IsCAMCloudASRMEnabled and Name are user-provided fields.
 	// We preserve them from the plan/state and do NOT overwrite from API response
 	// because the API may store a different value (e.g. auto-generated name from project number).
 

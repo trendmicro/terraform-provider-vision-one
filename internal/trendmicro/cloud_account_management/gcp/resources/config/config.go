@@ -1,16 +1,12 @@
 package config
 
-// FEATURE_ROLE_IDS maps feature keys to deterministic GCP custom role IDs.
-// When a role is created with feature_permissions set to one of these features
-// and no explicit role_id is given, the fixed ID is used instead of a random
-// suffix so that re-applies update the role in-place rather than creating a new one.
-var FEATURE_ROLE_IDS = map[string]string{
-	FEATURE_DATA_SECURITY_POSTURE_MANAGEMENT: "vision_one_dspm_feature_role",
-}
-
 const (
 	GCP_CUSTOM_ROLE_NAME          = "vision_one_cam_role_"
+	GCP_SCAN_ROLE_NAME            = "trend_ai_auto_detect_"
 	RESOURCE_TYPE_IAM_CUSTOM_ROLE = "cam_iam_custom_role"
+	RESOURCE_TYPE_GCP_SCAN_ROLE   = "cam_gcp_scan_role"
+
+	GCP_SA_DISCOVERY_ROLE = "roles/browser"
 
 	// Connector constants
 	RESOURCE_TYPE_CONNECTOR_GCP = "cam_connector_gcp"
@@ -79,6 +75,30 @@ var GCP_CUSTOM_ROLE_CORE_PERMISSIONS = []string{
 	"resourcemanager.tagValues.list",
 }
 
+// GCP_SCAN_ROLE_CORE_PERMISSIONS is the read-only base for the org-level scan role
+// granted once at the Org/Folder node for project discovery and read-only scanning.
+// New projects under the node inherit these permissions through IAM, so no per-project
+// scan binding is needed. Mirrors roles/browser (resource hierarchy discovery) plus the
+// cloudasset.* read permissions from roles/cloudasset.viewer (Cloud Asset Inventory).
+// roles/viewer is intentionally not inlined here (a basic role cannot be included in a
+// custom role); grant it as a predefined role at the same node when viewer-level read is needed.
+var GCP_SCAN_ROLE_CORE_PERMISSIONS = []string{
+	// roles/browser: resource hierarchy discovery
+	"resourcemanager.folders.get",
+	"resourcemanager.folders.list",
+	"resourcemanager.organizations.get",
+	"resourcemanager.projects.get",
+	"resourcemanager.projects.getIamPolicy",
+	"resourcemanager.projects.list",
+	// roles/cloudasset.viewer: Cloud Asset Inventory read
+	"cloudasset.assets.searchAllResources",
+	"cloudasset.assets.searchAllIamPolicies",
+	"cloudasset.assets.listResource",
+	"cloudasset.assets.exportResource",
+	"cloudasset.feeds.get",
+	"cloudasset.feeds.list",
+}
+
 const (
 	FEATURE_DATA_SECURITY_POSTURE_MANAGEMENT = "data-security-posture-management"
 )
@@ -107,13 +127,16 @@ var FEATURE_PERMISSIONS = map[string][]string{
 		"iam.serviceAccountKeys.list",
 		"iam.serviceAccounts.delete",
 		"logging.sinks.delete",
-		"monitoring.alertPolicies.delete",
-		"monitoring.dashboards.delete",
 		"run.services.delete",
 		"storage.buckets.delete",
 		"storage.objects.delete",
 		"vpcaccess.connectors.delete",
 	},
+}
+
+// Separate from FEATURE_PERMISSIONS so the read-only scan role can never gain deploy/write perms.
+var SCAN_FEATURE_PERMISSIONS = map[string][]string{
+	FEATURE_DATA_SECURITY_POSTURE_MANAGEMENT: {},
 }
 
 // GCP required API services to enable; extend when new features need additional services.

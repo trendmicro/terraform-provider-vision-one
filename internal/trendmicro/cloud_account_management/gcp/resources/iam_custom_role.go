@@ -2,7 +2,6 @@ package resources
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -20,12 +19,17 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
-	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iam/v1"
 )
 
+// IAMCustomRole backs cam_iam_custom_role (deploy) and cam_gcp_scan_role (scan); core/featureTable pick the profile.
 type IAMCustomRole struct {
-	client *api.CamClient
+	client       *api.CamClient
+	typeName     string
+	resourceDesc string
+	roleIDPrefix string
+	core         []string
+	featureTable map[string][]string
 }
 
 type customRoleDefinitionResourceModel struct {
@@ -43,17 +47,22 @@ type customRoleDefinitionResourceModel struct {
 
 func NewIAMCustomRole() resource.Resource {
 	return &IAMCustomRole{
-		client: &api.CamClient{},
+		client:       &api.CamClient{},
+		typeName:     config.RESOURCE_TYPE_IAM_CUSTOM_ROLE,
+		resourceDesc: "Trend Micro Vision One Cloud Account Management GCP Role Definition resource. Creates a custom GCP IAM role with the [necessary permissions](https://docs.trendmicro.com/en-us/documentation/article/trend-vision-one-gcp-required-granted-permissions) for Trend Micro Vision One Cloud Account Management.",
+		roleIDPrefix: config.GCP_CUSTOM_ROLE_NAME,
+		core:         config.GCP_CUSTOM_ROLE_CORE_PERMISSIONS,
+		featureTable: config.FEATURE_PERMISSIONS,
 	}
 }
 
 func (r *IAMCustomRole) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
-	resp.TypeName = req.ProviderTypeName + "_" + config.RESOURCE_TYPE_IAM_CUSTOM_ROLE
+	resp.TypeName = req.ProviderTypeName + "_" + r.typeName
 }
 
 func (r *IAMCustomRole) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Trend Micro Vision One Cloud Account Management GCP Role Definition resource. Creates a custom GCP IAM role with the [necessary permissions](https://docs.trendmicro.com/en-us/documentation/article/trend-vision-one-gcp-required-granted-permissions) for Trend Micro Vision One Cloud Account Management.",
+		MarkdownDescription: r.resourceDesc,
 		Attributes: map[string]schema.Attribute{
 			"role_id": schema.StringAttribute{
 				MarkdownDescription: "Role ID to use for this custom role. If not specified, a Trend Micro Vision One Cloud Account Management Custom Role ID will be generated.",
@@ -194,24 +203,14 @@ func (r *IAMCustomRole) Create(ctx context.Context, req resource.CreateRequest, 
 		tflog.Debug(ctx, fmt.Sprintf("[GCP Role Definition][Create] Creating project-level custom role in: %s", parent))
 	}
 
-	// Generate role ID if not provided.
-	// When feature_permissions contains exactly one known feature, use a
-	// deterministic ID so re-applies update in-place instead of soft-deleting
-	// the old role and creating a new one (which breaks IAM bindings).
+	// Generate role ID if not provided. The random suffix also keeps recreated roles
+	// clear of GCP's 7-day soft-delete window, where a deleted role blocks its role_id.
 	roleID := plan.RoleID.ValueString()
 	if roleID == "" {
-		if !plan.FeaturePermissions.IsNull() && !plan.FeaturePermissions.IsUnknown() {
-			var feats []string
-			if diags := plan.FeaturePermissions.ElementsAs(ctx, &feats, false); !diags.HasError() && len(feats) == 1 {
-				if fixedID, ok := config.FEATURE_ROLE_IDS[feats[0]]; ok {
-					roleID = fixedID
-				}
-			}
-		}
-		if roleID == "" {
-			roleID = config.GCP_CUSTOM_ROLE_NAME + cam.GenerateRandomString(4)
-		}
+		roleID = r.roleIDPrefix + cam.GenerateRandomString(4)
 	}
+
+	defaultCore, featureMap := r.core, r.featureTable
 
 	// Extract permissions from plan, or use default core permissions if not provided
 	var permissions []string
@@ -224,8 +223,8 @@ func (r *IAMCustomRole) Create(ctx context.Context, req resource.CreateRequest, 
 		tflog.Debug(ctx, fmt.Sprintf("[GCP Role Definition][Create] Using user-provided permissions count: %d", len(permissions)))
 	} else {
 		// Use default core permissions if user didn't provide any (make a copy)
-		permissions = make([]string, len(config.GCP_CUSTOM_ROLE_CORE_PERMISSIONS))
-		copy(permissions, config.GCP_CUSTOM_ROLE_CORE_PERMISSIONS)
+		permissions = make([]string, len(defaultCore))
+		copy(permissions, defaultCore)
 		tflog.Debug(ctx, fmt.Sprintf("[GCP Role Definition][Create] Using default core permissions count: %d", len(permissions)))
 	}
 
@@ -238,7 +237,7 @@ func (r *IAMCustomRole) Create(ctx context.Context, req resource.CreateRequest, 
 		}
 	}
 
-	aggregatedPermissions, err := r.aggregatePermissions(ctx, permissions, featurePermissions)
+	aggregatedPermissions, err := r.aggregatePermissions(ctx, permissions, featurePermissions, featureMap)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[GCP Role Definition][Create] Failed to aggregate permissions",
@@ -266,42 +265,28 @@ func (r *IAMCustomRole) Create(ctx context.Context, req resource.CreateRequest, 
 	}
 
 	var createdRole *iam.Role
+	isOrgParent := parentType == config.PARENT_TYPE_ORGANIZATION
 
-	// Call the appropriate API based on parent type.
-	// On 409 (already exists) or 400 containing "deleted"/"already exists", the
-	// role exists in GCP (possibly soft-deleted). Undelete it and patch permissions
-	// so the existing binding stays valid — avoids orphan soft-deleted roles and
-	// broken IAM bindings that accumulate across failed applies.
-	if parentType == config.PARENT_TYPE_ORGANIZATION {
+	// Call the appropriate API based on parent type
+	if isOrgParent {
 		createdRole, err = gcpClients.IAMClient.Organizations.Roles.Create(parent, createRoleReq).Context(ctx).Do()
-		if err != nil {
-			if isRoleAlreadyExistsErr(err) {
-				existingName := fmt.Sprintf("%s/roles/%s", parent, roleID)
-				createdRole, err = undeleteAndPatchRole(ctx, gcpClients, existingName, role)
-			}
-			if err != nil {
-				resp.Diagnostics.AddError(
-					"[GCP Role Definition][Create] Failed to create organization-level custom role",
-					fmt.Sprintf("Error creating custom role: %s", err.Error()),
-				)
-				return
-			}
-		}
 	} else {
 		createdRole, err = gcpClients.IAMClient.Projects.Roles.Create(parent, createRoleReq).Context(ctx).Do()
-		if err != nil {
-			if isRoleAlreadyExistsErr(err) {
-				existingName := fmt.Sprintf("%s/roles/%s", parent, roleID)
-				createdRole, err = undeleteAndPatchRole(ctx, gcpClients, existingName, role)
-			}
-			if err != nil {
-				resp.Diagnostics.AddError(
-					"[GCP Role Definition][Create] Failed to create project-level custom role",
-					fmt.Sprintf("Error creating custom role: %s", err.Error()),
-				)
-				return
-			}
-		}
+	}
+	if err != nil && strings.Contains(err.Error(), "deleted state") {
+		// GCP soft-deletes custom roles for 7 days; the role_id cannot be recreated
+		// during that window, only undeleted, so revive it and patch it back to the
+		// desired definition.
+		roleName := fmt.Sprintf("%s/roles/%s", parent, roleID)
+		tflog.Info(ctx, fmt.Sprintf("[GCP Role Definition][Create] Role %s is soft-deleted; undeleting and updating it instead", roleName))
+		createdRole, err = undeleteAndPatchRole(ctx, gcpClients.IAMClient, isOrgParent, roleName, role)
+	}
+	if err != nil {
+		resp.Diagnostics.AddError(
+			fmt.Sprintf("[GCP Role Definition][Create] Failed to create %s-level custom role", parentType),
+			fmt.Sprintf("Error creating custom role: %s", err.Error()),
+		)
+		return
 	}
 
 	tflog.Debug(ctx, fmt.Sprintf("[GCP Role Definition][Create] Created role: %s", createdRole.Name))
@@ -342,6 +327,20 @@ func (r *IAMCustomRole) Create(ctx context.Context, req resource.CreateRequest, 
 	if diags := resp.State.Set(ctx, plan); diags.HasError() {
 		resp.Diagnostics.Append(diags...)
 	}
+}
+
+func undeleteAndPatchRole(ctx context.Context, iamClient *iam.Service, isOrgParent bool, roleName string, role *iam.Role) (*iam.Role, error) {
+	undeleteReq := &iam.UndeleteRoleRequest{}
+	if isOrgParent {
+		if _, err := iamClient.Organizations.Roles.Undelete(roleName, undeleteReq).Context(ctx).Do(); err != nil {
+			return nil, fmt.Errorf("failed to undelete soft-deleted role %s (wait for the 7-day deletion window to pass or use a different role_id): %w", roleName, err)
+		}
+		return iamClient.Organizations.Roles.Patch(roleName, role).Context(ctx).Do()
+	}
+	if _, err := iamClient.Projects.Roles.Undelete(roleName, undeleteReq).Context(ctx).Do(); err != nil {
+		return nil, fmt.Errorf("failed to undelete soft-deleted role %s (wait for the 7-day deletion window to pass or use a different role_id): %w", roleName, err)
+	}
+	return iamClient.Projects.Roles.Patch(roleName, role).Context(ctx).Do()
 }
 
 func (r *IAMCustomRole) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -456,6 +455,8 @@ func (r *IAMCustomRole) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 
+	defaultCore, featureMap := r.core, r.featureTable
+
 	// Extract permissions from plan, or use default core permissions if not provided
 	var permissions []string
 	if !plan.Permissions.IsNull() && !plan.Permissions.IsUnknown() {
@@ -467,8 +468,8 @@ func (r *IAMCustomRole) Update(ctx context.Context, req resource.UpdateRequest, 
 		tflog.Debug(ctx, fmt.Sprintf("[GCP Role Definition][Update] Using user-provided permissions count: %d", len(permissions)))
 	} else {
 		// Use default core permissions if user didn't provide any (make a copy)
-		permissions = make([]string, len(config.GCP_CUSTOM_ROLE_CORE_PERMISSIONS))
-		copy(permissions, config.GCP_CUSTOM_ROLE_CORE_PERMISSIONS)
+		permissions = make([]string, len(defaultCore))
+		copy(permissions, defaultCore)
 		tflog.Debug(ctx, fmt.Sprintf("[GCP Role Definition][Update] Using default core permissions count: %d", len(permissions)))
 	}
 
@@ -483,7 +484,7 @@ func (r *IAMCustomRole) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 
 	// Aggregate permissions with feature permissions
-	aggregatedPermissions, err := r.aggregatePermissions(ctx, permissions, features)
+	aggregatedPermissions, err := r.aggregatePermissions(ctx, permissions, features, featureMap)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[GCP Role Definition][Update] Failed to aggregate permissions",
@@ -627,10 +628,11 @@ func (r *IAMCustomRole) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 		}
 	}
 
-	corePerms := make([]string, len(config.GCP_CUSTOM_ROLE_CORE_PERMISSIONS))
-	copy(corePerms, config.GCP_CUSTOM_ROLE_CORE_PERMISSIONS)
+	defaultCore, featureMap := r.core, r.featureTable
+	corePerms := make([]string, len(defaultCore))
+	copy(corePerms, defaultCore)
 
-	expected, err := r.aggregatePermissions(ctx, corePerms, features)
+	expected, err := r.aggregatePermissions(ctx, corePerms, features, featureMap)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"[GCP Role Definition][ModifyPlan] Failed to derive expected permissions",
@@ -670,14 +672,14 @@ func (r *IAMCustomRole) Configure(ctx context.Context, req resource.ConfigureReq
 }
 
 //nolint:unparam // error return is currently always nil but will be used when API integration is implemented
-func (r *IAMCustomRole) aggregatePermissions(ctx context.Context, corePermissions, features []string) ([]string, error) {
+func (r *IAMCustomRole) aggregatePermissions(ctx context.Context, corePermissions, features []string, featurePermissions map[string][]string) ([]string, error) {
 	permissionMap := make(map[string]bool)
 	for _, perm := range corePermissions {
 		permissionMap[perm] = true
 	}
 
 	for _, feature := range features {
-		perms, ok := config.FEATURE_PERMISSIONS[feature]
+		perms, ok := featurePermissions[feature]
 		if !ok {
 			tflog.Warn(ctx, fmt.Sprintf("[GCP Role Definition] Unknown feature %q — skipping (known features: see config.FEATURE_PERMISSIONS)", feature))
 			continue
@@ -695,53 +697,4 @@ func (r *IAMCustomRole) aggregatePermissions(ctx context.Context, corePermission
 	sort.Strings(aggregated)
 
 	return aggregated, nil
-}
-
-// isRoleAlreadyExistsErr returns true for 409 Already Exists and 400 errors
-// that indicate the role ID is already taken (active or soft-deleted).
-func isRoleAlreadyExistsErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	var gerr *googleapi.Error
-	if errors.As(err, &gerr) {
-		if gerr.Code == 409 {
-			return true
-		}
-		if gerr.Code == 400 {
-			msg := strings.ToLower(gerr.Message)
-			return strings.Contains(msg, "already exists") || strings.Contains(msg, "deleted")
-		}
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "already exists") || strings.Contains(msg, "alreadyexists")
-}
-
-// undeleteAndPatchRole undeletes a soft-deleted role (no-op if already active)
-// then patches its permissions/title/description. Returns the final role state.
-func undeleteAndPatchRole(ctx context.Context, gcpClients *api.GCPClients, roleName string, desired *iam.Role) (*iam.Role, error) {
-	isOrg := strings.HasPrefix(roleName, "organizations/")
-
-	// Undelete — returns 400 if the role is not in a deleted state, which we ignore.
-	if isOrg {
-		if _, err := gcpClients.IAMClient.Organizations.Roles.Undelete(roleName, &iam.UndeleteRoleRequest{}).Context(ctx).Do(); err != nil {
-			var gerr *googleapi.Error
-			if !errors.As(err, &gerr) || gerr.Code != 400 {
-				return nil, fmt.Errorf("undelete role %s: %w", roleName, err)
-			}
-		}
-	} else {
-		if _, err := gcpClients.IAMClient.Projects.Roles.Undelete(roleName, &iam.UndeleteRoleRequest{}).Context(ctx).Do(); err != nil {
-			var gerr *googleapi.Error
-			if !errors.As(err, &gerr) || gerr.Code != 400 {
-				return nil, fmt.Errorf("undelete role %s: %w", roleName, err)
-			}
-		}
-	}
-
-	// Patch to sync permissions/title/description.
-	if isOrg {
-		return gcpClients.IAMClient.Organizations.Roles.Patch(roleName, desired).Context(ctx).Do()
-	}
-	return gcpClients.IAMClient.Projects.Roles.Patch(roleName, desired).Context(ctx).Do()
 }
