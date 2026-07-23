@@ -72,8 +72,8 @@ func (r *GCPProjectMigrationResource) Schema(_ context.Context, _ resource.Schem
 				},
 			},
 			"name": schema.StringAttribute{
-				MarkdownDescription: "Display name for the connector (preserved during migration).",
-				Required:            true,
+				MarkdownDescription: "Optional display name for the connector. When omitted, migration preserves the existing CAM Alias.",
+				Optional:            true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -201,7 +201,7 @@ func (r *GCPProjectMigrationResource) Create(ctx context.Context, req resource.C
 	}
 
 	// Wait for CAM backend to verify the new service account and reach "connected" state.
-	_, connectErr := waitForGCPProjectConnected(ctx, r.client, projectNumber)
+	_, connectErr := waitForGCPProjectConnected(ctx, r.client, projectNumber, gcpProjectConnectedWaitTimeout, gcpProjectConnectedWaitInterval)
 	if connectErr != nil {
 		plan.MigratedAt = types.StringValue("")
 		plan.MigrationStatus = types.StringValue(migrationStatusFailed)
@@ -269,7 +269,7 @@ func buildGCPProjectMigrationUpdateRequest(
 		Folder:                    folder,
 		IsCAMCloudASRMEnabled:     existing.IsCAMCloudASRMEnabled,
 		IsTFProviderDeployed:      true,
-		Name:                      plan.Name.ValueString(),
+		Name:                      optionalString(plan.Name),
 		Organization:              organization,
 		ProjectNumber:             plan.ProjectNumber.ValueString(),
 		ServiceAccountId:          plan.NewServiceAccountID.ValueString(),

@@ -27,10 +27,13 @@ import (
 
 const (
 	gcpCAMProjectMutationWaitInterval = 5 * time.Second
-	gcpCAMProjectMutationWaitTimeout  = 5 * time.Minute
+	gcpCAMProjectMutationWaitTimeout  = 90 * time.Second
 	gcpProjectConnectedWaitInterval   = 10 * time.Second
 	gcpProjectConnectedWaitTimeout    = 5 * time.Minute
 	gcpCloudPlatformScope             = "https://www.googleapis.com/auth/cloud-platform"
+
+	gcpProjectConnectMaxAttempts  = 3
+	gcpProjectConnectRetryBackoff = 30 * time.Second
 )
 
 type gcpServiceAccountKeyPayload struct {
@@ -205,11 +208,78 @@ func waitForGCPServiceAccountIAMReady(ctx context.Context, encodedKey, projectID
 // that require IAM role bindings, which can take up to ~2 minutes to propagate.
 // Returning as soon as state == "connected" avoids the race where the caller
 // reads a stale "disconnected" result and records it in Terraform state.
+// projectNotConnectedError marks the case where a project is reachable but has
+// not reached a connected state within the poll window. It is retryable: the
+// retry loop re-issues the onboard, other errors abort immediately.
+type projectNotConnectedError struct {
+	projectNumber string
+	timeout       time.Duration
+	state         string
+}
+
+func (e *projectNotConnectedError) Error() string {
+	return fmt.Sprintf(
+		"project %s did not reach connected state within %s (current state: %q); "+
+			"the service account key may not yet have sufficient GCP IAM permissions — wait a few minutes and re-run 'terraform apply'",
+		e.projectNumber, e.timeout, e.state,
+	)
+}
+
+type gcpProjectConnector interface {
+	CreateProject(data *api.CreateProjectRequest) error
+	ReadProject(projectNumber string) (*api.ProjectResponse, error)
+}
+
+// createProjectAndWaitConnected onboards the project and polls until it reports
+// connected, re-issuing the onboard (idempotent; an existing project is adopted)
+// when it is still not connected. This automates the customer's manual
+// "re-run terraform apply" that clears the transient propagation failure.
+func createProjectAndWaitConnected(
+	ctx context.Context,
+	client gcpProjectConnector,
+	body *api.CreateProjectRequest,
+	projectNumber string,
+	maxAttempts int,
+	backoff, connectTimeout, pollInterval time.Duration,
+) (*api.ProjectResponse, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if createErr := client.CreateProject(body); createErr != nil && !strings.Contains(createErr.Error(), "account-exist") {
+			return nil, createErr
+		}
+
+		res, err := waitForGCPProjectConnected(ctx, client, projectNumber, connectTimeout, pollInterval)
+		if err == nil {
+			return res, nil
+		}
+
+		var notConnected *projectNotConnectedError
+		if !errors.As(err, &notConnected) {
+			return nil, err
+		}
+		lastErr = err
+		if attempt == maxAttempts {
+			break
+		}
+
+		tflog.Warn(ctx, fmt.Sprintf(
+			"[GCP CAM] project %s not connected on attempt %d/%d (state: %q); re-onboarding after %s",
+			projectNumber, attempt, maxAttempts, notConnected.state, backoff,
+		))
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+	}
+	return nil, lastErr
+}
+
 func waitForGCPProjectConnected(ctx context.Context, client interface {
 	ReadProject(projectNumber string) (*api.ProjectResponse, error)
-}, projectNumber string,
+}, projectNumber string, timeout, interval time.Duration,
 ) (*api.ProjectResponse, error) {
-	deadline := time.Now().Add(gcpProjectConnectedWaitTimeout)
+	deadline := time.Now().Add(timeout)
 	for {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -225,11 +295,7 @@ func waitForGCPProjectConnected(ctx context.Context, client interface {
 		}
 
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf(
-				"project %s did not reach connected state within %s (current state: %q); "+
-					"the service account key may not yet have sufficient GCP IAM permissions — wait a few minutes and re-run 'terraform apply'",
-				projectNumber, gcpProjectConnectedWaitTimeout, project.State,
-			)
+			return nil, &projectNotConnectedError{projectNumber: projectNumber, timeout: timeout, state: project.State}
 		}
 
 		tflog.Debug(ctx, fmt.Sprintf(
@@ -240,7 +306,7 @@ func waitForGCPProjectConnected(ctx context.Context, client interface {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(gcpProjectConnectedWaitInterval):
+		case <-time.After(interval):
 		}
 	}
 }
@@ -308,9 +374,13 @@ func ValidateDescription(description string) error {
 //   - apps-script-*      : Google Apps Script auto-created projects
 //   - google.com:*       : Legacy Google-owned cross-organization projects (e.g. google.com:api-project-*)
 func IsSystemProject(project *cloudresourcemanager.Project) bool {
-	return strings.HasPrefix(project.ProjectId, "sys-") ||
-		strings.HasPrefix(project.ProjectId, "apps-script-") ||
-		strings.HasPrefix(project.ProjectId, "google.com:")
+	return IsSystemProjectID(project.ProjectId)
+}
+
+func IsSystemProjectID(projectID string) bool {
+	return strings.HasPrefix(projectID, "sys-") ||
+		strings.HasPrefix(projectID, "apps-script-") ||
+		strings.HasPrefix(projectID, "google.com:")
 }
 
 // IsFreeTrialProject checks if a project is a free trial project.

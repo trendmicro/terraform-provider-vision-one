@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"sort"
 	"strings"
 	"sync"
@@ -35,6 +36,12 @@ type enableAPIServicesResourceModel struct {
 	Services          types.List   `tfsdk:"services"`
 	EnabledByResource types.List   `tfsdk:"enabled_by_resource"`
 }
+
+const (
+	serviceUsageMaxMutationRetries = 5
+	serviceUsageRetryBase          = 5 * time.Second
+	serviceUsageRetryCap           = 2 * time.Minute
+)
 
 func NewEnableAPIServices() resource.Resource {
 	return &EnableAPIServices{
@@ -556,13 +563,13 @@ func (r *EnableAPIServices) enableService(ctx context.Context, client *serviceus
 		return nil
 	}
 
-	// Retry loop for 429 rate limit errors
-	maxEnableRetries := 5
-	baseBackoff := 5 * time.Second
 	var operation *serviceusage.Operation
 	var err error
 
-	for attempt := 0; attempt <= maxEnableRetries; attempt++ {
+	for attempt := 0; attempt <= serviceUsageMaxMutationRetries; attempt++ {
+		if waitErr := cam.GCPServiceUsageMutationPacer.Wait(ctx); waitErr != nil {
+			return fmt.Errorf("waiting to enable service: %w", waitErr)
+		}
 		operation, err = client.Services.Enable(servicePath, &serviceusage.EnableServiceRequest{}).Context(ctx).Do()
 		if err == nil {
 			break
@@ -573,22 +580,12 @@ func (r *EnableAPIServices) enableService(ctx context.Context, client *serviceus
 			return &billingError{ProjectID: projectID, Err: err}
 		}
 
-		// Check if it's a rate limit error (429)
-		if strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "rateLimitExceeded") || strings.Contains(err.Error(), "RATE_LIMIT_EXCEEDED") {
-			if attempt < maxEnableRetries {
-				backoff := baseBackoff * time.Duration(1<<attempt)
-				if backoff > 2*time.Minute {
-					backoff = 2 * time.Minute
-				}
-				tflog.Info(ctx, fmt.Sprintf("Rate limit hit for service %s, retrying in %v (attempt %d/%d)",
-					serviceName, backoff, attempt+1, maxEnableRetries))
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(backoff):
-					continue
-				}
-			}
+		if isServiceUsageRateLimitError(err) && attempt < serviceUsageMaxMutationRetries {
+			cooldown := serviceUsageRetryCooldown(attempt)
+			cam.GCPServiceUsageMutationPacer.SetCooldown(cooldown)
+			tflog.Info(ctx, fmt.Sprintf("Rate limit hit for service %s; retrying after shared cooldown up to %v (attempt %d/%d)",
+				serviceName, cooldown, attempt+1, serviceUsageMaxMutationRetries))
+			continue
 		}
 
 		return fmt.Errorf("failed to initiate enable operation: %w", err)
@@ -640,12 +637,13 @@ func (r *EnableAPIServices) disableService(ctx context.Context, client *serviceu
 	parent := fmt.Sprintf("projects/%s", projectID)
 	servicePath := fmt.Sprintf("%s/services/%s", parent, serviceName)
 
-	maxDisableRetries := 5
-	baseBackoff := 5 * time.Second
 	var operation *serviceusage.Operation
 	var err error
 
-	for attempt := 0; attempt <= maxDisableRetries; attempt++ {
+	for attempt := 0; attempt <= serviceUsageMaxMutationRetries; attempt++ {
+		if waitErr := cam.GCPServiceUsageMutationPacer.Wait(ctx); waitErr != nil {
+			return fmt.Errorf("waiting to disable service: %w", waitErr)
+		}
 		operation, err = client.Services.Disable(servicePath, &serviceusage.DisableServiceRequest{
 			DisableDependentServices: true,
 		}).Context(ctx).Do()
@@ -653,21 +651,12 @@ func (r *EnableAPIServices) disableService(ctx context.Context, client *serviceu
 			break
 		}
 
-		if strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "rateLimitExceeded") || strings.Contains(err.Error(), "RATE_LIMIT_EXCEEDED") {
-			if attempt < maxDisableRetries {
-				backoff := baseBackoff * time.Duration(1<<attempt)
-				if backoff > 2*time.Minute {
-					backoff = 2 * time.Minute
-				}
-				tflog.Info(ctx, fmt.Sprintf("Rate limit hit for service %s, retrying in %v (attempt %d/%d)",
-					serviceName, backoff, attempt+1, maxDisableRetries))
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(backoff):
-					continue
-				}
-			}
+		if isServiceUsageRateLimitError(err) && attempt < serviceUsageMaxMutationRetries {
+			cooldown := serviceUsageRetryCooldown(attempt)
+			cam.GCPServiceUsageMutationPacer.SetCooldown(cooldown)
+			tflog.Info(ctx, fmt.Sprintf("Rate limit hit for service %s; retrying after shared cooldown up to %v (attempt %d/%d)",
+				serviceName, cooldown, attempt+1, serviceUsageMaxMutationRetries))
+			continue
 		}
 
 		return fmt.Errorf("failed to initiate disable operation: %w", err)
@@ -694,6 +683,27 @@ func (r *EnableAPIServices) disableService(ctx context.Context, client *serviceu
 	}
 
 	return fmt.Errorf("disable operation did not complete within timeout period")
+}
+
+func isServiceUsageRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := err.Error()
+	return strings.Contains(errMsg, "429") ||
+		strings.Contains(errMsg, "rateLimitExceeded") ||
+		strings.Contains(errMsg, "RATE_LIMIT_EXCEEDED")
+}
+
+func serviceUsageRetryCooldown(attempt int) time.Duration {
+	maxDelay := serviceUsageRetryBase
+	for i := 0; i < attempt && maxDelay < serviceUsageRetryCap; i++ {
+		maxDelay *= 2
+		if maxDelay > serviceUsageRetryCap {
+			maxDelay = serviceUsageRetryCap
+		}
+	}
+	return time.Duration(rand.Int64N(int64(maxDelay))) //nolint:gosec // retry jitter, not security-sensitive
 }
 
 // isServiceEnabled checks if a GCP API service is enabled
