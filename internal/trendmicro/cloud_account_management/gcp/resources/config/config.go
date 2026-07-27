@@ -101,6 +101,7 @@ var GCP_SCAN_ROLE_CORE_PERMISSIONS = []string{
 
 const (
 	FEATURE_DATA_SECURITY_POSTURE_MANAGEMENT = "data-security-posture-management"
+	FEATURE_CLOUD_SENTRY                     = "cloud-sentry"
 )
 
 // Per-feature permissions unioned onto GCP_CUSTOM_ROLE_CORE_PERMISSIONS; placeholder until Features API ships.
@@ -134,6 +135,45 @@ var FEATURE_PERMISSIONS = map[string][]string{
 		"storage.objects.delete",
 		"vpcaccess.connectors.delete",
 	},
+
+	FEATURE_CLOUD_SENTRY: {
+		"run.services.get",
+		"run.services.list",
+		"run.services.delete",
+		"run.jobs.get",
+		"run.jobs.list",
+		"run.jobs.delete",
+		"cloudscheduler.jobs.list",
+		"cloudscheduler.jobs.delete",
+		"pubsub.topics.list",
+		"pubsub.topics.delete",
+		"pubsub.subscriptions.list",
+		"pubsub.subscriptions.delete",
+		"pubsub.topics.publish",
+		"workflows.workflows.list",
+		"workflows.workflows.delete",
+		"eventarc.triggers.list",
+		"eventarc.triggers.delete",
+		"logging.sinks.list",
+		"logging.sinks.delete",
+		"secretmanager.secrets.list",
+		"secretmanager.secrets.delete",
+		"datastore.databases.list",
+		"datastore.databases.delete",
+		"compute.networks.delete",
+		"compute.networks.updatePolicy",
+		"compute.subnetworks.delete",
+		"compute.firewalls.delete",
+		"storage.buckets.get",
+		"storage.buckets.list",
+		"storage.buckets.delete",
+		"storage.objects.list",
+		"storage.objects.delete",
+		"storage.objects.get",
+		"cloudbuild.builds.list",
+		"cloudbuild.builds.update",
+		"resourcemanager.projects.get",
+	},
 }
 
 // Separate from FEATURE_PERMISSIONS so the read-only scan role can never gain deploy/write perms.
@@ -155,4 +195,9 @@ var GCP_REQUIRED_ENABLE_API_AND_SERVICE = []string{
 	"run.googleapis.com",
 	"cloudscheduler.googleapis.com",
 	"eventarc.googleapis.com",
+	"logging.googleapis.com",
+	"compute.googleapis.com",
+	"workflows.googleapis.com",
+	"workflowexecutions.googleapis.com",
+	"firestore.googleapis.com",
 }
