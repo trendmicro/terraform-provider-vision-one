@@ -53,7 +53,7 @@ type CreateProjectRequest struct {
 	IsCAMCloudASRMEnabled     bool                           `json:"isCAMCloudASRMEnabled" validate:"omitempty"`
 	IsPrimary                 *bool                          `json:"isPrimary,omitempty"`
 	IsTFProviderDeployed      bool                           `json:"isTFProviderDeployed" validate:"omitempty"`
-	Name                      string                         `json:"name" validate:"max=254"`
+	Name                      *string                        `json:"name,omitempty" validate:"omitempty,max=254"`
 	Organization              *OrganizationDetails           `json:"organization,omitempty" validate:"omitempty"`
 	ProjectNumber             string                         `json:"projectNumber" validate:"omitempty,max=254"`
 	ServiceAccountId          string                         `json:"serviceAccountId" validate:"omitempty,max=254"`
@@ -73,7 +73,7 @@ type ModifyProjectRequest struct {
 	IsCAMCloudASRMEnabled     bool                           `json:"isCAMCloudASRMEnabled" validate:"omitempty"`
 	IsPrimary                 *bool                          `json:"isPrimary,omitempty"`
 	IsTFProviderDeployed      bool                           `json:"isTFProviderDeployed" validate:"omitempty"`
-	Name                      string                         `json:"name" validate:"max=254"`
+	Name                      *string                        `json:"name,omitempty" validate:"omitempty,max=254"`
 	Organization              *OrganizationDetails           `json:"organization,omitempty" validate:"omitempty"`
 	ProjectNumber             string                         `json:"projectNumber" validate:"omitempty,max=254"`
 	ServiceAccountId          string                         `json:"serviceAccountId" validate:"omitempty,max=254"`

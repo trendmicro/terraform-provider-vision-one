@@ -6,6 +6,8 @@ const (
 	RESOURCE_TYPE_IAM_CUSTOM_ROLE = "cam_iam_custom_role"
 	RESOURCE_TYPE_GCP_SCAN_ROLE   = "cam_gcp_scan_role"
 
+	GCP_SA_DISCOVERY_ROLE = "roles/browser"
+
 	// Connector constants
 	RESOURCE_TYPE_CONNECTOR_GCP = "cam_connector_gcp"
 
@@ -122,6 +124,8 @@ var FEATURE_PERMISSIONS = map[string][]string{
 		"cloudbuild.builds.list",
 		"cloudbuild.builds.update",
 		"eventarc.triggers.delete",
+		"iam.serviceAccountKeys.list",
+		"iam.serviceAccounts.delete",
 		"logging.sinks.delete",
 		"run.services.delete",
 		"storage.buckets.delete",

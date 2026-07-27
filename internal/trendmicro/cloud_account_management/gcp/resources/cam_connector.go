@@ -54,7 +54,6 @@ type CAMConnectorResource struct {
 // CAMConnectorResourceModel describes the resource data model for GCP connector.
 type CAMConnectorResourceModel struct {
 	// Required fields
-	Name             types.String `tfsdk:"name"`
 	ProjectNumber    types.String `tfsdk:"project_number"`
 	ServiceAccountID types.String `tfsdk:"service_account_id"`
 
@@ -220,11 +219,8 @@ func (r *CAMConnectorResource) Schema(ctx context.Context, req resource.SchemaRe
 					"The scan node itself stays the folder; this only tells the backend where the scan role lives.",
 			},
 			"name": schema.StringAttribute{
-				Required:            true,
-				MarkdownDescription: "Name of the connector",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
+				Optional:            true,
+				MarkdownDescription: "Optional Vision One display name. When omitted, Vision One uses the GCP project display name on creation and preserves later UI changes.",
 			},
 			"organization": schema.SingleNestedAttribute{
 				Optional:            true,
@@ -456,7 +452,7 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		IsAutoDetectEnabled:       autoDetectEnabledPtr,
 		ScanRoleOrganizationId:    scanRoleOrgID,
 		IsTFProviderDeployed:      true,
-		Name:                      plan.Name.ValueString(),
+		Name:                      optionalString(plan.Name),
 		Organization:              organization,
 		ProjectNumber:             plan.ProjectNumber.ValueString(),
 		ServiceAccountId:          plan.ServiceAccountID.ValueString(),
@@ -466,31 +462,23 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 	unlock := lockGCPCAMProjectMutation(plan.ProjectNumber.ValueString())
 	defer unlock()
 
-	createErr := r.client.CreateProject(body)
-	if createErr != nil {
-		// If the project already exists, adopt it instead of failing
-		if strings.Contains(createErr.Error(), "account-exist") {
-			tflog.Info(ctx, fmt.Sprintf("[CAM Connector GCP][Create] Project %s already exists, adopting existing resource",
-				plan.ProjectNumber.ValueString()))
-		} else if addGCPNetworkRetryDiagnostic(&resp.Diagnostics, "Create", createErr) {
-			return
-		} else {
-			resp.Diagnostics.AddError(
-				"[CAM Connector GCP][Create] Error Adding Project",
-				fmt.Sprintf("[CAM Connector GCP][Create] Failed to add project: %s", createErr),
-			)
-			return
-		}
-	}
-
-	res, err := waitForGCPProjectConnected(ctx, r.client, plan.ProjectNumber.ValueString())
+	res, err := createProjectAndWaitConnected(ctx, r.client, body, plan.ProjectNumber.ValueString(),
+		gcpProjectConnectMaxAttempts, gcpProjectConnectRetryBackoff, gcpProjectConnectedWaitTimeout, gcpProjectConnectedWaitInterval)
 	if err != nil {
 		if addGCPNetworkRetryDiagnostic(&resp.Diagnostics, "Create", err) {
 			return
 		}
+		var notConnected *projectNotConnectedError
+		if errors.As(err, &notConnected) {
+			resp.Diagnostics.AddError(
+				"[CAM Connector GCP][Create] Project Not Connected",
+				fmt.Sprintf("[CAM Connector GCP][Create] %s", err),
+			)
+			return
+		}
 		resp.Diagnostics.AddError(
-			"[CAM Connector GCP][Create] Project Not Connected",
-			fmt.Sprintf("[CAM Connector GCP][Create] %s", err),
+			"[CAM Connector GCP][Create] Error Adding Project",
+			fmt.Sprintf("[CAM Connector GCP][Create] Failed to add project: %s", err),
 		)
 		return
 	}
@@ -657,7 +645,7 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		IsAutoDetectEnabled:       autoDetectEnabledPtr,
 		ScanRoleOrganizationId:    scanRoleOrgID,
 		IsTFProviderDeployed:      true,
-		Name:                      plan.Name.ValueString(),
+		Name:                      optionalString(plan.Name),
 		Organization:              organization,
 		ProjectNumber:             projectNumber,
 		ServiceAccountId:          serviceAccountID,
@@ -696,6 +684,7 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 
 	if res != nil {
 		state.ID = types.StringValue(plan.ID.ValueString())
+		state.Name = plan.Name
 		r.mapResponseToModel(ctx, res, &state, &resp.Diagnostics)
 		if resp.Diagnostics.HasError() {
 			return
@@ -948,6 +937,15 @@ func (r *CAMConnectorResource) validateBase64ServiceAccountKey(key string) error
 	return nil
 }
 
+func optionalString(value types.String) *string {
+	if value.IsNull() || value.IsUnknown() {
+		return nil
+	}
+
+	v := value.ValueString()
+	return &v
+}
+
 // mapResponseToModel maps the API response to the Terraform model
 func (r *CAMConnectorResource) mapResponseToModel(ctx context.Context, res *api.ProjectResponse, model *CAMConnectorResourceModel, diags *diag.Diagnostics) {
 	model.ID = types.StringValue(res.ProjectNumber)
@@ -958,7 +956,7 @@ func (r *CAMConnectorResource) mapResponseToModel(ctx context.Context, res *api.
 		model.Description = types.StringValue(res.Description)
 	}
 
-	// Note: IsCAMCloudASRMEnabled and Name are user-provided required fields.
+	// Note: IsCAMCloudASRMEnabled and Name are user-provided fields.
 	// We preserve them from the plan/state and do NOT overwrite from API response
 	// because the API may store a different value (e.g. auto-generated name from project number).
 

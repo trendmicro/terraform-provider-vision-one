@@ -28,7 +28,6 @@ Migrates an existing GCP project record in the CAM database from the legacy Terr
 # Step 2 of 3: update the CAM database record to use the new service account key.
 resource "visionone_cam_gcp_project_migration" "example" {
   project_number          = "123456789012"
-  name                    = "My GCP Connector"
   new_service_account_id  = visionone_cam_service_account_integration.new_sa.service_account_unique_id
   new_service_account_key = visionone_cam_service_account_integration.new_sa.private_key
 }
@@ -39,10 +38,13 @@ resource "visionone_cam_gcp_project_migration" "example" {
 
 ### Required
 
-- `name` (String) Display name for the connector (preserved during migration).
 - `new_service_account_id` (String) The unique ID of the new service account created by the Terraform Provider Solution.
 - `new_service_account_key` (String, Sensitive) Base64-encoded JSON service account key for the new Terraform Provider Solution service account.
 - `project_number` (String) The GCP project number identifying the existing CAM record to migrate.
+
+### Optional
+
+- `name` (String) Optional display name for the connector. When omitted, migration preserves the existing CAM Alias.
 
 ### Read-Only
 

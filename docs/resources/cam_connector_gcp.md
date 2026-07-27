@@ -34,7 +34,7 @@ For a complete CAM setup, resources should be created in this order:
 ### Important Notes
 
 - **`project_number` vs `project_id`**: This resource requires the numeric `project_number` (e.g., "123456789012"), NOT the string `project_id` (e.g., "my-project"). Find it in GCP Console > Home > Project number.
-- **`name` is immutable**: Changing the connector name requires resource replacement (destroy + recreate).
+- **`name` is optional**: When omitted, Vision One uses the GCP project display name on creation and preserves later UI changes. A configured value is applied on every Terraform update.
 - **`organization` block**: Set this when you want CAM to discover and manage ALL projects under your GCP organization, not just the single project specified in `project_number`.
 - **`folder` block**: Set this when you want CAM to discover and manage ALL projects under a specific GCP folder, not just the single project specified in `project_number`.
 - **`organization` and `folder` are mutually exclusive**: Only one of these blocks should be set per connector.
@@ -437,7 +437,6 @@ output "tag_value_names" {
 ### Required
 
 - `is_cam_cloud_asrm_enabled` (Boolean) Whether Trend Vision One Cloud CREM is enabled for the connector
-- `name` (String) Name of the connector
 - `project_number` (String) GCP project number for the connector
 - `service_account_id` (String) GCP service account unique ID used to connect to the GCP project
 

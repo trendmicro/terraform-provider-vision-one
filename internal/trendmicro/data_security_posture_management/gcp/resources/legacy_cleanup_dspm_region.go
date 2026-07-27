@@ -42,6 +42,7 @@ type legacyCleanupDSPMRegionModel struct {
 	ServiceAccountKey        types.String `tfsdk:"service_account_key"`
 	SnapshotDiskBeforeDelete types.Bool   `tfsdk:"snapshot_disk_before_delete"`
 	StateBucket              types.String `tfsdk:"state_bucket"`
+	IsPrimaryProject         types.Bool   `tfsdk:"is_primary_project"`
 
 	NamePrefix         types.String `tfsdk:"name_prefix"`
 	SnapshotName       types.String `tfsdk:"snapshot_name"`
@@ -63,7 +64,7 @@ func (r *LegacyCleanupDSPMRegion) Metadata(_ context.Context, req resource.Metad
 
 func (r *LegacyCleanupDSPMRegion) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Deletes the per-region DSPM resources created by the legacy Terraform Package Solution in a single GCP project, so a Terraform Provider deployment can reuse the same name prefix. Each instance is keyed by `(project_id, region)`. Deletion order matches the original local-exec bash: eventarc triggers → functions / run services → schedulers → disk (snapshot first if requested) + resource policy → VMs → VPC connector → firewall rules → NAT → router → subnet → VPC. Returns `cleanup_status = \"not_found\"` if no matching legacy resources exist in the region.",
+		MarkdownDescription: "Deletes the per-region DSPM resources created by the legacy Terraform Package Solution in a single GCP project, so a Terraform Provider deployment can reuse the same name prefix. Each instance is keyed by `(project_id, region)`. Deletion order matches the original local-exec bash: eventarc triggers → functions / run services → schedulers → disk (snapshot first if requested) + resource policy → VMs → VPC connector → firewall rules → NAT → router → subnet → VPC → per-project IAM service account (primary project only, see `is_primary_project`). Returns `cleanup_status = \"not_found\"` if no matching legacy resources exist in the region.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "`{project_id}/{region}`.",
@@ -114,6 +115,20 @@ func (r *LegacyCleanupDSPMRegion) Schema(_ context.Context, _ resource.SchemaReq
 				Computed:            true,
 				Default:             booldefault.StaticBool(true),
 			},
+			"is_primary_project": schema.BoolAttribute{
+				MarkdownDescription: "Whether `project_id` is the deployment's primary/central-management " +
+					"project. When `true`, the legacy Package's own per-project DSPM service account " +
+					"(`{name_prefix}-sa`) is deleted — the new install uses a differently-named shared SA on " +
+					"the primary, so the legacy one is a genuine orphan. When `false` (default — safe for " +
+					"existing callers that don't set this), the legacy SA is left alone: on a member project " +
+					"the new install's own module re-declares a service account under the *same* name with " +
+					"`create_ignore_already_exists = true`, adopting this exact object rather than recreating " +
+					"it, to avoid GCP's service-account-name reuse restriction. Deleting it here would remove " +
+					"the object out from under that adoption.",
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+			},
 			"state_bucket": schema.StringAttribute{
 				MarkdownDescription: "GCS bucket holding the *current* Provider-mode Terraform state for this deployment " +
 					"(read from `gs://{state_bucket}/terraform.tfstate/default.tfstate`). When set, cleanup checks " +
@@ -137,7 +152,7 @@ func (r *LegacyCleanupDSPMRegion) Schema(_ context.Context, _ resource.SchemaReq
 				Computed:            true,
 			},
 			"resources_deleted": schema.MapAttribute{
-				MarkdownDescription: "Count of legacy resources deleted, keyed by resource family (functions, triggers, schedulers, run_services, vms, firewalls, router_nats, routers, subnets, vpcs, connectors, disks, snapshots, resource_policies, sinks, alert_policies, dashboards, orphan_buckets_preserved, orphan_bindings).",
+				MarkdownDescription: "Count of legacy resources deleted, keyed by resource family (functions, triggers, schedulers, run_services, vms, firewalls, router_nats, routers, subnets, vpcs, connectors, disks, snapshots, resource_policies, sinks, alert_policies, dashboards, orphan_buckets_preserved, orphan_bindings, service_accounts).",
 				ElementType:         types.Int64Type,
 				Computed:            true,
 			},
@@ -218,6 +233,7 @@ func (r *LegacyCleanupDSPMRegion) Create(ctx context.Context, req resource.Creat
 		ClientOptions:            clientOptions,
 		SAEmail:                  saEmail,
 		StateBucket:              plan.StateBucket.ValueString(),
+		IsPrimaryProject:         plan.IsPrimaryProject.ValueBool(),
 	})
 
 	resourcesDeleted, diag := types.MapValueFrom(ctx, types.Int64Type, result.ResourcesDeleted)
@@ -321,6 +337,7 @@ func (r *LegacyCleanupDSPMRegion) Update(ctx context.Context, req resource.Updat
 	state.ServiceAccountKey = plan.ServiceAccountKey
 	state.SnapshotDiskBeforeDelete = plan.SnapshotDiskBeforeDelete
 	state.StateBucket = plan.StateBucket
+	state.IsPrimaryProject = plan.IsPrimaryProject
 	// Preserve plan's OrphanBucketNames (set by ModifyPlan) for TF plan/state consistency on second apply.
 	if !plan.OrphanBucketNames.IsNull() && !plan.OrphanBucketNames.IsUnknown() {
 		state.OrphanBucketNames = plan.OrphanBucketNames

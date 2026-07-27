@@ -2,12 +2,12 @@
 page_title: "visionone_dspm_legacy_cleanup_region Resource - visionone"
 subcategory: "Data Security Posture Management"
 description: |-
-  Deletes the per-region DSPM resources created by the legacy Terraform Package Solution in a single GCP project, so a Terraform Provider deployment can reuse the same name prefix. Each instance is keyed by (project_id, region). Deletion order matches the original local-exec bash: eventarc triggers → functions / run services → schedulers → disk (snapshot first if requested) + resource policy → VMs → VPC connector → firewall rules → NAT → router → subnet → VPC. Returns cleanup_status = "not_found" if no matching legacy resources exist in the region.
+  Deletes the per-region DSPM resources created by the legacy Terraform Package Solution in a single GCP project, so a Terraform Provider deployment can reuse the same name prefix. Each instance is keyed by (project_id, region). Deletion order matches the original local-exec bash: eventarc triggers → functions / run services → schedulers → disk (snapshot first if requested) + resource policy → VMs → VPC connector → firewall rules → NAT → router → subnet → VPC → per-project IAM service account (primary project only, see is_primary_project). Returns cleanup_status = "not_found" if no matching legacy resources exist in the region.
 ---
 
 # visionone_dspm_legacy_cleanup_region (Resource)
 
-Deletes the per-region DSPM resources created by the legacy Terraform Package Solution in a single GCP project, so a Terraform Provider deployment can reuse the same name prefix. Each instance is keyed by `(project_id, region)`. Deletion order matches the original local-exec bash: eventarc triggers → functions / run services → schedulers → disk (snapshot first if requested) + resource policy → VMs → VPC connector → firewall rules → NAT → router → subnet → VPC. Returns `cleanup_status = "not_found"` if no matching legacy resources exist in the region.
+Deletes the per-region DSPM resources created by the legacy Terraform Package Solution in a single GCP project, so a Terraform Provider deployment can reuse the same name prefix. Each instance is keyed by `(project_id, region)`. Deletion order matches the original local-exec bash: eventarc triggers → functions / run services → schedulers → disk (snapshot first if requested) + resource policy → VMs → VPC connector → firewall rules → NAT → router → subnet → VPC → per-project IAM service account (primary project only, see `is_primary_project`). Returns `cleanup_status = "not_found"` if no matching legacy resources exist in the region.
 
 ## Use Cases
 
@@ -17,7 +17,8 @@ Deletes the per-region DSPM resources created by the legacy Terraform Package So
 
 ## Behavior
 
-- **`terraform apply`**: Walks the legacy resource families in the same order as the original local-exec bash (eventarc triggers → functions / run services → schedulers → disk (snapshot first if requested) + resource policy → VMs → VPC connector → firewall rules → NAT → router → subnet → VPC).
+- **`terraform apply`**: Walks the legacy resource families in the same order as the original local-exec bash (eventarc triggers → functions / run services → schedulers → disk (snapshot first if requested) + resource policy → VMs → VPC connector → firewall rules → NAT → router → subnet → VPC), then the per-project IAM service account when `is_primary_project = true`.
+- **`is_primary_project`**: on the deployment's primary project, the legacy Package's own per-project service account (`{name_prefix}-sa`) is deleted — the new install uses a differently-named shared SA there, so the legacy one is a genuine orphan. On a member project (default, `false`), it's left alone: the new install's own module adopts that exact SA in place rather than recreating it, to avoid GCP's service-account-name reuse restriction.
 - **`terraform destroy`**: Removes the resource from Terraform state only; legacy GCP objects already deleted by the apply remain absent.
 - **`cleanup_status`**: One of `deleted`, `partial`, `not_found`, `failed`. `not_found` is returned when no legacy resources matched the prefix — the fresh-install path.
 - **Disk Snapshot** (`snapshot_disk_before_delete = true`, default): the persistent scan-job disk is snapshotted to `{name_prefix}-disk-pre-upgrade` before deletion so the new stack can migrate scan data on first boot.
@@ -108,6 +109,7 @@ resource "visionone_dspm_legacy_cleanup_region" "per_region" {
 
 ### Optional
 
+- `is_primary_project` (Boolean) Whether `project_id` is the deployment's primary/central-management project. When `true`, the legacy Package's own per-project DSPM service account (`{name_prefix}-sa`) is deleted — the new install uses a differently-named shared SA on the primary, so the legacy one is a genuine orphan. When `false` (default — safe for existing callers that don't set this), the legacy SA is left alone: on a member project the new install's own module re-declares a service account under the *same* name with `create_ignore_already_exists = true`, adopting this exact object rather than recreating it, to avoid GCP's service-account-name reuse restriction. Deleting it here would remove the object out from under that adoption.
 - `service_account_key` (String, Sensitive) Base64-encoded JSON service account key used to authenticate with GCP for cleanup operations. Optional — three common patterns:
 
 - **CAM-integrated** (recommended): set to `visionone_cam_service_account_integration.comprehensive.private_key`. The CAM-minted SA (with IAM bindings granted in the same plan) is used without any customer-side key management.
@@ -124,7 +126,7 @@ resource "visionone_dspm_legacy_cleanup_region" "per_region" {
 - `id` (String) `{project_id}/{region}`.
 - `name_prefix` (String) The computed legacy resource prefix (e.g. `dspm-i-use1`).
 - `orphan_bucket_names` (List of String) GCS bucket names that pre-existed for this (project, region) tuple and were intentionally **not** deleted by cleanup. Audit-log buckets are data-preservation-sensitive, and deleting them races GCP's audit-log forwarding pipeline. Consume this list from the downstream new-module via `import { for_each = ... }` blocks to adopt the buckets into the new state. Empty on fresh installs.
-- `resources_deleted` (Map of Number) Count of legacy resources deleted, keyed by resource family (functions, triggers, schedulers, run_services, vms, firewalls, router_nats, routers, subnets, vpcs, connectors, disks, snapshots, resource_policies, sinks, alert_policies, dashboards, orphan_buckets_preserved, orphan_bindings).
+- `resources_deleted` (Map of Number) Count of legacy resources deleted, keyed by resource family (functions, triggers, schedulers, run_services, vms, firewalls, router_nats, routers, subnets, vpcs, connectors, disks, snapshots, resource_policies, sinks, alert_policies, dashboards, orphan_buckets_preserved, orphan_bindings, service_accounts).
 - `resources_preserved` (Map of Number) Count of candidate resources intentionally **not** deleted because `state_bucket` lookup found them already tracked in the current Provider-mode state, keyed by the same resource family names used in `resources_deleted` (only families that can be state-checked appear: firewalls, router_nats, routers, subnets, vpcs, connectors, disks, resource_policies, sinks, alert_policies, dashboards). Empty when `state_bucket` is unset.
 - `snapshot_name` (String) The disk snapshot name created before disk deletion (empty if no disk existed or snapshot was disabled).
 
@@ -141,3 +143,4 @@ The authenticating principal must have GCP permissions to delete the legacy DSPM
 - `run.services.delete`
 - `cloudscheduler.jobs.delete`
 - `eventarc.triggers.delete`
+- `iam.serviceAccounts.{get,delete}`, `iam.serviceAccountKeys.{list,delete}` (only exercised when `is_primary_project = true`)

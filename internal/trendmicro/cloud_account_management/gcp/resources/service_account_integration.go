@@ -542,6 +542,12 @@ func (r *ServiceAccountIntegration) Create(ctx context.Context, req resource.Cre
 		}
 	}
 
+	if bindErr := AddIAMBinding(ctx, gcpClients, projectID, member, config.GCP_SA_DISCOVERY_ROLE); bindErr != nil {
+		tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Create] Failed to add primary project IAM binding for role %s to project %s: %s", config.GCP_SA_DISCOVERY_ROLE, projectID, bindErr.Error()))
+	} else {
+		tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Create] Primary project IAM binding for role %s added to project: %s", config.GCP_SA_DISCOVERY_ROLE, projectID))
+	}
+
 	tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Create] IAM bindings created in %d projects for service account: %s", len(boundProjectIds), sa.Email))
 
 	// Grant the node scan roles once on the folder or organization node so discovery and
@@ -818,11 +824,17 @@ func (r *ServiceAccountIntegration) Read(ctx context.Context, req resource.ReadR
 	readWg.Wait()
 
 	for _, result := range checkResults {
-		if result.bound {
-			currentBoundProjects = append(currentBoundProjects, result.projectID)
-			if result.projectNumber != "" {
-				currentBoundProjectNumbers = append(currentBoundProjectNumbers, result.projectNumber)
-			}
+		if !result.bound {
+			continue
+		}
+
+		if IsSystemProjectID(result.projectID) {
+			tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Read] Dropping system project from bound projects: %s", result.projectID))
+			continue
+		}
+		currentBoundProjects = append(currentBoundProjects, result.projectID)
+		if result.projectNumber != "" {
+			currentBoundProjectNumbers = append(currentBoundProjectNumbers, result.projectNumber)
 		}
 	}
 
@@ -1095,6 +1107,39 @@ func (r *ServiceAccountIntegration) Update(ctx context.Context, req resource.Upd
 	tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Update] Successfully updated service account key resource: %s", state.ServiceAccountEmail.ValueString()))
 }
 
+func (r *ServiceAccountIntegration) removeProjectRoleBindings(ctx context.Context, gcpClients *api.GCPClients, projID, member string, roleNames, primaryRoleNames []string, primaryProjectID string) {
+	tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Delete] Removing service account principal from project: %s", projID))
+	for _, roleName := range roleNames {
+		actualRoleName := roleName
+		if strings.HasPrefix(roleName, "projects/") {
+			parts := strings.Split(roleName, "/")
+			if len(parts) >= 4 && projID != parts[1] {
+				actualRoleName = fmt.Sprintf("projects/%s/roles/%s", projID, parts[3])
+				tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Using replicated role name for removal: %s", actualRoleName))
+			}
+		}
+		if removeErr := RemoveIAMBinding(ctx, gcpClients, projID, member, actualRoleName); removeErr != nil {
+			tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Delete] Failed to remove IAM binding for role %s from project %s: %s", actualRoleName, projID, removeErr.Error()))
+		} else {
+			tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] IAM binding for role %s removed from project: %s", actualRoleName, projID))
+		}
+	}
+
+	if projID != primaryProjectID {
+		return
+	}
+	for _, primaryRoleName := range primaryRoleNames {
+		if removeErr := RemoveIAMBinding(ctx, gcpClients, projID, member, primaryRoleName); removeErr != nil {
+			tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Delete] Failed to remove primary project IAM binding for role %s from project %s: %s", primaryRoleName, projID, removeErr.Error()))
+		} else {
+			tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Primary project IAM binding for role %s removed from project: %s", primaryRoleName, projID))
+		}
+	}
+	if removeErr := RemoveIAMBinding(ctx, gcpClients, projID, member, config.GCP_SA_DISCOVERY_ROLE); removeErr != nil {
+		tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Delete] Failed to remove primary project IAM binding for role %s from project %s: %s", config.GCP_SA_DISCOVERY_ROLE, projID, removeErr.Error()))
+	}
+}
+
 // Delete deletes the resource.
 func (r *ServiceAccountIntegration) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var state serviceAccountIntegrationResourceModel
@@ -1166,42 +1211,7 @@ func (r *ServiceAccountIntegration) Delete(ctx context.Context, req resource.Del
 				sem <- struct{}{}        // acquire slot
 				defer func() { <-sem }() // release slot
 
-				tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Delete] Removing service account principal from project: %s", projID))
-				for _, roleName := range roleNames {
-					actualRoleName := roleName
-
-					if strings.HasPrefix(roleName, "projects/") {
-						parts := strings.Split(roleName, "/")
-						if len(parts) >= 4 {
-							sourceProjectID := parts[1]
-							roleID := parts[3]
-
-							if projID != sourceProjectID {
-								actualRoleName = fmt.Sprintf("projects/%s/roles/%s", projID, roleID)
-								tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Using replicated role name for removal: %s", actualRoleName))
-							}
-						}
-					}
-
-					removeErr := RemoveIAMBinding(ctx, gcpClients, projID, member, actualRoleName)
-					if removeErr != nil {
-						tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Delete] Failed to remove IAM binding for role %s from project %s: %s", actualRoleName, projID, removeErr.Error()))
-					} else {
-						tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] IAM binding for role %s removed from project: %s", actualRoleName, projID))
-					}
-				}
-
-				// Remove primary project roles from the primary project only
-				if projID == primaryProjectID {
-					for _, primaryRoleName := range primaryRoleNames {
-						removeErr := RemoveIAMBinding(ctx, gcpClients, projID, member, primaryRoleName)
-						if removeErr != nil {
-							tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Delete] Failed to remove primary project IAM binding for role %s from project %s: %s", primaryRoleName, projID, removeErr.Error()))
-						} else {
-							tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Primary project IAM binding for role %s removed from project: %s", primaryRoleName, projID))
-						}
-					}
-				}
+				r.removeProjectRoleBindings(ctx, gcpClients, projID, member, roleNames, primaryRoleNames, primaryProjectID)
 			}(projectID)
 		}
 		deleteBindWg.Wait()
