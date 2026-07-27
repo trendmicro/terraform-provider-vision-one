@@ -127,6 +127,8 @@ var FEATURE_PERMISSIONS = map[string][]string{
 		"iam.serviceAccountKeys.list",
 		"iam.serviceAccounts.delete",
 		"logging.sinks.delete",
+		"monitoring.alertPolicies.delete",
+		"monitoring.dashboards.delete",
 		"run.services.delete",
 		"storage.buckets.delete",
 		"storage.objects.delete",
