@@ -27,15 +27,19 @@ type FolderDetails struct {
 // The API returns excludedProjects as an array on read, while write requests
 // accept a comma-separated string, so responses need separate types.
 type OrganizationDetailsResponse struct {
-	DisplayName      string   `json:"displayName,omitempty"`
-	ExcludedProjects []string `json:"excludedProjects,omitempty"`
-	ID               string   `json:"id,omitempty"`
+	DisplayName                 string   `json:"displayName,omitempty"`
+	ExcludedProjects            []string `json:"excludedProjects,omitempty"`
+	ID                          string   `json:"id,omitempty"`
+	AutoDetectEditable          *bool    `json:"autoDetectEditable,omitempty"`
+	AutoDetectionOrganizationId string   `json:"autoDetectionOrganizationId,omitempty"`
 }
 
 type FolderDetailsResponse struct {
-	DisplayName      string   `json:"displayName,omitempty"`
-	ExcludedProjects []string `json:"excludedProjects,omitempty"`
-	ID               string   `json:"id,omitempty"`
+	DisplayName                 string   `json:"displayName,omitempty"`
+	ExcludedProjects            []string `json:"excludedProjects,omitempty"`
+	ID                          string   `json:"id,omitempty"`
+	AutoDetectEditable          *bool    `json:"autoDetectEditable,omitempty"`
+	AutoDetectionOrganizationId string   `json:"autoDetectionOrganizationId,omitempty"`
 }
 
 type Feature struct {
@@ -58,9 +62,9 @@ type CreateProjectRequest struct {
 	ProjectNumber             string                         `json:"projectNumber" validate:"omitempty,max=254"`
 	ServiceAccountId          string                         `json:"serviceAccountId" validate:"omitempty,max=254"`
 	ServiceAccountKey         string                         `json:"serviceAccountKey,omitempty"`
-	// JSON tag stays isGCPAutoDetectEnabled to match the CAM backend field; do not rename.
-	IsAutoDetectEnabled    *bool  `json:"isGCPAutoDetectEnabled,omitempty"`
-	ScanRoleOrganizationId string `json:"scanRoleOrganizationId,omitempty"`
+	// JSON tags mirror the CAM backend fields (isGCPAutoDetectEnabled, autoDetectionOrganizationId); do not rename.
+	IsAutoDetectEnabled         *bool  `json:"isGCPAutoDetectEnabled,omitempty"`
+	AutoDetectionOrganizationId string `json:"autoDetectionOrganizationId,omitempty"`
 }
 
 type ModifyProjectRequest struct {
@@ -79,9 +83,9 @@ type ModifyProjectRequest struct {
 	ServiceAccountId          string                         `json:"serviceAccountId" validate:"omitempty,max=254"`
 	ServiceAccountKey         string                         `json:"serviceAccountKey,omitempty"`
 	WorkloadIdentityPoolId    *string                        `json:"workloadIdentityPoolId,omitempty"`
-	// JSON tag stays isGCPAutoDetectEnabled to match the CAM backend field; do not rename.
-	IsAutoDetectEnabled    *bool  `json:"isGCPAutoDetectEnabled,omitempty"`
-	ScanRoleOrganizationId string `json:"scanRoleOrganizationId,omitempty"`
+	// JSON tags mirror the CAM backend fields (isGCPAutoDetectEnabled, autoDetectionOrganizationId); do not rename.
+	IsAutoDetectEnabled         *bool  `json:"isGCPAutoDetectEnabled,omitempty"`
+	AutoDetectionOrganizationId string `json:"autoDetectionOrganizationId,omitempty"`
 }
 
 type ProjectResponse struct {
@@ -109,6 +113,8 @@ type ProjectResponse struct {
 	WorkloadIdentityPoolID    string                         `json:"workloadIdentityPoolId,omitempty"`
 	Folder                    *FolderDetailsResponse         `json:"folder,omitempty"`
 	Organization              *OrganizationDetailsResponse   `json:"organization,omitempty"`
+	IsAutoDetectEnabled       *bool                          `json:"isGCPAutoDetectEnabled,omitempty"`
+	AutoDetectStatus          string                         `json:"autoDetectStatus,omitempty"`
 }
 
 func (c *CamClient) CreateProject(data *CreateProjectRequest) error {
