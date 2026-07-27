@@ -43,12 +43,25 @@ type CAMCloudAccount struct {
 	UpdatedDateTime           string                         `json:"updatedDateTime,omitempty"`
 	WorkloadIdentityPoolID    string                         `json:"workloadIdentityPoolId,omitempty"` // GCP Workload Identity Pool ID
 	Organization              *OrganizationDetailsResponse   `json:"organization,omitempty"`
+	Folder                    *FolderDetailsResponse         `json:"folder,omitempty"`
+	IsAutoDetectEnabled       *bool                          `json:"isGCPAutoDetectEnabled,omitempty"`
+	AutoDetectStatus          string                         `json:"autoDetectStatus,omitempty"`
 }
 
 type OrganizationDetailsResponse struct {
-	ID               string   `json:"id,omitempty"`
-	DisplayName      string   `json:"displayName,omitempty"`
-	ExcludedProjects []string `json:"excludedProjects,omitempty"`
+	ID                          string   `json:"id,omitempty"`
+	DisplayName                 string   `json:"displayName,omitempty"`
+	ExcludedProjects            []string `json:"excludedProjects,omitempty"`
+	AutoDetectEditable          *bool    `json:"autoDetectEditable,omitempty"`
+	AutoDetectionOrganizationId string   `json:"autoDetectionOrganizationId,omitempty"`
+}
+
+type FolderDetailsResponse struct {
+	ID                          string   `json:"id,omitempty"`
+	DisplayName                 string   `json:"displayName,omitempty"`
+	ExcludedProjects            []string `json:"excludedProjects,omitempty"`
+	AutoDetectEditable          *bool    `json:"autoDetectEditable,omitempty"`
+	AutoDetectionOrganizationId string   `json:"autoDetectionOrganizationId,omitempty"`
 }
 
 type FeatureDetail struct {

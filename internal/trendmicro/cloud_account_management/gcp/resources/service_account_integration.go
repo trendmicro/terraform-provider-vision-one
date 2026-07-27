@@ -3,6 +3,7 @@ package resources
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -264,6 +265,13 @@ func (r *ServiceAccountIntegration) Configure(ctx context.Context, req resource.
 // Create creates a new service account with key, custom role, and IAM bindings.
 //
 //nolint:gocyclo // Terraform CRUD - inherently complex with GCP multi-project role replication
+func ensureDiscoveryRole(roles []string) []string {
+	if slices.Contains(roles, config.GCP_SA_DISCOVERY_ROLE) {
+		return roles
+	}
+	return append(roles, config.GCP_SA_DISCOVERY_ROLE)
+}
+
 func (r *ServiceAccountIntegration) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan serviceAccountIntegrationResourceModel
 
@@ -560,6 +568,12 @@ func (r *ServiceAccountIntegration) Create(ctx context.Context, req resource.Cre
 			resp.Diagnostics.Append(d...)
 			return
 		}
+	}
+
+	nodeOnboarding := (!plan.CentralManagementProjectIDFolder.IsNull() && !plan.CentralManagementProjectIDFolder.IsUnknown()) ||
+		(!plan.CentralManagementProjectIDOrg.IsNull() && !plan.CentralManagementProjectIDOrg.IsUnknown())
+	if nodeOnboarding {
+		nodeScanRoles = ensureDiscoveryRole(nodeScanRoles)
 	}
 	if len(nodeScanRoles) > 0 {
 		if !plan.CentralManagementProjectIDFolder.IsNull() && !plan.CentralManagementProjectIDFolder.IsUnknown() {
@@ -871,6 +885,9 @@ func (r *ServiceAccountIntegration) Read(ctx context.Context, req resource.ReadR
 		if !state.NodeScanRoles.IsNull() && !state.NodeScanRoles.IsUnknown() {
 			resp.Diagnostics.Append(state.NodeScanRoles.ElementsAs(ctx, &nodeScanRoles, false)...)
 		}
+		// Mirror Create: the node always carries roles/browser for a folder/org onboarding,
+		// so drift-check and removal must account for it even if node_scan_roles was unset.
+		nodeScanRoles = ensureDiscoveryRole(nodeScanRoles)
 		if folderID, ok := strings.CutPrefix(nodeResource, "folders/"); ok {
 			for _, role := range nodeScanRoles {
 				bound, checkErr := HasFolderRoleBinding(ctx, gcpClients, folderID, member, role)
@@ -1275,6 +1292,9 @@ func (r *ServiceAccountIntegration) Delete(ctx context.Context, req resource.Del
 		if !state.NodeScanRoles.IsNull() && !state.NodeScanRoles.IsUnknown() {
 			resp.Diagnostics.Append(state.NodeScanRoles.ElementsAs(ctx, &nodeScanRoles, false)...)
 		}
+		// Mirror Create: the node always carries roles/browser for a folder/org onboarding,
+		// so drift-check and removal must account for it even if node_scan_roles was unset.
+		nodeScanRoles = ensureDiscoveryRole(nodeScanRoles)
 		if folderID, ok := strings.CutPrefix(nodeResource, "folders/"); ok {
 			for _, role := range nodeScanRoles {
 				tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Removing node scan role %s from folder %s", role, folderID))

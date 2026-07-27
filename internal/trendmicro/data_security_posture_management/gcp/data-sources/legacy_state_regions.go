@@ -165,11 +165,6 @@ func discoverRegionsFromLegacyState(ctx context.Context, bucketName string, clie
 			if tok == "" {
 				continue
 			}
-			// GCP regions always contain a hyphen (e.g. asia-northeast1, us-east4).
-			// Pure numeric for_each indices like "0" must be excluded.
-			if !strings.Contains(tok, "-") {
-				continue
-			}
 			last := tok[len(tok)-1]
 			if last < '0' || last > '9' {
 				continue

@@ -58,19 +58,19 @@ type CAMConnectorResourceModel struct {
 	ServiceAccountID types.String `tfsdk:"service_account_id"`
 
 	// Optional fields
-	CamDeployedRegion         types.String              `tfsdk:"cam_deployed_region"`
-	ConnectedSecurityServices types.List                `tfsdk:"connected_security_services"`
-	Description               types.String              `tfsdk:"description"`
-	Features                  types.List                `tfsdk:"features"`
-	FeaturesConfigFilePath    types.String              `tfsdk:"features_config_file_path"`
-	IsCAMCloudASRMEnabled     types.Bool                `tfsdk:"is_cam_cloud_asrm_enabled"`
-	IsPrimary                 types.Bool                `tfsdk:"is_primary"`
-	IsAutoDetectEnabled       types.Bool                `tfsdk:"is_auto_detect_enabled"`
-	Name                      types.String              `tfsdk:"name"`
-	ScanRoleOrganizationID    types.String              `tfsdk:"scan_role_organization_id"`
-	ServiceAccountKey         types.String              `tfsdk:"service_account_key"`
-	Folder                    *FolderDetailsModel       `tfsdk:"folder"`
-	Organization              *OrganizationDetailsModel `tfsdk:"organization"`
+	CamDeployedRegion           types.String              `tfsdk:"cam_deployed_region"`
+	ConnectedSecurityServices   types.List                `tfsdk:"connected_security_services"`
+	Description                 types.String              `tfsdk:"description"`
+	Features                    types.List                `tfsdk:"features"`
+	FeaturesConfigFilePath      types.String              `tfsdk:"features_config_file_path"`
+	IsCAMCloudASRMEnabled       types.Bool                `tfsdk:"is_cam_cloud_asrm_enabled"`
+	IsPrimary                   types.Bool                `tfsdk:"is_primary"`
+	IsAutoDetectEnabled         types.Bool                `tfsdk:"is_auto_detect_enabled"`
+	Name                        types.String              `tfsdk:"name"`
+	AutoDetectionOrganizationID types.String              `tfsdk:"auto_detection_organization_id"`
+	ServiceAccountKey           types.String              `tfsdk:"service_account_key"`
+	Folder                      *FolderDetailsModel       `tfsdk:"folder"`
+	Organization                *OrganizationDetailsModel `tfsdk:"organization"`
 
 	// Computed fields
 	CreatedDateTime     types.String `tfsdk:"created_date_time"`
@@ -213,7 +213,7 @@ func (r *CAMConnectorResource) Schema(ctx context.Context, req resource.SchemaRe
 				MarkdownDescription: "Opt-in for automatic onboarding of new projects under the folder or organization. " +
 					"Only applied on the primary project; set to `false` to stop automatic syncing. Defaults to off when omitted.",
 			},
-			"scan_role_organization_id": schema.StringAttribute{
+			"auto_detection_organization_id": schema.StringAttribute{
 				Optional: true,
 				MarkdownDescription: "GCP organization ID used to define the organization-level auto-detect scan role for a folder onboarding. " +
 					"Required when `is_auto_detect_enabled` is true and the connector targets a folder, because a custom role cannot be defined at the folder level. " +
@@ -435,29 +435,29 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 		autoDetectEnabledPtr = &v
 	}
 
-	// The scan-role org id only matters on the primary of a folder onboarding; omit it elsewhere.
-	var scanRoleOrgID string
+	// The auto-detection org id only matters on the primary of a folder onboarding; omit it elsewhere.
+	var autoDetectionOrgID string
 	if isPrimaryPtr != nil && *isPrimaryPtr {
-		scanRoleOrgID = plan.ScanRoleOrganizationID.ValueString()
+		autoDetectionOrgID = plan.AutoDetectionOrganizationID.ValueString()
 	}
 
 	body := &api.CreateProjectRequest{
-		CamDeployedRegion:         plan.CamDeployedRegion.ValueString(),
-		ConnectedSecurityServices: connectedServices,
-		Description:               plan.Description.ValueString(),
-		Features:                  features,
-		FeaturesConfigFilePath:    plan.FeaturesConfigFilePath.ValueString(),
-		Folder:                    folder,
-		IsCAMCloudASRMEnabled:     plan.IsCAMCloudASRMEnabled.ValueBool(),
-		IsPrimary:                 isPrimaryPtr,
-		IsAutoDetectEnabled:       autoDetectEnabledPtr,
-		ScanRoleOrganizationId:    scanRoleOrgID,
-		IsTFProviderDeployed:      true,
-		Name:                      optionalString(plan.Name),
-		Organization:              organization,
-		ProjectNumber:             plan.ProjectNumber.ValueString(),
-		ServiceAccountId:          plan.ServiceAccountID.ValueString(),
-		ServiceAccountKey:         plan.ServiceAccountKey.ValueString(),
+		CamDeployedRegion:           plan.CamDeployedRegion.ValueString(),
+		ConnectedSecurityServices:   connectedServices,
+		Description:                 plan.Description.ValueString(),
+		Features:                    features,
+		FeaturesConfigFilePath:      plan.FeaturesConfigFilePath.ValueString(),
+		Folder:                      folder,
+		IsCAMCloudASRMEnabled:       plan.IsCAMCloudASRMEnabled.ValueBool(),
+		IsPrimary:                   isPrimaryPtr,
+		IsAutoDetectEnabled:         autoDetectEnabledPtr,
+		AutoDetectionOrganizationId: autoDetectionOrgID,
+		IsTFProviderDeployed:        true,
+		Name:                        optionalString(plan.Name),
+		Organization:                organization,
+		ProjectNumber:               plan.ProjectNumber.ValueString(),
+		ServiceAccountId:            plan.ServiceAccountID.ValueString(),
+		ServiceAccountKey:           plan.ServiceAccountKey.ValueString(),
 	}
 
 	unlock := lockGCPCAMProjectMutation(plan.ProjectNumber.ValueString())
@@ -628,29 +628,29 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		autoDetectEnabledPtr = &v
 	}
 
-	// The scan-role org id only matters on the primary of a folder onboarding; omit it elsewhere.
-	var scanRoleOrgID string
+	// The auto-detection org id only matters on the primary of a folder onboarding; omit it elsewhere.
+	var autoDetectionOrgID string
 	if isPrimaryPtr != nil && *isPrimaryPtr {
-		scanRoleOrgID = plan.ScanRoleOrganizationID.ValueString()
+		autoDetectionOrgID = plan.AutoDetectionOrganizationID.ValueString()
 	}
 
 	body := &api.ModifyProjectRequest{
-		CamDeployedRegion:         plan.CamDeployedRegion.ValueString(),
-		ConnectedSecurityServices: connectedServices,
-		Description:               plan.Description.ValueString(),
-		Features:                  features,
-		FeaturesConfigFilePath:    plan.FeaturesConfigFilePath.ValueString(),
-		Folder:                    folder,
-		IsCAMCloudASRMEnabled:     isCAMCloudASRMEnabled,
-		IsPrimary:                 isPrimaryPtr,
-		IsAutoDetectEnabled:       autoDetectEnabledPtr,
-		ScanRoleOrganizationId:    scanRoleOrgID,
-		IsTFProviderDeployed:      true,
-		Name:                      optionalString(plan.Name),
-		Organization:              organization,
-		ProjectNumber:             projectNumber,
-		ServiceAccountId:          serviceAccountID,
-		ServiceAccountKey:         serviceAccountKey,
+		CamDeployedRegion:           plan.CamDeployedRegion.ValueString(),
+		ConnectedSecurityServices:   connectedServices,
+		Description:                 plan.Description.ValueString(),
+		Features:                    features,
+		FeaturesConfigFilePath:      plan.FeaturesConfigFilePath.ValueString(),
+		Folder:                      folder,
+		IsCAMCloudASRMEnabled:       isCAMCloudASRMEnabled,
+		IsPrimary:                   isPrimaryPtr,
+		IsAutoDetectEnabled:         autoDetectEnabledPtr,
+		AutoDetectionOrganizationId: autoDetectionOrgID,
+		IsTFProviderDeployed:        true,
+		Name:                        optionalString(plan.Name),
+		Organization:                organization,
+		ProjectNumber:               projectNumber,
+		ServiceAccountId:            serviceAccountID,
+		ServiceAccountKey:           serviceAccountKey,
 	}
 
 	tflog.Debug(ctx, fmt.Sprintf("[CAM Connector GCP][Update] Serializing CAM mutation for project %s with service account email: %s",
@@ -1002,5 +1002,25 @@ func (r *CAMConnectorResource) mapResponseToModel(ctx context.Context, res *api.
 
 	if res.IsPrimary != nil {
 		model.IsPrimary = types.BoolValue(*res.IsPrimary)
+	}
+
+	// Auto-detect fields are Optional (not Computed) and primary-only; refresh them from the
+	// response only when the user is already managing them, so an absent/empty backend value
+	// never turns a null config into a spurious diff.
+	if res.IsAutoDetectEnabled != nil && !model.IsAutoDetectEnabled.IsNull() && !model.IsAutoDetectEnabled.IsUnknown() {
+		model.IsAutoDetectEnabled = types.BoolValue(*res.IsAutoDetectEnabled)
+	}
+
+	if !model.AutoDetectionOrganizationID.IsNull() && !model.AutoDetectionOrganizationID.IsUnknown() {
+		// autoDetectionOrganizationId is returned nested under organization/folder.
+		autoDetectionOrgID := ""
+		if res.Organization != nil && res.Organization.AutoDetectionOrganizationId != "" {
+			autoDetectionOrgID = res.Organization.AutoDetectionOrganizationId
+		} else if res.Folder != nil && res.Folder.AutoDetectionOrganizationId != "" {
+			autoDetectionOrgID = res.Folder.AutoDetectionOrganizationId
+		}
+		if autoDetectionOrgID != "" {
+			model.AutoDetectionOrganizationID = types.StringValue(autoDetectionOrgID)
+		}
 	}
 }

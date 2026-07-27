@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 
 	cloud_risk_management_dto "terraform-provider-vision-one/pkg/dto/cloud_risk_management"
 )
@@ -13,14 +12,6 @@ import (
 const (
 	customRulesPath = "/beta/cloudPosture/customRules"
 )
-
-// IsNotFoundError checks if the error is a 404 Not Found error
-func IsNotFoundError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "Not Found") || strings.Contains(err.Error(), "NotFound")
-}
 
 // CreateCustomRule creates a new custom rule
 func (c *CrmClient) CreateCustomRule(req *cloud_risk_management_dto.CreateCustomRuleRequest) (*cloud_risk_management_dto.CustomRule, error) {

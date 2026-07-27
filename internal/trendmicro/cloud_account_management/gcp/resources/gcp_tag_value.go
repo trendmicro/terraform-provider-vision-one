@@ -500,13 +500,22 @@ func (r *GCPTagValueResource) Delete(ctx context.Context, req resource.DeleteReq
 			return nil
 		})
 	if holdListErr != nil {
-		if !strings.Contains(holdListErr.Error(), "404") && !strings.Contains(holdListErr.Error(), "not found") {
+		errMsg := holdListErr.Error()
+		isNotFound := strings.Contains(errMsg, "404") || strings.Contains(errMsg, "not found")
+		isPermDenied := strings.Contains(errMsg, "403") || strings.Contains(errMsg, "PERMISSION_DENIED")
+		if !isNotFound && !isPermDenied {
 			resp.Diagnostics.AddError(
 				"[GCP Tag Value][Delete]",
 				fmt.Sprintf("Error listing tag holds for '%s': %s", tagValueName, holdListErr.Error()),
 			)
 			return
 		}
+		// Missing tagHolds.list permission (or the value is already gone): skip hold cleanup and
+		// let the delete retry loop surface FAILED_PRECONDITION if a hold actually blocks deletion.
+		tflog.Warn(ctx, "Skipping tag hold cleanup (list unavailable); proceeding to delete", map[string]interface{}{
+			"tag_value_name": tagValueName,
+			"reason":         errMsg,
+		})
 	} else if len(allHolds) > 0 {
 		var (
 			mu       sync.Mutex

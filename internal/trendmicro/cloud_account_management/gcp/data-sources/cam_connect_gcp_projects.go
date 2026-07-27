@@ -43,6 +43,11 @@ type CAMCloudAccountModel struct {
 	ServiceAccountID       types.String              `tfsdk:"service_account_id"`        // GCP Service Account Unique ID
 	WorkloadIdentityPoolID types.String              `tfsdk:"workload_identity_pool_id"` // GCP Workload Identity Pool ID
 	Organization           *OrganizationDetailsModel `tfsdk:"organization"`              // GCP Organization details
+	Folder                 *FolderDetailsModel       `tfsdk:"folder"`                    // GCP Folder details
+
+	// Auto-detection (primary only)
+	IsGCPAutoDetectEnabled types.Bool   `tfsdk:"is_gcp_auto_detect_enabled"` // Auto-detect opt-in
+	AutoDetectStatus       types.String `tfsdk:"auto_detect_status"`         // Per-project auto-detect status
 
 	// Trend Micro security features and services (common)
 	IsCAMCloudASRMEnabled     types.Bool                          `tfsdk:"is_cam_cloud_asrm_enabled"`
@@ -67,9 +72,19 @@ type CAMGCPProjectDataSourceModel struct {
 }
 
 type OrganizationDetailsModel struct {
-	ID               types.String   `tfsdk:"id"`
-	DisplayName      types.String   `tfsdk:"display_name"`
-	ExcludedProjects []types.String `tfsdk:"excluded_projects"`
+	ID                          types.String   `tfsdk:"id"`
+	DisplayName                 types.String   `tfsdk:"display_name"`
+	ExcludedProjects            []types.String `tfsdk:"excluded_projects"`
+	AutoDetectEditable          types.Bool     `tfsdk:"auto_detect_editable"`
+	AutoDetectionOrganizationID types.String   `tfsdk:"auto_detection_organization_id"`
+}
+
+type FolderDetailsModel struct {
+	ID                          types.String   `tfsdk:"id"`
+	DisplayName                 types.String   `tfsdk:"display_name"`
+	ExcludedProjects            []types.String `tfsdk:"excluded_projects"`
+	AutoDetectEditable          types.Bool     `tfsdk:"auto_detect_editable"`
+	AutoDetectionOrganizationID types.String   `tfsdk:"auto_detection_organization_id"`
 }
 
 type CAMCloudAccountsDataSource struct {
@@ -180,7 +195,50 @@ func (d *CAMCloudAccountsDataSource) getCloudAccountAttributes() map[string]sche
 					Computed:            true,
 					MarkdownDescription: "List of excluded project IDs.",
 				},
+				"auto_detect_editable": schema.BoolAttribute{
+					Computed:            true,
+					MarkdownDescription: "Whether the auto-detection setting can be edited on this organization.",
+				},
+				"auto_detection_organization_id": schema.StringAttribute{
+					Computed:            true,
+					MarkdownDescription: "Organization ID that owns the node, used to define the auto-detection scan role.",
+				},
 			},
+		},
+		"folder": schema.SingleNestedAttribute{
+			Optional:            true,
+			MarkdownDescription: "GCP Folder details.",
+			Attributes: map[string]schema.Attribute{
+				"id": schema.StringAttribute{
+					Computed:            true,
+					MarkdownDescription: "Folder ID.",
+				},
+				"display_name": schema.StringAttribute{
+					Computed:            true,
+					MarkdownDescription: "Folder display name.",
+				},
+				"excluded_projects": schema.ListAttribute{
+					ElementType:         types.StringType,
+					Computed:            true,
+					MarkdownDescription: "List of excluded project IDs.",
+				},
+				"auto_detect_editable": schema.BoolAttribute{
+					Computed:            true,
+					MarkdownDescription: "Whether the auto-detection setting can be edited on this folder.",
+				},
+				"auto_detection_organization_id": schema.StringAttribute{
+					Computed:            true,
+					MarkdownDescription: "Organization ID that owns the folder, used to define the auto-detection scan role.",
+				},
+			},
+		},
+		"is_gcp_auto_detect_enabled": schema.BoolAttribute{
+			Optional:            true,
+			MarkdownDescription: "Whether automatic onboarding of new projects is enabled (primary project only).",
+		},
+		"auto_detect_status": schema.StringAttribute{
+			Optional:            true,
+			MarkdownDescription: "Per-project auto-detection status (managed, removed, scan-failed).",
 		},
 		// Trend Micro security features and services (common)
 		"is_cam_cloud_asrm_enabled": schema.BoolAttribute{
@@ -376,6 +434,11 @@ func convertToCAMCloudAccountModel(response *api.CAMCloudAccountsResponse) []CAM
 			WorkloadIdentityPoolID: cam.GetStringValue(account.WorkloadIdentityPoolID),
 			CamDeployedRegion:      cam.GetStringValue(account.CamDeployedRegion),
 			Organization:           convertOrganizationDetails(account.Organization),
+			Folder:                 convertFolderDetails(account.Folder),
+
+			// Auto-detection
+			IsGCPAutoDetectEnabled: cam.GetBoolPointerValue(account.IsAutoDetectEnabled),
+			AutoDetectStatus:       cam.GetStringValue(account.AutoDetectStatus),
 
 			// Trend Micro security features
 			IsCAMCloudASRMEnabled:     cam.GetBoolPointerValue(account.IsCAMCloudASRMEnabled),
@@ -404,8 +467,25 @@ func convertOrganizationDetails(org *api.OrganizationDetailsResponse) *Organizat
 	}
 
 	return &OrganizationDetailsModel{
-		ID:               cam.GetStringValue(org.ID),
-		DisplayName:      cam.GetStringValue(org.DisplayName),
-		ExcludedProjects: cam.ConvertStringSlice(org.ExcludedProjects),
+		ID:                          cam.GetStringValue(org.ID),
+		DisplayName:                 cam.GetStringValue(org.DisplayName),
+		ExcludedProjects:            cam.ConvertStringSlice(org.ExcludedProjects),
+		AutoDetectEditable:          cam.GetBoolPointerValue(org.AutoDetectEditable),
+		AutoDetectionOrganizationID: cam.GetStringValue(org.AutoDetectionOrganizationId),
+	}
+}
+
+// convertFolderDetails converts API folder details to Terraform model
+func convertFolderDetails(folder *api.FolderDetailsResponse) *FolderDetailsModel {
+	if folder == nil {
+		return nil
+	}
+
+	return &FolderDetailsModel{
+		ID:                          cam.GetStringValue(folder.ID),
+		DisplayName:                 cam.GetStringValue(folder.DisplayName),
+		ExcludedProjects:            cam.ConvertStringSlice(folder.ExcludedProjects),
+		AutoDetectEditable:          cam.GetBoolPointerValue(folder.AutoDetectEditable),
+		AutoDetectionOrganizationID: cam.GetStringValue(folder.AutoDetectionOrganizationId),
 	}
 }
