@@ -170,11 +170,8 @@ func (r *ServiceAccountIntegration) Schema(_ context.Context, _ resource.SchemaR
 			},
 			"node_scan_roles": schema.ListAttribute{
 				ElementType:         types.StringType,
-				MarkdownDescription: "List of IAM role resource names to grant once at the folder or organization node for read-only discovery and scanning. Projects under the node, including projects created later, inherit these roles through IAM, so no per-project scan binding is required. Typically the organization-level scan custom role plus the predefined roles/viewer (a basic role cannot be inlined into a custom role, so it must be granted separately). Only applies in folder or organization mode (central_management_project_id_in_folder or central_management_project_id_in_org); ignored for single-project integrations.",
+				MarkdownDescription: "List of IAM role resource names to grant once at the folder or organization node for read-only discovery and scanning. Projects under the node, including projects created later, inherit these roles through IAM, so no per-project scan binding is required. Typically the organization-level scan custom role plus the predefined roles/viewer (a basic role cannot be inlined into a custom role, so it must be granted separately). Only applies in folder or organization mode (central_management_project_id_in_folder or central_management_project_id_in_org); ignored for single-project integrations. Changing this reconciles the node grants in place (e.g. enabling auto-detect after onboarding) without recreating the service account.",
 				Optional:            true,
-				PlanModifiers: []planmodifier.List{
-					listplanmodifier.RequiresReplace(),
-				},
 			},
 
 			// ===== Key Rotation Configuration =====
@@ -920,6 +917,120 @@ func (r *ServiceAccountIntegration) Read(ctx context.Context, req resource.ReadR
 }
 
 //nolint:gocyclo // Terraform CRUD - inherently complex with multi-project IAM update
+func nodeScanRoleDelta(desired, previous []string) (toAdd, toRemove []string) {
+	prevSet := make(map[string]bool, len(previous))
+	for _, role := range previous {
+		prevSet[role] = true
+	}
+	desiredSet := make(map[string]bool, len(desired))
+	for _, role := range desired {
+		desiredSet[role] = true
+	}
+	for _, role := range desired {
+		if !prevSet[role] {
+			toAdd = append(toAdd, role)
+		}
+	}
+	for _, role := range previous {
+		if !desiredSet[role] {
+			toRemove = append(toRemove, role)
+		}
+	}
+	return toAdd, toRemove
+}
+
+func (r *ServiceAccountIntegration) reconcileNodeScanRoles(ctx context.Context, gcpClients *api.GCPClients, plan, state *serviceAccountIntegrationResourceModel) (types.String, error) {
+	folderScoped := !plan.CentralManagementProjectIDFolder.IsNull() && !plan.CentralManagementProjectIDFolder.IsUnknown()
+	orgScoped := !plan.CentralManagementProjectIDOrg.IsNull() && !plan.CentralManagementProjectIDOrg.IsUnknown()
+	if !folderScoped && !orgScoped {
+		return state.NodeScanBindingResource, nil
+	}
+
+	toStrings := func(list types.List) ([]string, error) {
+		var out []string
+		if list.IsNull() || list.IsUnknown() {
+			return out, nil
+		}
+		if d := list.ElementsAs(ctx, &out, false); d.HasError() {
+			return nil, fmt.Errorf("could not read node scan roles")
+		}
+		return out, nil
+	}
+	desired, err := toStrings(plan.NodeScanRoles)
+	if err != nil {
+		return state.NodeScanBindingResource, err
+	}
+	previous, err := toStrings(state.NodeScanRoles)
+	if err != nil {
+		return state.NodeScanBindingResource, err
+	}
+	// The discovery role is always bound at the node while node onboarding, so keep
+	// it on both sides to avoid revoking it when node_scan_roles is emptied.
+	desired = ensureDiscoveryRole(desired)
+	previous = ensureDiscoveryRole(previous)
+	toAdd, toRemove := nodeScanRoleDelta(desired, previous)
+	if len(toAdd) == 0 && len(toRemove) == 0 {
+		return state.NodeScanBindingResource, nil
+	}
+
+	centralProjID := plan.CentralManagementProjectIDOrg.ValueString()
+	if folderScoped {
+		centralProjID = plan.CentralManagementProjectIDFolder.ValueString()
+	}
+	ancestry, ancestryErr := gcpClients.CRMClient.Projects.GetAncestry(centralProjID, &cloudresourcemanager.GetAncestryRequest{}).Context(ctx).Do()
+	if ancestryErr != nil {
+		return state.NodeScanBindingResource, fmt.Errorf("failed to get ancestry for node scan role binding: %w", ancestryErr)
+	}
+
+	member := fmt.Sprintf("serviceAccount:%s", state.ServiceAccountEmail.ValueString())
+
+	if folderScoped {
+		var folderID string
+		for _, ancestor := range ancestry.Ancestor {
+			if ancestor.ResourceId.Type == config.PARENT_TYPE_FOLDER {
+				folderID = ancestor.ResourceId.Id
+				break
+			}
+		}
+		if folderID == "" {
+			return state.NodeScanBindingResource, nil
+		}
+		for _, role := range toAdd {
+			if bindErr := AddFolderIAMBinding(ctx, gcpClients, folderID, member, role); bindErr != nil {
+				return state.NodeScanBindingResource, fmt.Errorf("error granting %s on folder %s: %w", role, folderID, bindErr)
+			}
+		}
+		for _, role := range toRemove {
+			if unbindErr := RemoveFolderIAMBinding(ctx, gcpClients, folderID, member, role); unbindErr != nil {
+				tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Update] Failed to revoke node scan role %s on folder %s: %s", role, folderID, unbindErr.Error()))
+			}
+		}
+		return types.StringValue(fmt.Sprintf("folders/%s", folderID)), nil
+	}
+
+	var orgID string
+	for _, ancestor := range ancestry.Ancestor {
+		if ancestor.ResourceId.Type == config.PARENT_TYPE_ORGANIZATION {
+			orgID = ancestor.ResourceId.Id
+			break
+		}
+	}
+	if orgID == "" {
+		return state.NodeScanBindingResource, nil
+	}
+	for _, role := range toAdd {
+		if bindErr := AddOrgIAMBinding(ctx, gcpClients, orgID, member, role); bindErr != nil {
+			return state.NodeScanBindingResource, fmt.Errorf("error granting %s on organization %s: %w", role, orgID, bindErr)
+		}
+	}
+	for _, role := range toRemove {
+		if unbindErr := RemoveOrgIAMBinding(ctx, gcpClients, orgID, member, role); unbindErr != nil {
+			tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Update] Failed to revoke node scan role %s on organization %s: %s", role, orgID, unbindErr.Error()))
+		}
+	}
+	return types.StringValue(fmt.Sprintf("organizations/%s", orgID)), nil
+}
+
 func (r *ServiceAccountIntegration) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan, state serviceAccountIntegrationResourceModel
 
@@ -1115,6 +1226,20 @@ func (r *ServiceAccountIntegration) Update(ctx context.Context, req resource.Upd
 	plan.ServiceAccountEmail = state.ServiceAccountEmail
 	plan.ServiceAccountName = state.ServiceAccountName
 	plan.ServiceAccountUniqueID = state.ServiceAccountUniqueID
+
+	if !plan.NodeScanRoles.Equal(state.NodeScanRoles) {
+		bindingResource, err := r.reconcileNodeScanRoles(ctx, gcpClients, &plan, &state)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"[Service Account Key][Update] Failed to reconcile node scan roles",
+				err.Error(),
+			)
+			return
+		}
+		plan.NodeScanBindingResource = bindingResource
+	} else {
+		plan.NodeScanBindingResource = state.NodeScanBindingResource
+	}
 
 	if diags := resp.State.Set(ctx, plan); diags.HasError() {
 		resp.Diagnostics.Append(diags...)
