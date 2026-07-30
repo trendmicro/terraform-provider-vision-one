@@ -239,6 +239,13 @@ func (r *LegacyCleanupGCSBucket) Create(ctx context.Context, req resource.Create
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	if plan.ForceDeleteBucket.ValueBool() {
+		if destinationBucket != "" && plan.StateFileExists.ValueBool() && !plan.StateCopied.ValueBool() {
+			plan.CleanupStatus = types.StringValue("failed")
+			plan.CleanupError = types.StringValue(fmt.Sprintf("refusing to force-delete %s: state copy to %s did not succeed (would lose legacy state)", bucketName, destinationBucket))
+			resp.Diagnostics.AddError("[GCS Bucket Cleanup] Refusing to delete bucket without a successful state copy", plan.CleanupError.ValueString())
+			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+			return
+		}
 		deleteAllBucketObjects(ctx, storageSvc, bucketName)
 		deleteErr := storageSvc.Buckets.Delete(bucketName).Context(ctx).Do()
 		if deleteErr != nil {
