@@ -525,6 +525,10 @@ func (r *CAMConnectorResource) Read(ctx context.Context, req resource.ReadReques
 		if resp.Diagnostics.HasError() {
 			return
 		}
+
+		if res.IsAutoDetectEnabled != nil && !state.IsAutoDetectEnabled.IsNull() && !state.IsAutoDetectEnabled.IsUnknown() {
+			state.IsAutoDetectEnabled = types.BoolValue(*res.IsAutoDetectEnabled)
+		}
 	}
 
 	diags = resp.State.Set(ctx, &state)
@@ -695,6 +699,8 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		state.Folder = plan.Folder
 		state.Features = plan.Features
 		state.FeaturesConfigFilePath = plan.FeaturesConfigFilePath
+		state.IsAutoDetectEnabled = plan.IsAutoDetectEnabled
+		state.AutoDetectionOrganizationID = plan.AutoDetectionOrganizationID
 	}
 
 	resp.State.Set(ctx, &state)
@@ -1002,25 +1008,5 @@ func (r *CAMConnectorResource) mapResponseToModel(ctx context.Context, res *api.
 
 	if res.IsPrimary != nil {
 		model.IsPrimary = types.BoolValue(*res.IsPrimary)
-	}
-
-	// Auto-detect fields are Optional (not Computed) and primary-only; refresh them from the
-	// response only when the user is already managing them, so an absent/empty backend value
-	// never turns a null config into a spurious diff.
-	if res.IsAutoDetectEnabled != nil && !model.IsAutoDetectEnabled.IsNull() && !model.IsAutoDetectEnabled.IsUnknown() {
-		model.IsAutoDetectEnabled = types.BoolValue(*res.IsAutoDetectEnabled)
-	}
-
-	if !model.AutoDetectionOrganizationID.IsNull() && !model.AutoDetectionOrganizationID.IsUnknown() {
-		// autoDetectionOrganizationId is returned nested under organization/folder.
-		autoDetectionOrgID := ""
-		if res.Organization != nil && res.Organization.AutoDetectionOrganizationId != "" {
-			autoDetectionOrgID = res.Organization.AutoDetectionOrganizationId
-		} else if res.Folder != nil && res.Folder.AutoDetectionOrganizationId != "" {
-			autoDetectionOrgID = res.Folder.AutoDetectionOrganizationId
-		}
-		if autoDetectionOrgID != "" {
-			model.AutoDetectionOrganizationID = types.StringValue(autoDetectionOrgID)
-		}
 	}
 }

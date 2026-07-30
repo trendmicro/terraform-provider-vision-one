@@ -952,7 +952,16 @@ func (r *ServiceAccountIntegration) reconcileNodeScanRoles(ctx context.Context, 
 			return out, nil
 		}
 		if d := list.ElementsAs(ctx, &out, false); d.HasError() {
-			return nil, fmt.Errorf("could not read node scan roles")
+			var msgs []string
+			for _, diagnostic := range d {
+				if diagnostic.Summary() != "" {
+					msgs = append(msgs, diagnostic.Summary())
+				}
+				if diagnostic.Detail() != "" {
+					msgs = append(msgs, diagnostic.Detail())
+				}
+			}
+			return nil, fmt.Errorf("could not read node scan roles: %s", strings.Join(msgs, "; "))
 		}
 		return out, nil
 	}
