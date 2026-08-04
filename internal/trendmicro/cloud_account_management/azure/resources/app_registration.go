@@ -405,6 +405,8 @@ func getIssuerURL(deployRegion string) string {
 		return "https://cloudaccounts-za.xdr.trendmicro.com"
 	case "id":
 		return "https://cloudaccounts-id.xdr.trendmicro.com"
+	case "br":
+		return "https://cloudaccounts-br.xdr.trendmicro.com"
 	default:
 		return "https://cloudaccounts-us.xdr.trendmicro.com"
 	}
