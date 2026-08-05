@@ -483,6 +483,7 @@ func (r *ServiceAccountIntegration) Create(ctx context.Context, req resource.Cre
 		bindMu          sync.Mutex
 		bindWg          sync.WaitGroup
 		boundProjectIds []string
+		bindFailures    = map[string][]string{}
 	)
 	sem := cam.GCPServiceAccountSem
 	for _, targetProjectID := range targetProjects {
@@ -494,6 +495,7 @@ func (r *ServiceAccountIntegration) Create(ctx context.Context, req resource.Cre
 
 			tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Create] Adding service account %s as principal to project: %s", sa.Email, projID))
 			projectBound := false
+			var roleErrs []string
 			for _, roleName := range roleNames {
 				actualRoleName := roleName
 
@@ -513,6 +515,7 @@ func (r *ServiceAccountIntegration) Create(ctx context.Context, req resource.Cre
 								tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Create] Using replicated custom role %s for project %s", actualRoleName, projID))
 							} else {
 								tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Create] Custom role was not replicated to project %s, skipping binding", projID))
+								roleErrs = append(roleErrs, fmt.Sprintf("%s: custom role was not replicated to this project", roleName))
 								continue
 							}
 						}
@@ -522,20 +525,52 @@ func (r *ServiceAccountIntegration) Create(ctx context.Context, req resource.Cre
 				bindErr := AddIAMBinding(ctx, gcpClients, projID, member, actualRoleName)
 				if bindErr != nil {
 					tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Create] Failed to add IAM binding for role %s to project %s: %s", actualRoleName, projID, bindErr.Error()))
+					roleErrs = append(roleErrs, fmt.Sprintf("%s: %s", actualRoleName, bindErr.Error()))
 					continue
 				}
 				projectBound = true
 				tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Create] IAM binding for role %s added to project: %s", actualRoleName, projID))
 			}
+			bindMu.Lock()
 			if projectBound {
-				bindMu.Lock()
 				boundProjectIds = append(boundProjectIds, projID)
-				bindMu.Unlock()
 				tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Create] Successfully added service account as principal to project: %s", projID))
+			} else if len(roleErrs) > 0 {
+				bindFailures[projID] = roleErrs
 			}
+			bindMu.Unlock()
 		}(targetProjectID)
 	}
 	bindWg.Wait()
+
+	if roleErrs, primaryFailed := bindFailures[projectID]; primaryFailed {
+		resp.Diagnostics.AddError(
+			"[Service Account Key][Create] Failed to bind any role to the primary project",
+			fmt.Sprintf("Service account %s was created but could not be granted any of its roles on project %s:\n\n  - %s\n\n"+
+				"The service account is therefore not a principal on the project, which will surface later as an empty bound_projects "+
+				"or as an IAM permission timeout in dependent resources.",
+				sa.Email, projectID, strings.Join(roleErrs, "\n  - ")),
+		)
+		return
+	}
+	if len(bindFailures) > 0 {
+		failedProjects := make([]string, 0, len(bindFailures))
+		for projID := range bindFailures {
+			failedProjects = append(failedProjects, projID)
+		}
+		slices.Sort(failedProjects)
+		tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Create] No roles could be bound on %d secondary project(s), continuing: %s",
+			len(failedProjects), strings.Join(failedProjects, ", ")))
+	}
+
+	if len(boundProjectIds) == 0 {
+		resp.Diagnostics.AddError(
+			"[Service Account Key][Create] No projects were bound to the service account",
+			fmt.Sprintf("Service account %s was created but bound to no projects, so bound_projects and bound_project_numbers would be empty. Expected at least project %s.",
+				sa.Email, projectID),
+		)
+		return
+	}
 
 	// Bind primary project roles to the primary project only (serial, no replication)
 	for _, primaryRoleName := range primaryRoleNames {
@@ -644,12 +679,17 @@ func (r *ServiceAccountIntegration) Create(ctx context.Context, req resource.Cre
 	plan.BoundProjects = boundProjectsList
 
 	// Resolve project numbers for bound projects
-	projectNumberMap := r.resolveProjectNumbers(ctx, gcpClients, boundProjectIds)
-	var boundProjectNumbers []string
+	projectNumberMap, err := r.resolveProjectNumbers(ctx, gcpClients, boundProjectIds)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"[Service Account Key][Create] Failed to resolve bound project numbers",
+			err.Error(),
+		)
+		return
+	}
+	boundProjectNumbers := make([]string, 0, len(boundProjectIds))
 	for _, pid := range boundProjectIds {
-		if num, ok := projectNumberMap[pid]; ok {
-			boundProjectNumbers = append(boundProjectNumbers, num)
-		}
+		boundProjectNumbers = append(boundProjectNumbers, projectNumberMap[pid])
 	}
 	boundProjectNumbersList, diags := types.ListValueFrom(ctx, types.StringType, boundProjectNumbers)
 	if diags.HasError() {
@@ -844,8 +884,20 @@ func (r *ServiceAccountIntegration) Read(ctx context.Context, req resource.ReadR
 			continue
 		}
 		currentBoundProjects = append(currentBoundProjects, result.projectID)
-		if result.projectNumber != "" {
-			currentBoundProjectNumbers = append(currentBoundProjectNumbers, result.projectNumber)
+		currentBoundProjectNumbers = append(currentBoundProjectNumbers, result.projectNumber)
+	}
+
+	if slices.Contains(currentBoundProjectNumbers, "") {
+		tflog.Info(ctx, "[Service Account Key][Read] Re-resolving project number(s) missing from state")
+		resolved, resolveErr := r.resolveProjectNumbers(ctx, gcpClients, currentBoundProjects)
+		if resolveErr != nil {
+			tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Read] Could not resolve missing project number(s): %s", resolveErr))
+		} else {
+			for i, projID := range currentBoundProjects {
+				if currentBoundProjectNumbers[i] == "" {
+					currentBoundProjectNumbers[i] = resolved[projID]
+				}
+			}
 		}
 	}
 
@@ -1142,8 +1194,8 @@ func (r *ServiceAccountIntegration) Update(ctx context.Context, req resource.Upd
 
 						tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Update] Removing service account principal from project: %s", projID))
 						for _, roleName := range roleNames {
-							if err := RemoveIAMBinding(ctx, gcpClients, projID, member, roleName); err != nil {
-								tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Update] Failed to remove binding for role %s from project %s: %s", roleName, projID, err.Error()))
+							if bindErr := RemoveIAMBinding(ctx, gcpClients, projID, member, roleName); bindErr != nil {
+								tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Update] Failed to remove binding for role %s from project %s: %s", roleName, projID, bindErr.Error()))
 							}
 						}
 					}(proj)
@@ -1166,8 +1218,8 @@ func (r *ServiceAccountIntegration) Update(ctx context.Context, req resource.Upd
 
 						tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Update] Adding service account principal to project: %s", projID))
 						for _, roleName := range roleNames {
-							if err := AddIAMBinding(ctx, gcpClients, projID, member, roleName); err != nil {
-								tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Update] Failed to add binding for role %s to project %s: %s", roleName, projID, err.Error()))
+							if bindErr := AddIAMBinding(ctx, gcpClients, projID, member, roleName); bindErr != nil {
+								tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Update] Failed to add binding for role %s to project %s: %s", roleName, projID, bindErr.Error()))
 							}
 						}
 					}(proj)
@@ -1183,13 +1235,17 @@ func (r *ServiceAccountIntegration) Update(ctx context.Context, req resource.Upd
 		}
 		plan.BoundProjects = boundProjectsList
 
-		// Resolve project numbers for new target projects
-		projectNumberMap := r.resolveProjectNumbers(ctx, gcpClients, newTargetProjects)
-		var newProjectNumbers []string
+		projectNumberMap, err := r.resolveProjectNumbers(ctx, gcpClients, newTargetProjects)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"[Service Account Key][Update] Failed to resolve bound project numbers",
+				err.Error(),
+			)
+			return
+		}
+		newProjectNumbers := make([]string, 0, len(newTargetProjects))
 		for _, pid := range newTargetProjects {
-			if num, ok := projectNumberMap[pid]; ok {
-				newProjectNumbers = append(newProjectNumbers, num)
-			}
+			newProjectNumbers = append(newProjectNumbers, projectNumberMap[pid])
 		}
 		boundProjectNumbersList, diags := types.ListValueFrom(ctx, types.StringType, newProjectNumbers)
 		if diags.HasError() {
@@ -1654,9 +1710,9 @@ func (r *ServiceAccountIntegration) discoverTargetProjects(
 	return targetProjects, nil
 }
 
-// resolveProjectNumbers looks up the GCP project number for each project ID.
-func (r *ServiceAccountIntegration) resolveProjectNumbers(ctx context.Context, gcpClients *api.GCPClients, projectIDs []string) map[string]string {
+func (r *ServiceAccountIntegration) resolveProjectNumbers(ctx context.Context, gcpClients *api.GCPClients, projectIDs []string) (map[string]string, error) {
 	result := make(map[string]string)
+	failures := make(map[string]error)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := cam.GCPServiceAccountSem
@@ -1667,16 +1723,51 @@ func (r *ServiceAccountIntegration) resolveProjectNumbers(ctx context.Context, g
 			sem <- struct{}{}        // acquire slot
 			defer func() { <-sem }() // release slot
 
-			proj, err := gcpClients.CRMClient.Projects.Get(projectID).Context(ctx).Do()
+			var proj *cloudresourcemanager.Project
+			var err error
+			deadline := time.Now().Add(gcpKeyPropagationWaitTimeout)
+			for attempt := 1; ; attempt++ {
+				proj, err = gcpClients.CRMClient.Projects.Get(projectID).Context(ctx).Do()
+				if err == nil {
+					break
+				}
+				if !isGCPKeyPropagationError(err) || time.Now().After(deadline) {
+					break
+				}
+				tflog.Debug(ctx, fmt.Sprintf("[Service Account Key] Project %s not readable yet (attempt %d), retrying in %s: %s",
+					projectID, attempt, gcpKeyPropagationPollInterval, err))
+				select {
+				case <-ctx.Done():
+					err = ctx.Err()
+				case <-time.After(gcpKeyPropagationPollInterval):
+					continue
+				}
+				break
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
 			if err != nil {
-				tflog.Warn(ctx, fmt.Sprintf("[Service Account Key] Failed to get project number for %s: %s", projectID, err.Error()))
+				failures[projectID] = err
 				return
 			}
-			mu.Lock()
 			result[projectID] = fmt.Sprintf("%d", proj.ProjectNumber)
-			mu.Unlock()
 		}(pid)
 	}
 	wg.Wait()
-	return result
+
+	if len(failures) > 0 {
+		ids := make([]string, 0, len(failures))
+		for id := range failures {
+			ids = append(ids, id)
+		}
+		slices.Sort(ids)
+		details := make([]string, 0, len(ids))
+		for _, id := range ids {
+			details = append(details, fmt.Sprintf("%s: %s", id, failures[id]))
+		}
+		return nil, fmt.Errorf("could not resolve the project number for %d of %d bound project(s): %s",
+			len(failures), len(projectIDs), strings.Join(details, "; "))
+	}
+	return result, nil
 }

@@ -42,7 +42,7 @@ const (
 )
 
 type avtdRegionCleanupOptions struct {
-	ProjectID string
+	ProjectID              string
 	CustomerProjectID      string
 	Region                 string
 	Prefixes               []string
@@ -672,6 +672,16 @@ func probeForLegacyAVTDResources(ctx context.Context, projectID, region string, 
 	return false
 }
 
+func summarisePermissions(perms []string, limit int) string {
+	if len(perms) == 0 {
+		return "none"
+	}
+	if len(perms) <= limit {
+		return strings.Join(perms, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(perms[:limit], ", "), len(perms)-limit)
+}
+
 func waitForCleanupPermsReady(ctx context.Context, projectID string, opts ...option.ClientOption) error {
 	required := camconfig.FEATURE_PERMISSIONS[camconfig.FEATURE_CLOUD_SENTRY]
 	if len(required) == 0 {
@@ -685,6 +695,8 @@ func waitForCleanupPermsReady(ctx context.Context, projectID string, opts ...opt
 	deadline := time.Now().Add(cleanupPermsWaitMaxDuration)
 	backoff := cleanupPermsPollStart
 	attempt := 0
+	var lastMissing []string
+
 	for {
 		attempt++
 		resp, callErr := crmSvc.Projects.TestIamPermissions(projectID, &crm.TestIamPermissionsRequest{
@@ -706,6 +718,7 @@ func waitForCleanupPermsReady(ctx context.Context, projectID string, opts ...opt
 				tflog.Info(ctx, fmt.Sprintf("[AVTD Region Cleanup] central IAM ready on %s — all %d cleanup perms granted (attempt %d)", projectID, len(required), attempt))
 				return nil
 			}
+			lastMissing = missing
 			tflog.Warn(ctx, fmt.Sprintf("[AVTD Region Cleanup] IAM not ready on %s: %d/%d granted, %d missing (e.g. %s) — attempt %d", projectID, len(required)-len(missing), len(required), len(missing), missing[0], attempt))
 		} else {
 			tflog.Warn(ctx, fmt.Sprintf("[AVTD Region Cleanup] testIamPermissions on %s failed (attempt %d): %v — will retry", projectID, attempt, callErr))
@@ -716,7 +729,13 @@ func waitForCleanupPermsReady(ctx context.Context, projectID string, opts ...opt
 			if callErr != nil {
 				return fmt.Errorf("IAM propagation timeout on project %s after %s — testIamPermissions kept failing: %w", projectID, cleanupPermsWaitMaxDuration, callErr)
 			}
-			return fmt.Errorf("IAM propagation timeout on project %s after %s — CAM SA still missing cleanup perms (verify visionone_cam_iam_custom_role.avtd_feature + google_project_iam_member.avtd_feature_binding succeeded)", projectID, cleanupPermsWaitMaxDuration)
+			granted := len(required) - len(lastMissing)
+			hint := "check that the CAM service account's role bindings on this project were created"
+			if granted == 0 {
+				hint = fmt.Sprintf("none of the required permissions are granted, so the CAM service account has no effective role binding on this project at all — inspect `gcloud projects get-iam-policy %s` rather than the permission set", projectID)
+			}
+			return fmt.Errorf("IAM propagation timeout on project %s after %s — CAM SA has %d/%d cleanup permissions (missing: %s); %s",
+				projectID, cleanupPermsWaitMaxDuration, granted, len(required), summarisePermissions(lastMissing, 5), hint)
 		}
 		wait := backoff
 		if wait > remaining {

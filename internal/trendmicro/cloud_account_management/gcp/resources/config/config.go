@@ -173,12 +173,14 @@ var FEATURE_PERMISSIONS = map[string][]string{
 		"cloudbuild.builds.list",
 		"cloudbuild.builds.update",
 		"resourcemanager.projects.get",
+		"serviceusage.services.use",
 	},
 }
 
 // Separate from FEATURE_PERMISSIONS so the read-only scan role can never gain deploy/write perms.
 var SCAN_FEATURE_PERMISSIONS = map[string][]string{
 	FEATURE_DATA_SECURITY_POSTURE_MANAGEMENT: {},
+	FEATURE_CLOUD_SENTRY:                     {},
 }
 
 // GCP required API services to enable; extend when new features need additional services.

@@ -34,6 +34,12 @@ const (
 
 	gcpProjectConnectMaxAttempts  = 3
 	gcpProjectConnectRetryBackoff = 30 * time.Second
+
+	gcpKeyPropagationWaitTimeout  = 90 * time.Second
+	gcpKeyPropagationPollInterval = 10 * time.Second
+
+	gcpPrincipalPropagationWaitTimeout  = 90 * time.Second
+	gcpPrincipalPropagationPollInterval = 5 * time.Second
 )
 
 type gcpServiceAccountKeyPayload struct {
@@ -41,9 +47,28 @@ type gcpServiceAccountKeyPayload struct {
 	ProjectID   string `json:"project_id"`
 }
 
-// isPrimaryFromKey derives the is_primary value by looking up the GCP project number
-// for the project_id embedded in the service account key and comparing it to projectNumber.
-// Returns true when they match, false when they differ, and nil when no key is provided.
+func isGCPKeyPropagationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "invalid_grant") && strings.Contains(msg, "invalid jwt signature")
+}
+
+func isGCPPrincipalPropagationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	invalidArg := strings.Contains(msg, "invalid_argument") || strings.Contains(msg, "400")
+	if !invalidArg {
+		return false
+	}
+	return strings.Contains(msg, "does not exist") ||
+		strings.Contains(msg, "does not have any resources") ||
+		strings.Contains(msg, "unknown principal")
+}
+
 func isPrimaryFromKey(ctx context.Context, encodedKey, projectNumber string) (*bool, error) {
 	if encodedKey == "" {
 		return nil, nil
@@ -69,9 +94,24 @@ func isPrimaryFromKey(ctx context.Context, encodedKey, projectNumber string) (*b
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Cloud Resource Manager client: %w", err)
 	}
-	project, err := crmClient.Projects.Get(payload.ProjectID).Context(ctx).Do()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get project %s: %w", payload.ProjectID, err)
+	var project *cloudresourcemanager.Project
+	deadline := time.Now().Add(gcpKeyPropagationWaitTimeout)
+	for attempt := 1; ; attempt++ {
+		project, err = crmClient.Projects.Get(payload.ProjectID).Context(ctx).Do()
+		if err == nil {
+			break
+		}
+		if !isGCPKeyPropagationError(err) || time.Now().After(deadline) {
+			return nil, fmt.Errorf("failed to get project %s: %w", payload.ProjectID, err)
+		}
+		tflog.Debug(ctx, fmt.Sprintf(
+			"[CAM Connector GCP] service account key not yet usable (attempt %d), retrying in %s: %s",
+			attempt, gcpKeyPropagationPollInterval, err))
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(gcpKeyPropagationPollInterval):
+		}
 	}
 
 	v := fmt.Sprintf("%d", project.ProjectNumber) == projectNumber
@@ -149,12 +189,6 @@ func waitForGCPServiceAccountKeyReady(ctx context.Context, encodedKey string) (s
 	}
 }
 
-// waitForGCPServiceAccountIAMReady waits until the service account key can both
-// mint a token AND call a GCP API that requires an IAM role binding. This is
-// stronger than waitForGCPServiceAccountKeyReady because token minting succeeds
-// immediately after key creation, while IAM binding propagation takes 30–120 s.
-// CAM's connectivity check requires IAM-authorized API calls, so sending a PATCH
-// before IAM is ready causes the project to go disconnected.
 func waitForGCPServiceAccountIAMReady(ctx context.Context, encodedKey, projectID string) (string, error) {
 	email, err := waitForGCPServiceAccountKeyReady(ctx, encodedKey)
 	if err != nil {
@@ -202,15 +236,6 @@ func waitForGCPServiceAccountIAMReady(ctx context.Context, encodedKey, projectID
 	}
 }
 
-// waitForGCPProjectConnected polls the CAM API until the project reaches
-// "connected" state. This is needed after a PATCH that changes the service
-// account key: CAM verifies connectivity asynchronously using GCP API calls
-// that require IAM role bindings, which can take up to ~2 minutes to propagate.
-// Returning as soon as state == "connected" avoids the race where the caller
-// reads a stale "disconnected" result and records it in Terraform state.
-// projectNotConnectedError marks the case where a project is reachable but has
-// not reached a connected state within the poll window. It is retryable: the
-// retry loop re-issues the onboard, other errors abort immediately.
 type projectNotConnectedError struct {
 	projectNumber string
 	timeout       time.Duration
@@ -616,6 +641,7 @@ func RetryIAMPolicyUpdate(
 	modifyFunc func(*cloudresourcemanager.Policy) error,
 ) error {
 	resource := projectID
+	principalDeadline := time.Now().Add(gcpPrincipalPropagationWaitTimeout)
 
 	for attempt := 0; attempt < config.IAM_POLICY_MAX_RETRIES; attempt++ {
 		// Get current policy
@@ -647,6 +673,18 @@ func RetryIAMPolicyUpdate(
 				tflog.Debug(ctx, fmt.Sprintf("[Service Account Key] IAM policy conflict, retrying in %v (attempt %d/%d)",
 					waitTime, attempt+1, config.IAM_POLICY_MAX_RETRIES))
 				time.Sleep(waitTime)
+				continue
+			}
+
+			if isGCPPrincipalPropagationError(err) && time.Now().Before(principalDeadline) {
+				tflog.Debug(ctx, fmt.Sprintf("[Service Account Key] Principal not visible on %s yet, retrying in %v: %s",
+					resource, gcpPrincipalPropagationPollInterval, err))
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(gcpPrincipalPropagationPollInterval):
+				}
+				attempt--
 				continue
 			}
 			return fmt.Errorf("failed to set IAM policy: %w", err)
