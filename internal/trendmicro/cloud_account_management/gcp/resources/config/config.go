@@ -131,6 +131,7 @@ var FEATURE_PERMISSIONS = map[string][]string{
 		"monitoring.alertPolicies.delete",
 		"monitoring.dashboards.delete",
 		"run.services.delete",
+		"serviceusage.services.use",
 		"storage.buckets.delete",
 		"storage.objects.delete",
 		"vpcaccess.connectors.delete",
