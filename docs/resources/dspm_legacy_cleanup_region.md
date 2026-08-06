@@ -146,3 +146,4 @@ The authenticating principal must have GCP permissions to delete the legacy DSPM
 - `logging.sinks.{list,delete}`
 - `monitoring.alertPolicies.{list,delete}`, `monitoring.dashboards.{list,delete}`
 - `iam.serviceAccounts.{get,delete}`, `iam.serviceAccountKeys.{list,delete}` (only exercised when `is_primary_project = true`)
+- `serviceusage.services.use`
