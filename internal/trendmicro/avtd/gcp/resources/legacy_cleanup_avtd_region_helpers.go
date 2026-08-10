@@ -169,8 +169,43 @@ func noteErr(ctx context.Context, family, name string, err error) string {
 	if err == nil || isGCPNotFound(err) || isRegionUnsupported(err) {
 		return ""
 	}
-	tflog.Warn(ctx, fmt.Sprintf("[AVTD Region Cleanup] %s/%s failed: %v", family, name, err))
-	return fmt.Sprintf("%s/%s: %v", family, name, err)
+	detail := describeGCPError(err)
+	tflog.Warn(ctx, fmt.Sprintf("[AVTD Region Cleanup] %s/%s failed: %s", family, name, detail))
+	return fmt.Sprintf("%s/%s: %s", family, name, detail)
+}
+
+func describeGCPError(err error) string {
+	var gErr *googleapi.Error
+	if !errors.As(err, &gErr) || len(gErr.Details) == 0 {
+		return err.Error()
+	}
+
+	seen := make(map[string]struct{}, len(gErr.Details))
+	notes := make([]string, 0, len(gErr.Details))
+	for _, detail := range gErr.Details {
+		fields, ok := detail.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		reason, _ := fields["reason"].(string)
+		if reason == "" {
+			continue
+		}
+		note := reason
+		if domain, _ := fields["domain"].(string); domain != "" {
+			note = fmt.Sprintf("%s (%s)", reason, domain)
+		}
+		if _, dup := seen[note]; dup {
+			continue
+		}
+		seen[note] = struct{}{}
+		notes = append(notes, note)
+	}
+
+	if len(notes) == 0 {
+		return err.Error()
+	}
+	return fmt.Sprintf("%v [%s]", err, strings.Join(notes, "; "))
 }
 
 func cleanupEventarcTriggers(ctx context.Context, opts avtdRegionCleanupOptions, tally map[string]int) []string {
@@ -188,7 +223,10 @@ func cleanupEventarcTriggers(ctx context.Context, opts avtdRegionCleanupOptions,
 		if !matchesAnyPrefix(t.Name, opts.Prefixes) {
 			continue
 		}
-		_, delErr := svc.Projects.Locations.Triggers.Delete(t.Name).Context(ctx).Do()
+		delErr := deleteWithRetry(ctx, t.Name, func() error {
+			_, err := svc.Projects.Locations.Triggers.Delete(t.Name).Context(ctx).Do()
+			return err
+		})
 		if delErr == nil || isGCPNotFound(delErr) {
 			tally["triggers"]++
 			continue
@@ -212,7 +250,10 @@ func cleanupCloudRun(ctx context.Context, opts avtdRegionCleanupOptions, tally m
 			if !matchesAnyPrefix(s.Name, opts.Prefixes) {
 				continue
 			}
-			_, delErr := svc.Projects.Locations.Services.Delete(s.Name).Context(ctx).Do()
+			delErr := deleteWithRetry(ctx, s.Name, func() error {
+				_, err := svc.Projects.Locations.Services.Delete(s.Name).Context(ctx).Do()
+				return err
+			})
 			if delErr == nil || isGCPNotFound(delErr) {
 				tally["run_services"]++
 				continue
@@ -227,7 +268,10 @@ func cleanupCloudRun(ctx context.Context, opts avtdRegionCleanupOptions, tally m
 			if !matchesAnyPrefix(j.Name, opts.Prefixes) {
 				continue
 			}
-			_, delErr := svc.Projects.Locations.Jobs.Delete(j.Name).Context(ctx).Do()
+			delErr := deleteWithRetry(ctx, j.Name, func() error {
+				_, err := svc.Projects.Locations.Jobs.Delete(j.Name).Context(ctx).Do()
+				return err
+			})
 			if delErr == nil || isGCPNotFound(delErr) {
 				tally["run_jobs"]++
 				continue
@@ -260,7 +304,10 @@ func cleanupSchedulerJobs(ctx context.Context, opts avtdRegionCleanupOptions, ta
 
 	var errs []string
 	for _, name := range jobNames {
-		_, delErr := svc.Projects.Locations.Jobs.Delete(name).Context(ctx).Do()
+		delErr := deleteWithRetry(ctx, name, func() error {
+			_, err := svc.Projects.Locations.Jobs.Delete(name).Context(ctx).Do()
+			return err
+		})
 		if delErr == nil || isGCPNotFound(delErr) {
 			tally["schedulers"]++
 			continue
@@ -284,7 +331,10 @@ func cleanupPubSub(ctx context.Context, opts avtdRegionCleanupOptions, tally map
 			if !matchesAnyPrefix(s.Name, opts.Prefixes) {
 				continue
 			}
-			_, delErr := svc.Projects.Subscriptions.Delete(s.Name).Context(ctx).Do()
+			delErr := deleteWithRetry(ctx, s.Name, func() error {
+				_, err := svc.Projects.Subscriptions.Delete(s.Name).Context(ctx).Do()
+				return err
+			})
 			if delErr == nil || isGCPNotFound(delErr) {
 				tally["subscriptions"]++
 				continue
@@ -299,7 +349,10 @@ func cleanupPubSub(ctx context.Context, opts avtdRegionCleanupOptions, tally map
 			if !matchesAnyPrefix(t.Name, opts.Prefixes) {
 				continue
 			}
-			_, delErr := svc.Projects.Topics.Delete(t.Name).Context(ctx).Do()
+			delErr := deleteWithRetry(ctx, t.Name, func() error {
+				_, err := svc.Projects.Topics.Delete(t.Name).Context(ctx).Do()
+				return err
+			})
 			if delErr == nil || isGCPNotFound(delErr) {
 				tally["topics"]++
 				continue
@@ -325,7 +378,10 @@ func cleanupWorkflows(ctx context.Context, opts avtdRegionCleanupOptions, tally 
 		if !matchesAnyPrefix(w.Name, opts.Prefixes) {
 			continue
 		}
-		_, delErr := svc.Projects.Locations.Workflows.Delete(w.Name).Context(ctx).Do()
+		delErr := deleteWithRetry(ctx, w.Name, func() error {
+			_, err := svc.Projects.Locations.Workflows.Delete(w.Name).Context(ctx).Do()
+			return err
+		})
 		if delErr == nil || isGCPNotFound(delErr) {
 			tally["workflows"]++
 			continue
@@ -351,7 +407,10 @@ func cleanupLoggingSinks(ctx context.Context, opts avtdRegionCleanupOptions, tal
 			continue
 		}
 		sinkName := fmt.Sprintf("%s/sinks/%s", projParent, s.Name)
-		_, delErr := svc.Projects.Sinks.Delete(sinkName).Context(ctx).Do()
+		delErr := deleteWithRetry(ctx, sinkName, func() error {
+			_, err := svc.Projects.Sinks.Delete(sinkName).Context(ctx).Do()
+			return err
+		})
 		if delErr == nil || isGCPNotFound(delErr) {
 			tally["sinks"]++
 			continue
@@ -376,7 +435,10 @@ func cleanupSecrets(ctx context.Context, opts avtdRegionCleanupOptions, tally ma
 		if !matchesAnyPrefix(s.Name, opts.Prefixes) {
 			continue
 		}
-		_, delErr := svc.Projects.Secrets.Delete(s.Name).Context(ctx).Do()
+		delErr := deleteWithRetry(ctx, s.Name, func() error {
+			_, err := svc.Projects.Secrets.Delete(s.Name).Context(ctx).Do()
+			return err
+		})
 		if delErr == nil || isGCPNotFound(delErr) {
 			tally["secrets"]++
 			continue
@@ -405,7 +467,12 @@ func cleanupNetworking(ctx context.Context, opts avtdRegionCleanupOptions, tally
 			if !matchesAnyPrefix(fw.Name, opts.Prefixes) {
 				continue
 			}
-			op, delErr := svc.Firewalls.Delete(opts.ProjectID, fw.Name).Context(ctx).Do()
+			var op *compute.Operation
+			delErr := deleteWithRetry(ctx, fw.Name, func() error {
+				var err error
+				op, err = svc.Firewalls.Delete(opts.ProjectID, fw.Name).Context(ctx).Do()
+				return err
+			})
 			if delErr != nil && !isGCPNotFound(delErr) {
 				errs = append(errs, noteErr(ctx, "firewall", fw.Name, delErr))
 				continue
@@ -424,7 +491,12 @@ func cleanupNetworking(ctx context.Context, opts avtdRegionCleanupOptions, tally
 			if !matchesAnyPrefix(sn.Name, opts.Prefixes) {
 				continue
 			}
-			op, delErr := svc.Subnetworks.Delete(opts.ProjectID, opts.Region, sn.Name).Context(ctx).Do()
+			var op *compute.Operation
+			delErr := deleteWithRetry(ctx, sn.Name, func() error {
+				var err error
+				op, err = svc.Subnetworks.Delete(opts.ProjectID, opts.Region, sn.Name).Context(ctx).Do()
+				return err
+			})
 			if delErr != nil && !isGCPNotFound(delErr) {
 				errs = append(errs, noteErr(ctx, "subnet", sn.Name, delErr))
 				continue
@@ -443,7 +515,12 @@ func cleanupNetworking(ctx context.Context, opts avtdRegionCleanupOptions, tally
 			if !matchesAnyPrefix(nw.Name, opts.Prefixes) {
 				continue
 			}
-			op, delErr := svc.Networks.Delete(opts.ProjectID, nw.Name).Context(ctx).Do()
+			var op *compute.Operation
+			delErr := deleteWithRetry(ctx, nw.Name, func() error {
+				var err error
+				op, err = svc.Networks.Delete(opts.ProjectID, nw.Name).Context(ctx).Do()
+				return err
+			})
 			if delErr != nil && !isGCPNotFound(delErr) {
 				errs = append(errs, noteErr(ctx, "network", nw.Name, delErr))
 				continue
@@ -483,7 +560,11 @@ func cleanupFirestore(ctx context.Context, opts avtdRegionCleanupOptions, tally 
 			continue
 		}
 
-		if delErr := deleteFirestoreDBWithRetry(ctx, svc, db.Name); delErr != nil {
+		delErr := deleteWithRetry(ctx, db.Name, func() error {
+			_, err := svc.Projects.Databases.Delete(db.Name).Context(ctx).Do()
+			return err
+		})
+		if delErr != nil && !isGCPNotFound(delErr) {
 			errs = append(errs, noteErr(ctx, "firestore_database", db.Name, delErr))
 			continue
 		}
@@ -493,40 +574,88 @@ func cleanupFirestore(ctx context.Context, opts avtdRegionCleanupOptions, tally 
 }
 
 const (
-	firestoreDeleteMaxAttempts = 6
-	firestoreDeleteRetryStart  = 3 * time.Second
-	firestoreDeleteRetryCap    = 20 * time.Second
+	deleteDeniedMaxAttempts = 6
+	deleteDeniedRetryStart  = 2 * time.Second
+	deleteDeniedRetryLimit  = 30 * time.Second
+
+	deleteConcurrentMaxAttempts = 6
+	deleteConcurrentRetryStart  = 3 * time.Second
+	deleteConcurrentRetryLimit  = 20 * time.Second
 )
 
-func deleteFirestoreDBWithRetry(ctx context.Context, svc *firestore.Service, dbName string) error {
-	backoff := firestoreDeleteRetryStart
-	var lastErr error
-	for attempt := 1; attempt <= firestoreDeleteMaxAttempts; attempt++ {
-		_, err := svc.Projects.Databases.Delete(dbName).Context(ctx).Do()
+func deleteWithRetry(ctx context.Context, label string, del func() error) error {
+	var deniedAttempts, concurrentAttempts int
+
+	for {
+		err := del()
 		if err == nil || isGCPNotFound(err) {
-			return nil
-		}
-		if !isFirestoreConcurrentChange(err) {
 			return err
 		}
-		lastErr = err
-		tflog.Warn(ctx, fmt.Sprintf(
-			"[AVTD Region Cleanup] Firestore delete %s hit a concurrent-change 409 (attempt %d/%d); retrying in %s",
-			dbName, attempt, firestoreDeleteMaxAttempts, backoff,
-		))
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(backoff):
+
+		var (
+			wait time.Duration
+			kind string
+		)
+		switch {
+		case isPermissionDenied(err):
+			deniedAttempts++
+			if deniedAttempts >= deleteDeniedMaxAttempts {
+				return err
+			}
+			kind = "permission-denied 403"
+			wait = retryBackoff(deniedAttempts, deleteDeniedRetryStart, deleteDeniedRetryLimit)
+		case isConcurrentChange(err):
+			concurrentAttempts++
+			if concurrentAttempts >= deleteConcurrentMaxAttempts {
+				return err
+			}
+			kind = "concurrent-change 409"
+			wait = retryBackoff(concurrentAttempts, deleteConcurrentRetryStart, deleteConcurrentRetryLimit)
+		default:
+			return err
 		}
-		if backoff = time.Duration(float64(backoff) * 2); backoff > firestoreDeleteRetryCap {
-			backoff = firestoreDeleteRetryCap
+
+		tflog.Warn(ctx, fmt.Sprintf(
+			"[AVTD Region Cleanup] delete %s hit a %s; retrying in %s", label, kind, wait,
+		))
+		if sleepErr := sleepBeforeRetry(ctx, wait); sleepErr != nil {
+			return sleepErr
 		}
 	}
-	return lastErr
 }
 
-func isFirestoreConcurrentChange(err error) bool {
+var sleepBeforeRetry = func(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
+}
+
+func retryBackoff(attempt int, start, limit time.Duration) time.Duration {
+	d := start
+	for i := 1; i < attempt; i++ {
+		d *= 2
+		if d >= limit {
+			return limit
+		}
+	}
+	return d
+}
+
+func isPermissionDenied(err error) bool {
+	if err == nil {
+		return false
+	}
+	var gErr *googleapi.Error
+	if errors.As(err, &gErr) {
+		return gErr.Code == 403
+	}
+	return false
+}
+
+func isConcurrentChange(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -888,6 +1017,14 @@ func buildWarmupProbes(ctx context.Context, projectID, region string, opts ...op
 			_, err = svc.Projects.Secrets.Delete(fmt.Sprintf("%s/secrets/%s", projParent, suffix)).Context(ctx).Do()
 			return err
 		}},
+		{"datastore.databases.delete", func() error {
+			svc, err := firestore.NewService(ctx, opts...)
+			if err != nil {
+				return err
+			}
+			_, err = svc.Projects.Databases.Delete(fmt.Sprintf("%s/databases/%s", projParent, suffix)).Context(ctx).Do()
+			return err
+		}},
 		{"storage.buckets.delete", func() error {
 			svc, err := storagev1.NewService(ctx, opts...)
 			if err != nil {
@@ -958,7 +1095,9 @@ func deleteGCSBucketIfExists(ctx context.Context, svc *storagev1.Service, bucket
 			}
 			return false, err
 		}
-		err := svc.Buckets.Delete(bucketName).Context(ctx).Do()
+		err := deleteWithRetry(ctx, bucketName, func() error {
+			return svc.Buckets.Delete(bucketName).Context(ctx).Do()
+		})
 		if err == nil {
 			return true, nil
 		}
