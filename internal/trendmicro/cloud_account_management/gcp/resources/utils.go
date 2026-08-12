@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/api"
-	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/resources/config"
+	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/api"
+	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/resources/config"
 
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"golang.org/x/oauth2/google"
@@ -31,9 +31,6 @@ const (
 	gcpProjectConnectedWaitInterval   = 10 * time.Second
 	gcpProjectConnectedWaitTimeout    = 5 * time.Minute
 	gcpCloudPlatformScope             = "https://www.googleapis.com/auth/cloud-platform"
-
-	gcpProjectConnectMaxAttempts  = 3
-	gcpProjectConnectRetryBackoff = 30 * time.Second
 
 	gcpKeyPropagationWaitTimeout  = 90 * time.Second
 	gcpKeyPropagationPollInterval = 10 * time.Second
@@ -94,6 +91,8 @@ func isPrimaryFromKey(ctx context.Context, encodedKey, projectNumber string) (*b
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Cloud Resource Manager client: %w", err)
 	}
+	// Retry only while the key is still propagating. Any other failure (a genuine 403,
+	// a missing project) is returned immediately rather than waited on.
 	var project *cloudresourcemanager.Project
 	deadline := time.Now().Add(gcpKeyPropagationWaitTimeout)
 	for attempt := 1; ; attempt++ {
@@ -255,49 +254,18 @@ type gcpProjectConnector interface {
 	ReadProject(projectNumber string) (*api.ProjectResponse, error)
 }
 
-// createProjectAndWaitConnected onboards the project and polls until it reports
-// connected, re-issuing the onboard (idempotent; an existing project is adopted)
-// when it is still not connected. This automates the customer's manual
-// "re-run terraform apply" that clears the transient propagation failure.
 func createProjectAndWaitConnected(
 	ctx context.Context,
 	client gcpProjectConnector,
 	body *api.CreateProjectRequest,
 	projectNumber string,
-	maxAttempts int,
-	backoff, connectTimeout, pollInterval time.Duration,
+	connectTimeout, pollInterval time.Duration,
 ) (*api.ProjectResponse, error) {
-	var lastErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		if createErr := client.CreateProject(body); createErr != nil && !strings.Contains(createErr.Error(), "account-exist") {
-			return nil, createErr
-		}
-
-		res, err := waitForGCPProjectConnected(ctx, client, projectNumber, connectTimeout, pollInterval)
-		if err == nil {
-			return res, nil
-		}
-
-		var notConnected *projectNotConnectedError
-		if !errors.As(err, &notConnected) {
-			return nil, err
-		}
-		lastErr = err
-		if attempt == maxAttempts {
-			break
-		}
-
-		tflog.Warn(ctx, fmt.Sprintf(
-			"[GCP CAM] project %s not connected on attempt %d/%d (state: %q); re-onboarding after %s",
-			projectNumber, attempt, maxAttempts, notConnected.state, backoff,
-		))
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(backoff):
-		}
+	if createErr := client.CreateProject(body); createErr != nil && !strings.Contains(createErr.Error(), "account-exist") {
+		return nil, createErr
 	}
-	return nil, lastErr
+
+	return waitForGCPProjectConnected(ctx, client, projectNumber, connectTimeout, pollInterval)
 }
 
 func waitForGCPProjectConnected(ctx context.Context, client interface {
