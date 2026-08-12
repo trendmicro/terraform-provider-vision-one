@@ -8,10 +8,10 @@ import (
 	"net/url"
 	"strings"
 
-	"terraform-provider-vision-one/internal/trendmicro"
-	cam "terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
-	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/api"
-	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/resources/config"
+	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro"
+	cam "github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
+	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/api"
+	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/resources/config"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -464,7 +464,7 @@ func (r *CAMConnectorResource) Create(ctx context.Context, req resource.CreateRe
 	defer unlock()
 
 	res, err := createProjectAndWaitConnected(ctx, r.client, body, plan.ProjectNumber.ValueString(),
-		gcpProjectConnectMaxAttempts, gcpProjectConnectRetryBackoff, gcpProjectConnectedWaitTimeout, gcpProjectConnectedWaitInterval)
+		gcpProjectConnectedWaitTimeout, gcpProjectConnectedWaitInterval)
 	if err != nil {
 		if addGCPNetworkRetryDiagnostic(&resp.Diagnostics, "Create", err) {
 			return
