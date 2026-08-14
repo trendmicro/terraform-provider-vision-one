@@ -6,10 +6,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro"
-	cam "github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
-	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/api"
-	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/resources/config"
+	"terraform-provider-vision-one/internal/trendmicro"
+	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/api"
+	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/resources/config"
+
+	cam "terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
