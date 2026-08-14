@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"terraform-provider-vision-one/internal/trendmicro"
-	cam "terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
-	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/api"
-	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/resources/config"
+	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro"
+	cam "github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
+	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/api"
+	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/cloud_account_management/gcp/resources/config"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -184,6 +184,15 @@ func (r *GCPProjectMigrationResource) Create(ctx context.Context, req resource.C
 		return
 	}
 
+	if gcpProjectAlreadyOnServiceAccount(existing, plan.NewServiceAccountID.ValueString()) {
+		tflog.Info(ctx, fmt.Sprintf("[GCP Project Migration] Project %s is already bound to service account %s; nothing to migrate",
+			projectNumber, plan.NewServiceAccountID.ValueString()))
+		plan.MigratedAt = types.StringValue(time.Now().UTC().Format(time.RFC3339))
+		plan.MigrationStatus = types.StringValue(migrationStatusMigrated)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		return
+	}
+
 	emptyString := ""
 	updateReq := buildGCPProjectMigrationUpdateRequest(plan, existing, &emptyString)
 
@@ -239,6 +248,13 @@ func (r *GCPProjectMigrationResource) Update(ctx context.Context, req resource.U
 
 func (r *GCPProjectMigrationResource) Delete(_ context.Context, _ resource.DeleteRequest, resp *resource.DeleteResponse) {
 	// No-op: migration is one-way, removing from state only
+}
+
+func gcpProjectAlreadyOnServiceAccount(existing *api.ProjectResponse, newServiceAccountID string) bool {
+	if existing == nil || newServiceAccountID == "" {
+		return false
+	}
+	return existing.ServiceAccountID == newServiceAccountID
 }
 
 func buildGCPProjectMigrationUpdateRequest(
