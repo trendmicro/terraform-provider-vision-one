@@ -31,31 +31,32 @@ var (
 type LegacyStateRegionsDataSource struct{}
 
 type legacyStateRegionsModel struct {
-	ID                   types.String `tfsdk:"id"`
-	ProjectID            types.String `tfsdk:"project_id"`
-	SidecarProjectID     types.String `tfsdk:"sidecar_project_id"`
-	ServiceAccountKey    types.String `tfsdk:"service_account_key"`
-	NewStateBucket       types.String `tfsdk:"new_state_bucket"`
-	ResourcePrefixes     types.List   `tfsdk:"resource_prefixes"`
-	BucketName           types.String `tfsdk:"bucket_name"`
-	Regions              types.Set    `tfsdk:"regions"`
-	CustomRoleSuffix     types.String `tfsdk:"custom_role_suffix"`
-	SidecarCreated       types.Bool   `tfsdk:"sidecar_created"`
-	ResourceBuckets      types.Map    `tfsdk:"resource_buckets"`
-	LiveResourceBuckets  types.Map    `tfsdk:"live_resource_buckets"`
-	AccessLogBuckets     types.Map    `tfsdk:"access_log_buckets"`
-	RoleIDs              types.Map    `tfsdk:"role_ids"`
-	ServiceAccountEmails types.Map    `tfsdk:"service_account_emails"`
-	VPCSubnetRegions     types.Set    `tfsdk:"vpc_subnet_regions"`
-	VPCNetworkExists     types.Bool   `tfsdk:"vpc_network_exists"`
-	VPCFirewallExists    types.Bool   `tfsdk:"vpc_firewall_exists"`
-	FirestoreExists      types.Bool   `tfsdk:"firestore_scan_tracking_exists"`
-	ControlSAExists      types.Bool   `tfsdk:"control_sa_exists"`
-	DataSAExists         types.Bool   `tfsdk:"data_sa_exists"`
-	CustomerSAExists     types.Bool   `tfsdk:"customer_sa_exists"`
-	ControlRoleExists    types.Bool   `tfsdk:"control_role_exists"`
-	DataRoleExists       types.Bool   `tfsdk:"data_role_exists"`
-	CustomerRoleExists   types.Bool   `tfsdk:"customer_role_exists"`
+	ID                    types.String `tfsdk:"id"`
+	ProjectID             types.String `tfsdk:"project_id"`
+	SidecarProjectID      types.String `tfsdk:"sidecar_project_id"`
+	ServiceAccountKey     types.String `tfsdk:"service_account_key"`
+	NewStateBucket        types.String `tfsdk:"new_state_bucket"`
+	ResourcePrefixes      types.List   `tfsdk:"resource_prefixes"`
+	BucketName            types.String `tfsdk:"bucket_name"`
+	LegacyDeploymentFound types.Bool   `tfsdk:"legacy_deployment_found"`
+	Regions               types.Set    `tfsdk:"regions"`
+	CustomRoleSuffix      types.String `tfsdk:"custom_role_suffix"`
+	SidecarCreated        types.Bool   `tfsdk:"sidecar_created"`
+	ResourceBuckets       types.Map    `tfsdk:"resource_buckets"`
+	LiveResourceBuckets   types.Map    `tfsdk:"live_resource_buckets"`
+	AccessLogBuckets      types.Map    `tfsdk:"access_log_buckets"`
+	RoleIDs               types.Map    `tfsdk:"role_ids"`
+	ServiceAccountEmails  types.Map    `tfsdk:"service_account_emails"`
+	VPCSubnetRegions      types.Set    `tfsdk:"vpc_subnet_regions"`
+	VPCNetworkExists      types.Bool   `tfsdk:"vpc_network_exists"`
+	VPCFirewallExists     types.Bool   `tfsdk:"vpc_firewall_exists"`
+	FirestoreExists       types.Bool   `tfsdk:"firestore_scan_tracking_exists"`
+	ControlSAExists       types.Bool   `tfsdk:"control_sa_exists"`
+	DataSAExists          types.Bool   `tfsdk:"data_sa_exists"`
+	CustomerSAExists      types.Bool   `tfsdk:"customer_sa_exists"`
+	ControlRoleExists     types.Bool   `tfsdk:"control_role_exists"`
+	DataRoleExists        types.Bool   `tfsdk:"data_role_exists"`
+	CustomerRoleExists    types.Bool   `tfsdk:"customer_role_exists"`
 }
 
 type legacyStateInfo struct {
@@ -66,7 +67,7 @@ type legacyStateInfo struct {
 	ResourceBuckets  map[string]string
 	RoleIDs          map[string]string
 	SAEmails         map[string]string
-	AccessDenied bool
+	AccessDenied     bool
 }
 
 func NewLegacyStateRegionsDataSource() datasource.DataSource {
@@ -114,6 +115,10 @@ func (d *LegacyStateRegionsDataSource) Schema(_ context.Context, _ datasource.Sc
 			},
 			"bucket_name": schema.StringAttribute{
 				MarkdownDescription: "The legacy state bucket name that was probed (`trendmicro-v1-{project_id}`).",
+				Computed:            true,
+			},
+			"legacy_deployment_found": schema.BoolAttribute{
+				MarkdownDescription: "True when a legacy state object was found at EITHER the legacy bucket (`trendmicro-v1-{project_id}/default.tfstate`) OR the migrated-copy fallback (`{new_state_bucket}/{project_id}.tfstate`) — a plain existence check, independent of whether its contents could be parsed into anything useful. Use this (not `regions` being non-empty) to gate the legacy cleanup/import pipeline for a project: it stays accurate even when the state file has no per-region resources, or is denied to read (`AccessDenied`), or has a legacy layout `regions` cannot parse cleanly. False only when neither object exists at all, e.g. a genuinely new onboarding.",
 				Computed:            true,
 			},
 			"regions": schema.SetAttribute{
@@ -236,13 +241,16 @@ func (d *LegacyStateRegionsDataSource) Read(ctx context.Context, req datasource.
 	}
 	if !found {
 		if newBucket := data.NewStateBucket.ValueString(); newBucket != "" {
-			info, _, err = discoverFromLegacyState(ctx, newBucket, projectID+".tfstate", clientOptions)
+			var fallbackFound bool
+			info, fallbackFound, err = discoverFromLegacyState(ctx, newBucket, projectID+".tfstate", clientOptions)
 			if err != nil {
 				resp.Diagnostics.AddError("[AVTD Legacy State Regions] Failed to read migrated state", err.Error())
 				return
 			}
+			found = fallbackFound
 		}
 	}
+	data.LegacyDeploymentFound = types.BoolValue(found)
 
 	if info.AccessDenied {
 		msg := fmt.Sprintf(
@@ -363,7 +371,7 @@ func buildStorageClientOptions(ctx context.Context, encodedKey string) ([]option
 	if err != nil {
 		return nil, fmt.Errorf("decode service account key: %w", err)
 	}
-	creds, err := google.CredentialsFromJSON(ctx, keyJSON, storagev1.DevstorageReadOnlyScope)
+	creds, err := google.CredentialsFromJSONWithType(ctx, keyJSON, google.ServiceAccount, storagev1.DevstorageReadOnlyScope)
 	if err != nil {
 		return nil, fmt.Errorf("credentials from service account key: %w", err)
 	}
@@ -378,7 +386,7 @@ func buildComputeClientOptions(ctx context.Context, encodedKey string) ([]option
 	if err != nil {
 		return nil, fmt.Errorf("decode service account key: %w", err)
 	}
-	creds, err := google.CredentialsFromJSON(ctx, keyJSON, compute.ComputeReadonlyScope)
+	creds, err := google.CredentialsFromJSONWithType(ctx, keyJSON, google.ServiceAccount, compute.ComputeReadonlyScope)
 	if err != nil {
 		return nil, fmt.Errorf("credentials from service account key: %w", err)
 	}
@@ -393,7 +401,7 @@ func buildIAMClientOptions(ctx context.Context, encodedKey string) ([]option.Cli
 	if err != nil {
 		return nil, fmt.Errorf("decode service account key: %w", err)
 	}
-	creds, err := google.CredentialsFromJSON(ctx, keyJSON, iam.CloudPlatformScope)
+	creds, err := google.CredentialsFromJSONWithType(ctx, keyJSON, google.ServiceAccount, iam.CloudPlatformScope)
 	if err != nil {
 		return nil, fmt.Errorf("credentials from service account key: %w", err)
 	}
@@ -656,11 +664,7 @@ func discoverFromLegacyState(ctx context.Context, bucketName, objectName string,
 	for _, r := range state.Resources {
 		for _, m := range regionTokenRE.FindAllStringSubmatch(r.Module, -1) {
 			tok := m[1]
-			if tok == "" {
-				continue
-			}
-			last := tok[len(tok)-1]
-			if last < '0' || last > '9' {
+			if !isRegionToken(tok) {
 				continue
 			}
 			seen[tok] = struct{}{}
@@ -797,4 +801,24 @@ func isStoragePermissionDenied(err error) bool {
 	return strings.Contains(msg, "403") ||
 		strings.Contains(msg, "Forbidden") || strings.Contains(msg, "forbidden") ||
 		strings.Contains(msg, "PERMISSION_DENIED") || strings.Contains(msg, "permission")
+}
+
+func isRegionToken(tok string) bool {
+	if tok == "" {
+		return false
+	}
+	last := tok[len(tok)-1]
+	if last < '0' || last > '9' {
+		return false
+	}
+	return !isAllDigits(tok)
+}
+
+func isAllDigits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
