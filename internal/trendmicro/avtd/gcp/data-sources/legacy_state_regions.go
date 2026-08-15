@@ -9,8 +9,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/avtd/gcp/data-sources/config"
-	resourcesconfig "github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/avtd/gcp/resources/config"
+	"terraform-provider-vision-one/internal/trendmicro/avtd/gcp/data-sources/config"
+	resourcesconfig "terraform-provider-vision-one/internal/trendmicro/avtd/gcp/resources/config"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
