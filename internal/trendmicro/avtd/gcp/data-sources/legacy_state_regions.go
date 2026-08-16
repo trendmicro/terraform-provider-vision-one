@@ -371,7 +371,7 @@ func buildStorageClientOptions(ctx context.Context, encodedKey string) ([]option
 	if err != nil {
 		return nil, fmt.Errorf("decode service account key: %w", err)
 	}
-	creds, err := google.CredentialsFromJSONWithType(ctx, keyJSON, google.ServiceAccount, storagev1.DevstorageReadOnlyScope)
+	creds, err := google.CredentialsFromJSON(ctx, keyJSON, storagev1.DevstorageReadOnlyScope)
 	if err != nil {
 		return nil, fmt.Errorf("credentials from service account key: %w", err)
 	}
@@ -386,7 +386,7 @@ func buildComputeClientOptions(ctx context.Context, encodedKey string) ([]option
 	if err != nil {
 		return nil, fmt.Errorf("decode service account key: %w", err)
 	}
-	creds, err := google.CredentialsFromJSONWithType(ctx, keyJSON, google.ServiceAccount, compute.ComputeReadonlyScope)
+	creds, err := google.CredentialsFromJSON(ctx, keyJSON, compute.ComputeReadonlyScope)
 	if err != nil {
 		return nil, fmt.Errorf("credentials from service account key: %w", err)
 	}
@@ -401,7 +401,7 @@ func buildIAMClientOptions(ctx context.Context, encodedKey string) ([]option.Cli
 	if err != nil {
 		return nil, fmt.Errorf("decode service account key: %w", err)
 	}
-	creds, err := google.CredentialsFromJSONWithType(ctx, keyJSON, google.ServiceAccount, iam.CloudPlatformScope)
+	creds, err := google.CredentialsFromJSON(ctx, keyJSON, iam.CloudPlatformScope)
 	if err != nil {
 		return nil, fmt.Errorf("credentials from service account key: %w", err)
 	}
