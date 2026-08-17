@@ -76,11 +76,11 @@ resource "visionone_cam_connector_aws" "cam_connector_with_security_services" {
 # ===== Example 5: Connector with AWS Organization =====
 # Note: is_aws_org_mgmt_account and organization_excluded_accounts require organization_id
 resource "visionone_cam_connector_aws" "cam_connector_org" {
-  cloud_account_id      = "123456789012"
-  role_arn              = "arn:aws:iam::123456789012:role/VisionOneRole"
-  name                  = "CAM Connector for AWS Organization"
-  description           = "CAM connector for AWS Organization management account"
-  is_crem_enabled       = true
+  cloud_account_id        = "123456789012"
+  role_arn                = "arn:aws:iam::123456789012:role/VisionOneRole"
+  name                    = "CAM Connector for AWS Organization"
+  description             = "CAM connector for AWS Organization management account"
+  is_crem_enabled         = true
   is_aws_org_mgmt_account = true
 
   # organization_id: bare AWS Organization ID (o-<alphanum10-32>), OU ID, or root ID

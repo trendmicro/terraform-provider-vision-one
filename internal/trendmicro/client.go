@@ -11,7 +11,7 @@ import (
 	"path"
 	"time"
 
-	"terraform-provider-vision-one/pkg/dto"
+	"github.com/trend-vcs/terraform-provider-vision-one/pkg/dto"
 )
 
 // HostURL - Default Hashicups URL
@@ -118,6 +118,27 @@ func (c *Client) DoRequestWithFullResponse(req *http.Request) (*http.Response, e
 	default:
 		return nil, fmt.Errorf("%w \nTrace id: %s", dto.ErrorInternal, res.Header.Get("x-trace-id"))
 	}
+}
+
+// DoRequestRaw sends the request with the provider's bearer token and returns the raw
+// response, letting the caller branch on status code instead of getting one collapsed error.
+// The caller owns closing the body.
+func (c *Client) DoRequestRaw(req *http.Request) (*http.Response, error) {
+	req.Header.Set("Authorization", "Bearer "+c.BearerToken)
+	req.Header.Set("User-Agent", UserAgentHeader+"/"+c.ProviderVersion)
+	req.Header.Set("x-tm-user-agent", c.TMUserAgent+"/"+c.ProviderVersion)
+
+	return c.HTTPClient.Do(req)
+}
+
+// DoRequestRawWithToken is DoRequestRaw with a caller-supplied bearer token in place of the
+// client's provider-level BearerToken, for endpoints scoped to a narrower credential.
+func (c *Client) DoRequestRawWithToken(req *http.Request, token string) (*http.Response, error) {
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", UserAgentHeader+"/"+c.ProviderVersion)
+	req.Header.Set("x-tm-user-agent", c.TMUserAgent+"/"+c.ProviderVersion)
+
+	return c.HTTPClient.Do(req)
 }
 
 // Auth - Authenticate the client with the Trend Micro Vision One API Secret Token and validate connectivity
