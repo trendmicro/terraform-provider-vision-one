@@ -11,7 +11,7 @@ import (
 	"path"
 	"time"
 
-	"github.com/trend-vcs/terraform-provider-vision-one/pkg/dto"
+	"terraform-provider-vision-one/pkg/dto"
 )
 
 // HostURL - Default Hashicups URL
