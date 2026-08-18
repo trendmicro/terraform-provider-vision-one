@@ -8,7 +8,7 @@ import (
 	"net/http"
 	neturl "net/url"
 
-	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro"
+	"terraform-provider-vision-one/internal/trendmicro"
 )
 
 // EventHubStacksPath is Cloud Log Monitoring's Azure Event Hub stack registration endpoint,

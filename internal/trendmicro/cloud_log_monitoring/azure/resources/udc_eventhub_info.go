@@ -15,9 +15,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
-	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro"
-	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/cloud_log_monitoring/azure/api"
-	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/cloud_log_monitoring/azure/resources/config"
+	"terraform-provider-vision-one/internal/trendmicro"
+	"terraform-provider-vision-one/internal/trendmicro/cloud_log_monitoring/azure/api"
+	"terraform-provider-vision-one/internal/trendmicro/cloud_log_monitoring/azure/resources/config"
 )
 
 var (
