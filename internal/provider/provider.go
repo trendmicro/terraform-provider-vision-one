@@ -217,6 +217,7 @@ func (p *TrendMicroProvider) Resources(ctx context.Context) []func() resource.Re
 func (p *TrendMicroProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		awscamdatasources.NewCAMCloudAccountsDataSource,
+		awscamdatasources.NewCAMDeploymentPreflightDataSource,
 		azurecamdatasources.NewCAMCloudAccountsDataSource,
 		gcpcamdatasources.NewCAMCloudAccountsDataSource,
 		gcpdspmdatasources.NewLegacyStateRegionsDataSource,
