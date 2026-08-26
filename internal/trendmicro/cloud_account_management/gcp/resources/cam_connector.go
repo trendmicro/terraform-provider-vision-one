@@ -347,15 +347,21 @@ func (v featuresConfigFilePathRequiresFeaturesValidator) ValidateResource(ctx co
 		return
 	}
 
-	if !data.FeaturesConfigFilePath.IsNull() && !data.FeaturesConfigFilePath.IsUnknown() && data.FeaturesConfigFilePath.ValueString() != "" {
-		if data.Features.IsNull() || data.Features.IsUnknown() {
-			resp.Diagnostics.AddAttributeError(
-				path.Root("features_config_file_path"),
-				"Invalid Attribute Combination",
-				"features_config_file_path cannot be set without features.",
-			)
-		}
+	if featuresConfigFilePathRequiresFeatures(data.FeaturesConfigFilePath, data.Features) {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("features_config_file_path"),
+			"Invalid Attribute Combination",
+			"features_config_file_path cannot be set without features.",
+		)
 	}
+}
+
+func featuresConfigFilePathRequiresFeatures(featuresConfigFilePath types.String, features types.List) bool {
+	if featuresConfigFilePath.IsNull() || featuresConfigFilePath.IsUnknown() || featuresConfigFilePath.ValueString() == "" {
+		return false
+	}
+
+	return features.IsNull()
 }
 
 func (r *CAMConnectorResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
