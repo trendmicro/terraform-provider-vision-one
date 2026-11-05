@@ -15,10 +15,10 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/microsoftgraph/msgraph-sdk-go/models"
 
-	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro"
-	cam "github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
-	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/api"
-	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/resources/config"
+	"terraform-provider-vision-one/internal/trendmicro"
+	cam "terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
+	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/api"
+	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/resources/config"
 )
 
 type appRegistration struct {
