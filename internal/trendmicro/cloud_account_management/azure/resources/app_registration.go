@@ -15,10 +15,10 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/microsoftgraph/msgraph-sdk-go/models"
 
-	"terraform-provider-vision-one/internal/trendmicro"
-	cam "terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
-	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/api"
-	"terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/resources/config"
+	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro"
+	cam "github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/cloud_account_management"
+	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/api"
+	"github.com/trend-vcs/terraform-provider-vision-one/internal/trendmicro/cloud_account_management/azure/resources/config"
 )
 
 type appRegistration struct {
@@ -261,13 +261,20 @@ func (r *appRegistration) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
+	setAppRegistrationUpdateState(ctx, plan, state, displayName, resp)
+}
+
+func setAppRegistrationUpdateState(ctx context.Context, plan, state camAppRegistrationModel, displayName string, resp *resource.UpdateResponse) {
 	state.ClientID = types.StringValue(state.ClientID.ValueString())
 	state.DisplayName = types.StringValue(displayName)
 	state.ObjectID = types.StringValue(state.ObjectID.ValueString())
 	state.SubscriptionID = plan.SubscriptionID
 	state.TenantID = plan.TenantID
 
-	diags = resp.State.Set(ctx, &state)
+	state.GraphResourceAccess = plan.GraphResourceAccess
+	state.AADGraphResourceAccess = plan.AADGraphResourceAccess
+
+	diags := resp.State.Set(ctx, &state)
 	resp.Diagnostics.Append(diags...)
 }
 
