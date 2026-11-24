@@ -38,9 +38,11 @@ type enableAPIServicesResourceModel struct {
 }
 
 const (
-	serviceUsageMaxMutationRetries = 5
-	serviceUsageRetryBase          = 5 * time.Second
-	serviceUsageRetryCap           = 2 * time.Minute
+	serviceUsageMaxMutationRetries    = 5
+	serviceUsageRetryBase             = 5 * time.Second
+	serviceUsageRetryCap              = 2 * time.Minute
+	serviceUsageOperationTimeout      = 20 * time.Minute
+	serviceUsageOperationPollInterval = 10 * time.Second
 )
 
 func NewEnableAPIServices() resource.Resource {
@@ -599,36 +601,59 @@ func (r *EnableAPIServices) enableService(ctx context.Context, client *serviceus
 		return nil
 	}
 
-	// Poll for operation completion
-	maxRetries := 15
-	retryInterval := 2 * time.Second
+	retries, err := waitForServiceUsageOperation(ctx, client, operation.Name, serviceName, "enable")
+	if err != nil {
+		return err
+	}
 
-	for i := 0; i < maxRetries; i++ {
-		time.Sleep(retryInterval)
+	tflog.Debug(ctx, "Service enable operation completed", map[string]interface{}{
+		"service": serviceName,
+		"retries": retries,
+	})
+	return nil
+}
 
-		op, err := client.Operations.Get(operation.Name).Context(ctx).Do()
+func waitForServiceUsageOperation(ctx context.Context, client *serviceusage.Service, operationName, serviceName, action string) (int, error) {
+	operationCtx, cancel := context.WithTimeout(ctx, serviceUsageOperationTimeout)
+	defer cancel()
+
+	ticker := time.NewTicker(serviceUsageOperationPollInterval)
+	defer ticker.Stop()
+	timeoutErr := fmt.Errorf("%s operation did not complete within %s", action, serviceUsageOperationTimeout)
+
+	for attempt := 1; ; attempt++ {
+		select {
+		case <-operationCtx.Done():
+			if ctx.Err() != nil {
+				return attempt - 1, fmt.Errorf("waiting for %s operation: %w", action, ctx.Err())
+			}
+			return attempt - 1, timeoutErr
+		case <-ticker.C:
+		}
+
+		op, err := client.Operations.Get(operationName).Context(operationCtx).Do()
 		if err != nil {
-			return fmt.Errorf("failed to get operation status: %w", err)
+			if ctx.Err() != nil {
+				return attempt, fmt.Errorf("failed to get operation status: %w", ctx.Err())
+			}
+			if operationCtx.Err() != nil {
+				return attempt, timeoutErr
+			}
+			return attempt, fmt.Errorf("failed to get operation status: %w", err)
 		}
 
 		if op.Done {
 			if op.Error != nil {
-				return fmt.Errorf("operation failed: %s", op.Error.Message)
+				return attempt, fmt.Errorf("operation failed: %s", op.Error.Message)
 			}
-			tflog.Debug(ctx, "Service enable operation completed", map[string]interface{}{
-				"service": serviceName,
-				"retries": i + 1,
-			})
-			return nil
+			return attempt, nil
 		}
 
-		tflog.Debug(ctx, "Waiting for service enable operation", map[string]interface{}{
+		tflog.Debug(ctx, fmt.Sprintf("Waiting for service %s operation", action), map[string]interface{}{
 			"service": serviceName,
-			"attempt": i + 1,
+			"attempt": attempt,
 		})
 	}
-
-	return fmt.Errorf("operation did not complete within timeout period")
 }
 
 // disableService disables a GCP API service and waits for the operation to complete.
@@ -666,23 +691,8 @@ func (r *EnableAPIServices) disableService(ctx context.Context, client *serviceu
 		return nil
 	}
 
-	maxRetries := 15
-	retryInterval := 2 * time.Second
-	for i := 0; i < maxRetries; i++ {
-		time.Sleep(retryInterval)
-		op, err := client.Operations.Get(operation.Name).Context(ctx).Do()
-		if err != nil {
-			return fmt.Errorf("failed to get operation status: %w", err)
-		}
-		if op.Done {
-			if op.Error != nil {
-				return fmt.Errorf("operation failed: %s", op.Error.Message)
-			}
-			return nil
-		}
-	}
-
-	return fmt.Errorf("disable operation did not complete within timeout period")
+	_, err = waitForServiceUsageOperation(ctx, client, operation.Name, serviceName, "disable")
+	return err
 }
 
 func isServiceUsageRateLimitError(err error) bool {
