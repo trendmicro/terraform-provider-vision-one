@@ -253,7 +253,7 @@ If you need to disable services, you must do so manually through the GCP Console
 
 ### Service Enablement Time
 
-Enabling API services typically takes a few seconds, but in some cases may take up to 1-2 minutes. The resource will wait for each service to be fully enabled before completing.
+Enabling API services typically takes a few seconds, but in some cases may take up to 1-2 minutes. The provider polls each pending Service Usage operation every 10 seconds and waits up to 20 minutes before reporting a timeout.
 
 ## Troubleshooting
 

@@ -165,6 +165,19 @@ var FEATURE_PERMISSIONS = map[string][]string{
 		"compute.networks.updatePolicy",
 		"compute.subnetworks.delete",
 		"compute.firewalls.delete",
+		// Scanner network fabric: VPC, per-region subnet (private Google access), Cloud Router and
+		// Cloud NAT (NAT config lives on the router, so a NAT edit is routers.get + routers.update).
+		// networks.updatePolicy above also covers subnet and router creation on the network.
+		"compute.networks.create",
+		"compute.networks.get",
+		"compute.subnetworks.create",
+		"compute.subnetworks.get",
+		"compute.routers.create",
+		"compute.routers.get",
+		"compute.routers.update",
+		"compute.routers.delete",
+		"compute.globalOperations.get",
+		"compute.regionOperations.get",
 		"storage.buckets.get",
 		"storage.buckets.list",
 		"storage.buckets.delete",
