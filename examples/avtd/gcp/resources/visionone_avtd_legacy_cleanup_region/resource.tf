@@ -1,4 +1,4 @@
-variable "legacy_service_account_key" {
+variable "avtd_legacy_service_account_key" {
   type        = string
   sensitive   = true
   default     = null
@@ -10,7 +10,7 @@ resource "visionone_avtd_legacy_cleanup_region" "example" {
   region     = "northamerica-northeast2"
   stage      = "prod"
   service_account_key = coalesce(
-    var.legacy_service_account_key,
+    var.avtd_legacy_service_account_key,
     visionone_cam_service_account_integration.comprehensive.private_key,
   )
   preserve_resource_bucket = true
@@ -26,7 +26,7 @@ resource "visionone_avtd_legacy_cleanup_region" "adc_only" {
 data "visionone_avtd_legacy_state_regions" "legacy" {
   project_id = var.project_id
   service_account_key = coalesce(
-    var.legacy_service_account_key,
+    var.avtd_legacy_service_account_key,
     visionone_cam_service_account_integration.comprehensive.private_key,
   )
 }
@@ -40,7 +40,7 @@ resource "visionone_avtd_legacy_cleanup_region" "per_region" {
   project_id = var.project_id
   region     = each.value
   service_account_key = coalesce(
-    var.legacy_service_account_key,
+    var.avtd_legacy_service_account_key,
     visionone_cam_service_account_integration.comprehensive.private_key,
   )
 }
@@ -56,7 +56,7 @@ resource "visionone_avtd_legacy_cleanup_region" "sidecar" {
   sidecar_project_id = "my-legacy-sidecar-project-id"
   region             = "northamerica-northeast2"
   service_account_key = coalesce(
-    var.legacy_service_account_key,
+    var.avtd_legacy_service_account_key,
     visionone_cam_service_account_integration.comprehensive.private_key,
   )
 }
