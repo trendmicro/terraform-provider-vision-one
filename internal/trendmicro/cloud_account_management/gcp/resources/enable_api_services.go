@@ -43,7 +43,14 @@ const (
 	serviceUsageRetryCap              = 2 * time.Minute
 	serviceUsageOperationTimeout      = 20 * time.Minute
 	serviceUsageOperationPollInterval = 10 * time.Second
+	serviceUsageMaxOperationRetries   = 3
+	enableAPIServicesRetryHint        = "Run terraform apply again to retry"
+
+	rpcCodeAborted     = 10
+	rpcCodeUnavailable = 14
 )
+
+var serviceUsageOperationRetryCooldown = serviceUsageRetryCooldown
 
 func NewEnableAPIServices() resource.Resource {
 	return &EnableAPIServices{
@@ -147,13 +154,17 @@ func (r *EnableAPIServices) Create(ctx context.Context, req resource.CreateReque
 	}
 
 	servicesToEnable := r.filterDisabledServices(ctx, serviceUsageClient, gcpClients.ProjectID, services)
-	enabledByUs, billingWarnings, enableErrors := r.runEnableServices(ctx, serviceUsageClient, gcpClients.ProjectID, servicesToEnable)
+	enabledByUs, billingWarnings, _, enableErrors := r.runEnableServices(ctx, serviceUsageClient, gcpClients.ProjectID, servicesToEnable)
 
 	if len(enableErrors) > 0 {
-		resp.Diagnostics.AddError(
-			"[Enable API Services][Create]",
-			strings.Join(enableErrors, "; "),
-		)
+		// Roll back so a retried create sees these services as disabled and records them as enabled by this resource.
+		_, rollbackErrors := r.runDisableServices(ctx, serviceUsageClient, gcpClients.ProjectID, enabledByUs)
+		detail := strings.Join(enableErrors, "; ")
+		if len(rollbackErrors) > 0 {
+			detail += ". Services enabled before the failure could not be rolled back and will not be disabled on destroy: " +
+				strings.Join(rollbackErrors, "; ")
+		}
+		resp.Diagnostics.AddError("[Enable API Services][Create]", detail+". "+enableAPIServicesRetryHint)
 		return
 	}
 
@@ -307,7 +318,7 @@ func (r *EnableAPIServices) Update(ctx context.Context, req resource.UpdateReque
 	}
 	sort.Strings(newServices)
 
-	addedServices, removedAndOwnedServices, newSet := computeServiceDiff(newServices, oldServices, prevEnabledByResource)
+	addedServices, removedAndOwnedServices := computeServiceDiff(newServices, oldServices, prevEnabledByResource)
 
 	serviceUsageClient, err := serviceusage.NewService(ctx, option.WithCredentials(gcpClients.Credential))
 	if err != nil {
@@ -320,13 +331,22 @@ func (r *EnableAPIServices) Update(ctx context.Context, req resource.UpdateReque
 
 	servicesToEnable := r.filterDisabledServices(ctx, serviceUsageClient, gcpClients.ProjectID, addedServices)
 
-	newlyEnabled, billingWarnings, enableErrors := r.runEnableServices(ctx, serviceUsageClient, gcpClients.ProjectID, servicesToEnable)
-	disableErrors := r.runDisableServices(ctx, serviceUsageClient, gcpClients.ProjectID, removedAndOwnedServices)
+	newlyEnabled, billingWarnings, failedEnable, enableErrors := r.runEnableServices(ctx, serviceUsageClient, gcpClients.ProjectID, servicesToEnable)
+	failedDisable, disableErrors := r.runDisableServices(ctx, serviceUsageClient, gcpClients.ProjectID, removedAndOwnedServices)
+
+	stateServices, updatedEnabledByResource := reconcileUpdatedServices(newServices, prevEnabledByResource, newlyEnabled, failedEnable, failedDisable)
+	plan.Services = cam.ConvertStringSliceToListValue(stateServices)
+	plan.EnabledByResource = cam.ConvertStringSliceToListValue(updatedEnabledByResource)
+
+	if diags := resp.State.Set(ctx, plan); diags.HasError() {
+		resp.Diagnostics.Append(diags...)
+		return
+	}
 
 	if len(enableErrors) > 0 || len(disableErrors) > 0 {
 		resp.Diagnostics.AddError(
 			"[Enable API Services][Update]",
-			strings.Join(append(enableErrors, disableErrors...), "; "),
+			strings.Join(append(enableErrors, disableErrors...), "; ")+". "+enableAPIServicesRetryHint,
 		)
 		return
 	}
@@ -340,26 +360,47 @@ func (r *EnableAPIServices) Update(ctx context.Context, req resource.UpdateReque
 				gcpClients.ProjectID, strings.Join(billingWarnings, ", ")),
 		)
 	}
-
-	updatedEnabledByResource := make([]string, 0)
-	for _, s := range prevEnabledByResource {
-		if newSet[s] {
-			updatedEnabledByResource = append(updatedEnabledByResource, s)
-		}
-	}
-	updatedEnabledByResource = append(updatedEnabledByResource, newlyEnabled...)
-	sort.Strings(updatedEnabledByResource)
-	plan.Services = cam.ConvertStringSliceToListValue(newServices)
-	plan.EnabledByResource = cam.ConvertStringSliceToListValue(updatedEnabledByResource)
-
-	if diags := resp.State.Set(ctx, plan); diags.HasError() {
-		resp.Diagnostics.Append(diags...)
-		return
-	}
 }
 
-// computeServiceDiff returns added services, removed-and-owned services, and the new services set.
-func computeServiceDiff(newServices, oldServices, prevEnabledByResource []string) (added, removedOwned []string, newSet map[string]bool) {
+// reconcileUpdatedServices returns the services and owned services to record after an update.
+// Failed enables are left out and failed disables are kept, so the next plan retries them.
+func reconcileUpdatedServices(newServices, prevEnabledByResource, newlyEnabled, failedEnable, failedDisable []string) (services, enabledByResource []string) {
+	services = append(subtractServices(newServices, failedEnable), failedDisable...)
+	sort.Strings(services)
+
+	kept := make(map[string]bool, len(services))
+	for _, s := range services {
+		kept[s] = true
+	}
+	enabledByResource = make([]string, 0, len(prevEnabledByResource)+len(newlyEnabled))
+	for _, s := range prevEnabledByResource {
+		if kept[s] {
+			enabledByResource = append(enabledByResource, s)
+		}
+	}
+	enabledByResource = append(enabledByResource, newlyEnabled...)
+	sort.Strings(enabledByResource)
+	return services, enabledByResource
+}
+
+func subtractServices(services []string, exclude ...[]string) []string {
+	excluded := make(map[string]bool)
+	for _, list := range exclude {
+		for _, s := range list {
+			excluded[s] = true
+		}
+	}
+	result := make([]string, 0, len(services))
+	for _, s := range services {
+		if !excluded[s] {
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+// computeServiceDiff returns added services and removed-and-owned services.
+func computeServiceDiff(newServices, oldServices, prevEnabledByResource []string) (added, removedOwned []string) {
 	sort.Strings(oldServices)
 	sort.Strings(prevEnabledByResource)
 
@@ -367,7 +408,7 @@ func computeServiceDiff(newServices, oldServices, prevEnabledByResource []string
 	for _, s := range oldServices {
 		oldSet[s] = true
 	}
-	newSet = make(map[string]bool, len(newServices))
+	newSet := make(map[string]bool, len(newServices))
 	for _, s := range newServices {
 		newSet[s] = true
 	}
@@ -386,7 +427,7 @@ func computeServiceDiff(newServices, oldServices, prevEnabledByResource []string
 			removedOwned = append(removedOwned, s)
 		}
 	}
-	return added, removedOwned, newSet
+	return added, removedOwned
 }
 
 // filterDisabledServices returns only services from the input list that are currently disabled.
@@ -423,8 +464,9 @@ func (r *EnableAPIServices) filterDisabledServices(ctx context.Context, client *
 	return disabled
 }
 
-// runEnableServices concurrently enables services and returns (newlyEnabled, billingWarnings, errors).
-func (r *EnableAPIServices) runEnableServices(ctx context.Context, client *serviceusage.Service, projectID string, services []string) (enabled, billingWarnings, errs []string) {
+// runEnableServices concurrently enables services and returns (newlyEnabled, billingWarnings, failedServices, errors).
+// newlyEnabled holds only services this call confirmed were disabled and then enabled.
+func (r *EnableAPIServices) runEnableServices(ctx context.Context, client *serviceusage.Service, projectID string, services []string) (enabled, billingWarnings, failed, errs []string) {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := cam.GCPServiceUsageSem
@@ -434,7 +476,8 @@ func (r *EnableAPIServices) runEnableServices(ctx context.Context, client *servi
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			if err := r.enableService(ctx, client, projectID, svc); err != nil {
+			enabledNow, err := r.enableService(ctx, client, projectID, svc)
+			if err != nil {
 				var be *billingError
 				if errors.As(err, &be) {
 					tflog.Warn(ctx, "Skipping service enable due to missing billing account", map[string]interface{}{
@@ -446,8 +489,12 @@ func (r *EnableAPIServices) runEnableServices(ctx context.Context, client *servi
 					return
 				}
 				mu.Lock()
+				failed = append(failed, svc)
 				errs = append(errs, fmt.Sprintf("Failed to enable service %s: %s", svc, err))
 				mu.Unlock()
+				return
+			}
+			if !enabledNow {
 				return
 			}
 			mu.Lock()
@@ -456,14 +503,13 @@ func (r *EnableAPIServices) runEnableServices(ctx context.Context, client *servi
 		}(service)
 	}
 	wg.Wait()
-	return enabled, billingWarnings, errs
+	return enabled, billingWarnings, failed, errs
 }
 
-// runDisableServices concurrently disables services and returns any errors.
-func (r *EnableAPIServices) runDisableServices(ctx context.Context, client *serviceusage.Service, projectID string, services []string) []string {
+// runDisableServices concurrently disables services and returns (failedServices, errors).
+func (r *EnableAPIServices) runDisableServices(ctx context.Context, client *serviceusage.Service, projectID string, services []string) (failed, errs []string) {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	var errs []string
 	sem := cam.GCPServiceUsageSem
 	for _, service := range services {
 		wg.Add(1)
@@ -476,13 +522,14 @@ func (r *EnableAPIServices) runDisableServices(ctx context.Context, client *serv
 					"service": svc, "error": err.Error(),
 				})
 				mu.Lock()
+				failed = append(failed, svc)
 				errs = append(errs, fmt.Sprintf("Failed to disable service %s: %s", svc, err))
 				mu.Unlock()
 			}
 		}(service)
 	}
 	wg.Wait()
-	return errs
+	return failed, errs
 }
 
 func (r *EnableAPIServices) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -528,7 +575,7 @@ func (r *EnableAPIServices) Delete(ctx context.Context, req resource.DeleteReque
 		return
 	}
 
-	disableErrors := r.runDisableServices(ctx, serviceUsageClient, gcpClients.ProjectID, enabledByResource)
+	_, disableErrors := r.runDisableServices(ctx, serviceUsageClient, gcpClients.ProjectID, enabledByResource)
 	if len(disableErrors) > 0 {
 		resp.Diagnostics.AddWarning(
 			"[Enable API Services][Delete] Some services could not be disabled",
@@ -544,11 +591,13 @@ func (r *EnableAPIServices) ImportState(ctx context.Context, req resource.Import
 }
 
 // enableService enables a GCP API service and waits for the operation to complete.
-// It retries with exponential backoff on 429 rate limit errors.
+// It retries on 429 rate limit errors and on transient operation failures, such as
+// IAM policy conflicts while Google provisions the service agent.
+// It reports enabledNow only when the service was confirmed disabled before this call enabled it,
+// so a service that was already enabled, or whose state could not be read, is never claimed.
 // Returns a sentinel error for billing-related failures so callers can handle them gracefully.
-func (r *EnableAPIServices) enableService(ctx context.Context, client *serviceusage.Service, projectID, serviceName string) error {
-	parent := fmt.Sprintf("projects/%s", projectID)
-	servicePath := fmt.Sprintf("%s/services/%s", parent, serviceName)
+func (r *EnableAPIServices) enableService(ctx context.Context, client *serviceusage.Service, projectID, serviceName string) (enabledNow bool, err error) {
+	servicePath := fmt.Sprintf("projects/%s/services/%s", projectID, serviceName)
 
 	tflog.Debug(ctx, "Enabling service", map[string]interface{}{
 		"service_path": servicePath,
@@ -562,8 +611,30 @@ func (r *EnableAPIServices) enableService(ctx context.Context, client *serviceus
 		tflog.Debug(ctx, "Service already enabled, skipping enable call", map[string]interface{}{
 			"service": serviceName,
 		})
-		return nil
+		return false, nil
 	}
+
+	for attempt := 0; ; attempt++ {
+		err = requestServiceEnable(ctx, client, projectID, serviceName)
+		if err == nil {
+			return checkErr == nil, nil
+		}
+		if !isTransientOperationError(err) || attempt >= serviceUsageMaxOperationRetries {
+			return false, err
+		}
+		cooldown := serviceUsageOperationRetryCooldown(attempt)
+		tflog.Info(ctx, fmt.Sprintf("Transient failure enabling service %s: %s; retrying after %v (attempt %d/%d)",
+			serviceName, err, cooldown, attempt+1, serviceUsageMaxOperationRetries))
+		select {
+		case <-ctx.Done():
+			return false, fmt.Errorf("waiting to retry enable: %w", ctx.Err())
+		case <-time.After(cooldown):
+		}
+	}
+}
+
+func requestServiceEnable(ctx context.Context, client *serviceusage.Service, projectID, serviceName string) error {
+	servicePath := fmt.Sprintf("projects/%s/services/%s", projectID, serviceName)
 
 	var operation *serviceusage.Operation
 	var err error
@@ -595,6 +666,9 @@ func (r *EnableAPIServices) enableService(ctx context.Context, client *serviceus
 
 	// Wait for the operation to complete
 	if operation.Done {
+		if operation.Error != nil {
+			return &serviceUsageOperationError{code: operation.Error.Code, message: operation.Error.Message}
+		}
 		tflog.Debug(ctx, "Service enable operation completed immediately", map[string]interface{}{
 			"service": serviceName,
 		})
@@ -644,7 +718,7 @@ func waitForServiceUsageOperation(ctx context.Context, client *serviceusage.Serv
 
 		if op.Done {
 			if op.Error != nil {
-				return attempt, fmt.Errorf("operation failed: %s", op.Error.Message)
+				return attempt, &serviceUsageOperationError{code: op.Error.Code, message: op.Error.Message}
 			}
 			return attempt, nil
 		}
@@ -688,6 +762,9 @@ func (r *EnableAPIServices) disableService(ctx context.Context, client *serviceu
 	}
 
 	if operation.Done {
+		if operation.Error != nil {
+			return &serviceUsageOperationError{code: operation.Error.Code, message: operation.Error.Message}
+		}
 		return nil
 	}
 
@@ -703,6 +780,24 @@ func isServiceUsageRateLimitError(err error) bool {
 	return strings.Contains(errMsg, "429") ||
 		strings.Contains(errMsg, "rateLimitExceeded") ||
 		strings.Contains(errMsg, "RATE_LIMIT_EXCEEDED")
+}
+
+type serviceUsageOperationError struct {
+	code    int64
+	message string
+}
+
+func (e *serviceUsageOperationError) Error() string {
+	return "operation failed: " + e.message
+}
+
+func isTransientOperationError(err error) bool {
+	var opErr *serviceUsageOperationError
+	if !errors.As(err, &opErr) {
+		return false
+	}
+	return opErr.code == rpcCodeAborted || opErr.code == rpcCodeUnavailable ||
+		strings.Contains(opErr.message, "IAM policy modification")
 }
 
 func serviceUsageRetryCooldown(attempt int) time.Duration {

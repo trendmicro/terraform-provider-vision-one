@@ -69,7 +69,7 @@ func (r *LegacyCleanupIAMCustomRole) Schema(_ context.Context, _ resource.Schema
 				},
 			},
 			"custom_role_id": schema.StringAttribute{
-				MarkdownDescription: "Optional full role name of the **new** provider-managed role (e.g. `projects/{proj}/roles/vision_one_cam_role_abc123`) to skip during cleanup. Any matching role with this name will not be deleted. Use this in migration scenarios where both the legacy and new roles share the same prefix.",
+				MarkdownDescription: "Optional full role name of the **new** provider-managed role (e.g. `projects/{proj}/roles/vision_one_cam_role_abc123`) to skip during cleanup. Roles with the same role ID are not deleted in any project, including copies replicated into other projects. Use this in migration scenarios where both the legacy and new roles share the same prefix.",
 				Optional:            true,
 			},
 			"deleted": schema.BoolAttribute{
@@ -128,22 +128,10 @@ func (r *LegacyCleanupIAMCustomRole) Create(ctx context.Context, req resource.Cr
 	}
 
 	parent := fmt.Sprintf("projects/%s", projectID)
-	skipRoleName := plan.CustomRoleID.ValueString()
 	var legacyRole *iam.Role
 
 	if err := iamSvc.Projects.Roles.List(parent).View("FULL").Pages(ctx, func(page *iam.ListRolesResponse) error {
-		for _, role := range page.Roles {
-			parts := strings.Split(role.Name, "/")
-			roleID := parts[len(parts)-1]
-			if !strings.HasPrefix(roleID, config.LEGACY_GCP_CUSTOM_ROLE_PREFIX) {
-				continue
-			}
-			// Skip the new provider-managed role so we only delete the legacy one.
-			if skipRoleName != "" && role.Name == skipRoleName {
-				tflog.Info(ctx, fmt.Sprintf("[IAM Role Cleanup] Skipping new provider-managed role: %s", role.Name))
-				continue
-			}
-			legacyRole = role
+		if legacyRole = findLegacyCustomRole(ctx, page.Roles, plan.CustomRoleID.ValueString()); legacyRole != nil {
 			return errLegacyResourceFound
 		}
 		return nil
@@ -175,6 +163,27 @@ func (r *LegacyCleanupIAMCustomRole) Create(ctx context.Context, req resource.Cr
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// findLegacyCustomRole matches the new role by role ID because the service account
+// integration replicates it into other projects under the same ID.
+func findLegacyCustomRole(ctx context.Context, roles []*iam.Role, customRoleID string) *iam.Role {
+	skipRoleID := ""
+	if customRoleID != "" {
+		skipRoleID = customRoleID[strings.LastIndex(customRoleID, "/")+1:]
+	}
+	for _, role := range roles {
+		roleID := role.Name[strings.LastIndex(role.Name, "/")+1:]
+		if !strings.HasPrefix(roleID, config.LEGACY_GCP_CUSTOM_ROLE_PREFIX) {
+			continue
+		}
+		if roleID == skipRoleID {
+			tflog.Info(ctx, fmt.Sprintf("[IAM Role Cleanup] Skipping new provider-managed role: %s", role.Name))
+			continue
+		}
+		return role
+	}
+	return nil
 }
 
 func (r *LegacyCleanupIAMCustomRole) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {

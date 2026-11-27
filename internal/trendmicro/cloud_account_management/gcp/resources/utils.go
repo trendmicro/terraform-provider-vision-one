@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"google.golang.org/api/cloudresourcemanager/v1"
 	cloudresourcemanagerv2 "google.golang.org/api/cloudresourcemanager/v2"
 	cloudresourcemanagerv3 "google.golang.org/api/cloudresourcemanager/v3"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iam/v1"
 	"google.golang.org/api/option"
 )
@@ -31,13 +33,20 @@ const (
 	gcpProjectConnectedWaitInterval   = 10 * time.Second
 	gcpProjectConnectedWaitTimeout    = 5 * time.Minute
 	gcpProjectFailedState             = "failed"
+	gcpMissingPrimaryProjectError     = "no primary TF Provider project found"
 	gcpCloudPlatformScope             = "https://www.googleapis.com/auth/cloud-platform"
 
 	gcpKeyPropagationWaitTimeout  = 90 * time.Second
 	gcpKeyPropagationPollInterval = 10 * time.Second
+	gcpRateLimitMaxRetries        = 5
 
 	gcpPrincipalPropagationWaitTimeout  = 90 * time.Second
 	gcpPrincipalPropagationPollInterval = 5 * time.Second
+)
+
+var (
+	gcpPrimaryProjectWaitTimeout  = 10 * time.Minute
+	gcpPrimaryProjectWaitInterval = 15 * time.Second
 )
 
 type gcpServiceAccountKeyPayload struct {
@@ -92,30 +101,71 @@ func isPrimaryFromKey(ctx context.Context, encodedKey, projectNumber string) (*b
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Cloud Resource Manager client: %w", err)
 	}
-	// Retry only while the key is still propagating. Any other failure (a genuine 403,
-	// a missing project) is returned immediately rather than waited on.
-	var project *cloudresourcemanager.Project
-	deadline := time.Now().Add(gcpKeyPropagationWaitTimeout)
-	for attempt := 1; ; attempt++ {
-		project, err = crmClient.Projects.Get(payload.ProjectID).Context(ctx).Do()
-		if err == nil {
-			break
-		}
-		if !isGCPKeyPropagationError(err) || time.Now().After(deadline) {
-			return nil, fmt.Errorf("failed to get project %s: %w", payload.ProjectID, err)
-		}
-		tflog.Debug(ctx, fmt.Sprintf(
-			"[CAM Connector GCP] service account key not yet usable (attempt %d), retrying in %s: %s",
-			attempt, gcpKeyPropagationPollInterval, err))
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(gcpKeyPropagationPollInterval):
-		}
+	number, err := lookupGCPProjectNumber(ctx, crmClient, payload.ProjectID)
+	if err != nil {
+		return nil, err
 	}
 
-	v := fmt.Sprintf("%d", project.ProjectNumber) == projectNumber
+	v := fmt.Sprintf("%d", number) == projectNumber
 	return &v, nil
+}
+
+type gcpProjectNumberLookup struct {
+	mu     sync.Mutex
+	number int64
+	done   bool
+}
+
+// gcpProjectNumberCache shares project number lookups across resources in one provider run,
+// since many connectors resolve the same primary project against a per-minute read quota.
+var gcpProjectNumberCache sync.Map
+
+var gcpRateLimitRetryCooldown = serviceUsageRetryCooldown
+
+func lookupGCPProjectNumber(ctx context.Context, crmClient *cloudresourcemanager.Service, projectID string) (int64, error) {
+	value, _ := gcpProjectNumberCache.LoadOrStore(projectID, &gcpProjectNumberLookup{})
+	lookup := value.(*gcpProjectNumberLookup)
+	lookup.mu.Lock()
+	defer lookup.mu.Unlock()
+	if lookup.done {
+		return lookup.number, nil
+	}
+
+	// Retry while the key is still propagating or the read quota is exhausted. Any other
+	// failure (a genuine 403, a missing project) is returned immediately rather than waited on.
+	deadline := time.Now().Add(gcpKeyPropagationWaitTimeout)
+	rateLimitRetries := 0
+	for attempt := 1; ; attempt++ {
+		project, err := crmClient.Projects.Get(projectID).Context(ctx).Do()
+		if err == nil {
+			lookup.number, lookup.done = project.ProjectNumber, true
+			return lookup.number, nil
+		}
+
+		var wait time.Duration
+		switch {
+		case isGCPKeyPropagationError(err) && time.Now().Before(deadline):
+			wait = gcpKeyPropagationPollInterval
+		case isGCPRateLimitError(err) && rateLimitRetries < gcpRateLimitMaxRetries:
+			wait = gcpRateLimitRetryCooldown(rateLimitRetries)
+			rateLimitRetries++
+		default:
+			return 0, fmt.Errorf("failed to get project %s: %w", projectID, err)
+		}
+		tflog.Debug(ctx, fmt.Sprintf(
+			"[CAM Connector GCP] failed to get project %s (attempt %d), retrying in %s: %s",
+			projectID, attempt, wait, err))
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+}
+
+func isGCPRateLimitError(err error) bool {
+	var apiErr *googleapi.Error
+	return errors.As(err, &apiErr) && apiErr.Code == http.StatusTooManyRequests
 }
 
 var gcpCAMProjectMutationLocks sync.Map
@@ -262,11 +312,37 @@ func createProjectAndWaitConnected(
 	projectNumber string,
 	connectTimeout, pollInterval time.Duration,
 ) (*api.ProjectResponse, error) {
-	if createErr := client.CreateProject(body); createErr != nil && !strings.Contains(createErr.Error(), "account-exist") {
-		return nil, createErr
+	if err := createProjectWaitingForPrimary(ctx, client, body, gcpPrimaryProjectWaitTimeout, gcpPrimaryProjectWaitInterval); err != nil {
+		return nil, err
 	}
 
 	return waitForGCPProjectConnected(ctx, client, projectNumber, connectTimeout, pollInterval)
+}
+
+// createProjectWaitingForPrimary retries a member project while its primary project, created
+// in parallel by the same apply, is not yet registered.
+func createProjectWaitingForPrimary(ctx context.Context, client gcpProjectConnector, body *api.CreateProjectRequest, timeout, interval time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		err := client.CreateProject(body)
+		if err == nil || strings.Contains(err.Error(), "account-exist") {
+			return nil
+		}
+		if !strings.Contains(err.Error(), gcpMissingPrimaryProjectError) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the primary project was not connected within %s; make sure its connector succeeds, "+
+				"then run terraform apply again: %w", timeout, err)
+		}
+
+		tflog.Debug(ctx, fmt.Sprintf("[GCP CAM] Waiting for the primary project before connecting project %s", body.ProjectNumber))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
 }
 
 func waitForGCPProjectConnected(ctx context.Context, client interface {
@@ -514,19 +590,48 @@ func DiscoverAllFoldersInOrganization(
 
 // ===== IAM Utilities =====
 
-// HasRoleBinding checks if a specific role binding exists for a member in the IAM policy.
-func HasRoleBinding(policy *cloudresourcemanager.Policy, roleName, member string) bool {
-	for _, binding := range policy.Bindings {
-		if binding.Role != roleName {
+func getIAMPolicyV3(ctx context.Context, gcpClients *api.GCPClients, resource string) (*cloudresourcemanager.Policy, error) {
+	policy, err := gcpClients.CRMClient.Projects.GetIamPolicy(resource, &cloudresourcemanager.GetIamPolicyRequest{
+		Options: &cloudresourcemanager.GetPolicyOptions{RequestedPolicyVersion: 3},
+	}).Context(ctx).Do()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get IAM policy: %w", err)
+	}
+	if policy == nil {
+		return nil, fmt.Errorf("IAM policy response was empty")
+	}
+	return policy, nil
+}
+
+func missingUnconditionalRoleBindings(policy *cloudresourcemanager.Policy, roleNames []string, member string) []string {
+	var missing []string
+	seen := make(map[string]bool, len(roleNames))
+	for _, roleName := range roleNames {
+		if seen[roleName] {
 			continue
 		}
-		for _, m := range binding.Members {
-			if m == member {
-				return true
+		seen[roleName] = true
+
+		bound := false
+		for _, binding := range policy.Bindings {
+			if binding == nil || binding.Role != roleName || binding.Condition != nil {
+				continue
+			}
+			for _, existingMember := range binding.Members {
+				if existingMember == member {
+					bound = true
+					break
+				}
+			}
+			if bound {
+				break
 			}
 		}
+		if !bound {
+			missing = append(missing, roleName)
+		}
 	}
-	return false
+	return missing
 }
 
 // AddIAMBinding adds IAM binding for service account to a project.
@@ -537,11 +642,11 @@ func AddIAMBinding(
 	member string,
 	roleName string,
 ) error {
-	return RetryIAMPolicyUpdate(ctx, gcpClients, projectID, func(policy *cloudresourcemanager.Policy) error {
-		// Find existing binding for this role
+	return RetryIAMPolicyUpdate(ctx, gcpClients, projectID, func(policy *cloudresourcemanager.Policy) (bool, error) {
+		// Conditional bindings with the same role are distinct grants; only modify an unconditional binding.
 		var binding *cloudresourcemanager.Binding
 		for _, b := range policy.Bindings {
-			if b.Role == roleName {
+			if b != nil && b.Role == roleName && b.Condition == nil {
 				binding = b
 				break
 			}
@@ -552,7 +657,7 @@ func AddIAMBinding(
 			for _, m := range binding.Members {
 				if m == member {
 					// Already bound, no change needed
-					return nil
+					return false, nil
 				}
 			}
 			// Add member to existing binding
@@ -565,7 +670,7 @@ func AddIAMBinding(
 			})
 		}
 
-		return nil
+		return true, nil
 	})
 }
 
@@ -577,28 +682,35 @@ func RemoveIAMBinding(
 	member string,
 	roleName string,
 ) error {
-	return RetryIAMPolicyUpdate(ctx, gcpClients, projectID, func(policy *cloudresourcemanager.Policy) error {
+	return RetryIAMPolicyUpdate(ctx, gcpClients, projectID, func(policy *cloudresourcemanager.Policy) (bool, error) {
 		// Find binding for this role
 		for i, binding := range policy.Bindings {
-			if binding.Role == roleName {
-				// Remove member from binding
-				var newMembers []string
-				for _, m := range binding.Members {
-					if m != member {
-						newMembers = append(newMembers, m)
-					}
-				}
-
-				// If no members left, remove entire binding
-				if len(newMembers) == 0 {
-					policy.Bindings = append(policy.Bindings[:i], policy.Bindings[i+1:]...)
-				} else {
-					binding.Members = newMembers
-				}
-				break
+			if binding == nil || binding.Role != roleName || binding.Condition != nil {
+				continue
 			}
+			// Remove member from the unconditional binding.
+			var newMembers []string
+			removed := false
+			for _, m := range binding.Members {
+				if m != member {
+					newMembers = append(newMembers, m)
+				} else {
+					removed = true
+				}
+			}
+			if !removed {
+				return false, nil
+			}
+
+			// If no members left, remove entire binding.
+			if len(newMembers) == 0 {
+				policy.Bindings = append(policy.Bindings[:i], policy.Bindings[i+1:]...)
+			} else {
+				binding.Members = newMembers
+			}
+			return true, nil
 		}
-		return nil
+		return false, nil
 	})
 }
 
@@ -607,22 +719,24 @@ func RetryIAMPolicyUpdate(
 	ctx context.Context,
 	gcpClients *api.GCPClients,
 	projectID string,
-	modifyFunc func(*cloudresourcemanager.Policy) error,
+	modifyFunc func(*cloudresourcemanager.Policy) (bool, error),
 ) error {
 	resource := projectID
 	principalDeadline := time.Now().Add(gcpPrincipalPropagationWaitTimeout)
 
 	for attempt := 0; attempt < config.IAM_POLICY_MAX_RETRIES; attempt++ {
-		// Get current policy
-		getReq := &cloudresourcemanager.GetIamPolicyRequest{}
-		policy, err := gcpClients.CRMClient.Projects.GetIamPolicy(resource, getReq).Context(ctx).Do()
+		policy, err := getIAMPolicyV3(ctx, gcpClients, resource)
 		if err != nil {
-			return fmt.Errorf("failed to get IAM policy: %w", err)
+			return err
 		}
 
 		// Modify policy
-		if modifyErr := modifyFunc(policy); modifyErr != nil {
+		changed, modifyErr := modifyFunc(policy)
+		if modifyErr != nil {
 			return modifyErr
+		}
+		if !changed {
+			return nil
 		}
 
 		// Set updated policy
@@ -779,7 +893,9 @@ func DeleteServiceAccountKey(
 func AddFolderIAMBinding(ctx context.Context, gcpClients *api.GCPClients, folderID, member, role string) error {
 	resource := fmt.Sprintf("folders/%s", folderID)
 	for attempt := 0; attempt < config.IAM_POLICY_MAX_RETRIES; attempt++ {
-		policy, err := gcpClients.CRMClientV2.Folders.GetIamPolicy(resource, &cloudresourcemanagerv2.GetIamPolicyRequest{}).Context(ctx).Do()
+		policy, err := gcpClients.CRMClientV2.Folders.GetIamPolicy(resource, &cloudresourcemanagerv2.GetIamPolicyRequest{
+			Options: &cloudresourcemanagerv2.GetPolicyOptions{RequestedPolicyVersion: 3},
+		}).Context(ctx).Do()
 		if err != nil {
 			return fmt.Errorf("failed to get folder IAM policy: %w", err)
 		}
@@ -787,7 +903,7 @@ func AddFolderIAMBinding(ctx context.Context, gcpClients *api.GCPClients, folder
 		alreadyBound := false
 		var binding *cloudresourcemanagerv2.Binding
 		for _, b := range policy.Bindings {
-			if b.Role == role {
+			if b != nil && b.Role == role && b.Condition == nil {
 				binding = b
 				break
 			}
@@ -834,26 +950,40 @@ func AddFolderIAMBinding(ctx context.Context, gcpClients *api.GCPClients, folder
 func RemoveFolderIAMBinding(ctx context.Context, gcpClients *api.GCPClients, folderID, member, role string) error {
 	resource := fmt.Sprintf("folders/%s", folderID)
 	for attempt := 0; attempt < config.IAM_POLICY_MAX_RETRIES; attempt++ {
-		policy, err := gcpClients.CRMClientV2.Folders.GetIamPolicy(resource, &cloudresourcemanagerv2.GetIamPolicyRequest{}).Context(ctx).Do()
+		policy, err := gcpClients.CRMClientV2.Folders.GetIamPolicy(resource, &cloudresourcemanagerv2.GetIamPolicyRequest{
+			Options: &cloudresourcemanagerv2.GetPolicyOptions{RequestedPolicyVersion: 3},
+		}).Context(ctx).Do()
 		if err != nil {
 			return fmt.Errorf("failed to get folder IAM policy: %w", err)
 		}
 
+		changed := false
 		for i, binding := range policy.Bindings {
-			if binding.Role == role {
-				var newMembers []string
-				for _, m := range binding.Members {
-					if m != member {
-						newMembers = append(newMembers, m)
-					}
-				}
-				if len(newMembers) == 0 {
-					policy.Bindings = append(policy.Bindings[:i], policy.Bindings[i+1:]...)
-				} else {
-					binding.Members = newMembers
-				}
-				break
+			if binding == nil || binding.Role != role || binding.Condition != nil {
+				continue
 			}
+			var newMembers []string
+			removed := false
+			for _, m := range binding.Members {
+				if m != member {
+					newMembers = append(newMembers, m)
+				} else {
+					removed = true
+				}
+			}
+			if !removed {
+				return nil
+			}
+			if len(newMembers) == 0 {
+				policy.Bindings = append(policy.Bindings[:i], policy.Bindings[i+1:]...)
+			} else {
+				binding.Members = newMembers
+			}
+			changed = true
+			break
+		}
+		if !changed {
+			return nil
 		}
 
 		_, err = gcpClients.CRMClientV2.Folders.SetIamPolicy(resource, &cloudresourcemanagerv2.SetIamPolicyRequest{Policy: policy}).Context(ctx).Do()
@@ -873,19 +1003,22 @@ func RemoveFolderIAMBinding(ctx context.Context, gcpClients *api.GCPClients, fol
 	return fmt.Errorf("failed to update folder IAM policy after %d retries", config.IAM_POLICY_MAX_RETRIES)
 }
 
-// HasFolderRoleBinding checks if a member has a specific role binding on a GCP folder.
+// HasFolderRoleBinding checks if a member has a specific unconditional role binding on a GCP folder.
 func HasFolderRoleBinding(ctx context.Context, gcpClients *api.GCPClients, folderID, member, role string) (bool, error) {
 	resource := fmt.Sprintf("folders/%s", folderID)
-	policy, err := gcpClients.CRMClientV2.Folders.GetIamPolicy(resource, &cloudresourcemanagerv2.GetIamPolicyRequest{}).Context(ctx).Do()
+	policy, err := gcpClients.CRMClientV2.Folders.GetIamPolicy(resource, &cloudresourcemanagerv2.GetIamPolicyRequest{
+		Options: &cloudresourcemanagerv2.GetPolicyOptions{RequestedPolicyVersion: 3},
+	}).Context(ctx).Do()
 	if err != nil {
 		return false, fmt.Errorf("failed to get folder IAM policy: %w", err)
 	}
 	for _, binding := range policy.Bindings {
-		if binding.Role == role {
-			for _, m := range binding.Members {
-				if m == member {
-					return true, nil
-				}
+		if binding == nil || binding.Role != role || binding.Condition != nil {
+			continue
+		}
+		for _, m := range binding.Members {
+			if m == member {
+				return true, nil
 			}
 		}
 	}
@@ -896,7 +1029,9 @@ func HasFolderRoleBinding(ctx context.Context, gcpClients *api.GCPClients, folde
 func AddOrgIAMBinding(ctx context.Context, gcpClients *api.GCPClients, orgID, member, role string) error {
 	resource := fmt.Sprintf("organizations/%s", orgID)
 	for attempt := 0; attempt < config.IAM_POLICY_MAX_RETRIES; attempt++ {
-		policy, err := gcpClients.CRMClient.Organizations.GetIamPolicy(resource, &cloudresourcemanager.GetIamPolicyRequest{}).Context(ctx).Do()
+		policy, err := gcpClients.CRMClient.Organizations.GetIamPolicy(resource, &cloudresourcemanager.GetIamPolicyRequest{
+			Options: &cloudresourcemanager.GetPolicyOptions{RequestedPolicyVersion: 3},
+		}).Context(ctx).Do()
 		if err != nil {
 			return fmt.Errorf("failed to get organization IAM policy: %w", err)
 		}
@@ -904,7 +1039,7 @@ func AddOrgIAMBinding(ctx context.Context, gcpClients *api.GCPClients, orgID, me
 		alreadyBound := false
 		var binding *cloudresourcemanager.Binding
 		for _, b := range policy.Bindings {
-			if b.Role == role {
+			if b != nil && b.Role == role && b.Condition == nil {
 				binding = b
 				break
 			}
@@ -951,26 +1086,40 @@ func AddOrgIAMBinding(ctx context.Context, gcpClients *api.GCPClients, orgID, me
 func RemoveOrgIAMBinding(ctx context.Context, gcpClients *api.GCPClients, orgID, member, role string) error {
 	resource := fmt.Sprintf("organizations/%s", orgID)
 	for attempt := 0; attempt < config.IAM_POLICY_MAX_RETRIES; attempt++ {
-		policy, err := gcpClients.CRMClient.Organizations.GetIamPolicy(resource, &cloudresourcemanager.GetIamPolicyRequest{}).Context(ctx).Do()
+		policy, err := gcpClients.CRMClient.Organizations.GetIamPolicy(resource, &cloudresourcemanager.GetIamPolicyRequest{
+			Options: &cloudresourcemanager.GetPolicyOptions{RequestedPolicyVersion: 3},
+		}).Context(ctx).Do()
 		if err != nil {
 			return fmt.Errorf("failed to get organization IAM policy: %w", err)
 		}
 
+		changed := false
 		for i, binding := range policy.Bindings {
-			if binding.Role == role {
-				var newMembers []string
-				for _, m := range binding.Members {
-					if m != member {
-						newMembers = append(newMembers, m)
-					}
-				}
-				if len(newMembers) == 0 {
-					policy.Bindings = append(policy.Bindings[:i], policy.Bindings[i+1:]...)
-				} else {
-					binding.Members = newMembers
-				}
-				break
+			if binding == nil || binding.Role != role || binding.Condition != nil {
+				continue
 			}
+			var newMembers []string
+			removed := false
+			for _, m := range binding.Members {
+				if m != member {
+					newMembers = append(newMembers, m)
+				} else {
+					removed = true
+				}
+			}
+			if !removed {
+				return nil
+			}
+			if len(newMembers) == 0 {
+				policy.Bindings = append(policy.Bindings[:i], policy.Bindings[i+1:]...)
+			} else {
+				binding.Members = newMembers
+			}
+			changed = true
+			break
+		}
+		if !changed {
+			return nil
 		}
 
 		_, err = gcpClients.CRMClient.Organizations.SetIamPolicy(resource, &cloudresourcemanager.SetIamPolicyRequest{Policy: policy}).Context(ctx).Do()
@@ -990,19 +1139,22 @@ func RemoveOrgIAMBinding(ctx context.Context, gcpClients *api.GCPClients, orgID,
 	return fmt.Errorf("failed to update organization IAM policy after %d retries", config.IAM_POLICY_MAX_RETRIES)
 }
 
-// HasOrgRoleBinding checks if a member has a specific role binding on a GCP organization.
+// HasOrgRoleBinding checks if a member has a specific unconditional role binding on a GCP organization.
 func HasOrgRoleBinding(ctx context.Context, gcpClients *api.GCPClients, orgID, member, role string) (bool, error) {
 	resource := fmt.Sprintf("organizations/%s", orgID)
-	policy, err := gcpClients.CRMClient.Organizations.GetIamPolicy(resource, &cloudresourcemanager.GetIamPolicyRequest{}).Context(ctx).Do()
+	policy, err := gcpClients.CRMClient.Organizations.GetIamPolicy(resource, &cloudresourcemanager.GetIamPolicyRequest{
+		Options: &cloudresourcemanager.GetPolicyOptions{RequestedPolicyVersion: 3},
+	}).Context(ctx).Do()
 	if err != nil {
 		return false, fmt.Errorf("failed to get organization IAM policy: %w", err)
 	}
 	for _, binding := range policy.Bindings {
-		if binding.Role == role {
-			for _, m := range binding.Members {
-				if m == member {
-					return true, nil
-				}
+		if binding == nil || binding.Role != role || binding.Condition != nil {
+			continue
+		}
+		for _, m := range binding.Members {
+			if m == member {
+				return true, nil
 			}
 		}
 	}
