@@ -3,6 +3,7 @@ package resources
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
@@ -56,15 +58,16 @@ type serviceAccountIntegrationResourceModel struct {
 	RotationTime types.String `tfsdk:"rotation_time"`
 
 	// Computed Outputs
-	ServiceAccountEmail    types.String `tfsdk:"service_account_email"`
-	ServiceAccountName     types.String `tfsdk:"service_account_name"`
-	ServiceAccountUniqueID types.String `tfsdk:"service_account_unique_id"`
-	KeyName                types.String `tfsdk:"key_name"`
-	PrivateKey             types.String `tfsdk:"private_key"`
-	ValidAfter             types.String `tfsdk:"valid_after"`
-	ValidBefore            types.String `tfsdk:"valid_before"`
-	BoundProjects          types.List   `tfsdk:"bound_projects"`
-	BoundProjectNumbers    types.List   `tfsdk:"bound_project_numbers"`
+	ServiceAccountEmail           types.String `tfsdk:"service_account_email"`
+	ServiceAccountName            types.String `tfsdk:"service_account_name"`
+	ServiceAccountUniqueID        types.String `tfsdk:"service_account_unique_id"`
+	KeyName                       types.String `tfsdk:"key_name"`
+	PrivateKey                    types.String `tfsdk:"private_key"`
+	ValidAfter                    types.String `tfsdk:"valid_after"`
+	ValidBefore                   types.String `tfsdk:"valid_before"`
+	BoundProjects                 types.List   `tfsdk:"bound_projects"`
+	BoundProjectNumbers           types.List   `tfsdk:"bound_project_numbers"`
+	BindingReconciliationRevision types.Int64  `tfsdk:"binding_reconciliation_revision"`
 	// NodeScanBindingResource is "folders/{id}" or "organizations/{id}" where the node scan roles were granted.
 	NodeScanBindingResource types.String `tfsdk:"node_scan_binding_resource"`
 }
@@ -221,13 +224,20 @@ func (r *ServiceAccountIntegration) Schema(_ context.Context, _ resource.SchemaR
 			},
 			"bound_projects": schema.ListAttribute{
 				ElementType:         types.StringType,
-				MarkdownDescription: "List of project IDs where IAM role bindings were created for this service account.",
+				MarkdownDescription: "List of project IDs in scope for this service account. Project discovery and IAM binding checks run on every plan, so newly created projects are added, deleted or excluded projects are removed, and missing bindings trigger an update to restore the configured roles.",
 				Computed:            true,
 			},
 			"bound_project_numbers": schema.ListAttribute{
 				ElementType:         types.StringType,
 				MarkdownDescription: "List of project numbers corresponding to bound_projects, in the same order.",
 				Computed:            true,
+			},
+			"binding_reconciliation_revision": schema.Int64Attribute{
+				MarkdownDescription: "Provider-managed revision that triggers IAM binding reconciliation when a configured binding is missing.",
+				Computed:            true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
 			},
 			"node_scan_binding_resource": schema.StringAttribute{
 				MarkdownDescription: "The folder or organization resource (folders/{id} or organizations/{id}) where the node scan roles were granted. Set when central_management_project_id_in_folder or central_management_project_id_in_org is used together with node_scan_roles.",
@@ -444,17 +454,7 @@ func (r *ServiceAccountIntegration) Create(ctx context.Context, req resource.Cre
 						// Role doesn't exist, create it
 						tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Create] Replicating custom role %s to project %s", roleID, targetProjectID))
 
-						createRoleReq := &iam.CreateRoleRequest{
-							RoleId: roleID,
-							Role: &iam.Role{
-								Title:               sourceRole.Title,
-								Description:         fmt.Sprintf("%s (replicated for multi-project service account)", sourceRole.Description),
-								IncludedPermissions: sourceRole.IncludedPermissions,
-								Stage:               sourceRole.Stage,
-							},
-						}
-
-						_, createErr := gcpClients.IAMClient.Projects.Roles.Create(fmt.Sprintf("projects/%s", targetProjectID), createRoleReq).Context(ctx).Do()
+						createErr := createReplicatedCustomRole(ctx, gcpClients, sourceRole, targetProjectID, roleID)
 						if createErr != nil {
 							tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Create] Failed to create custom role in project %s: %s", targetProjectID, createErr.Error()))
 						} else {
@@ -713,6 +713,7 @@ func (r *ServiceAccountIntegration) Create(ctx context.Context, req resource.Cre
 	plan.PrivateKey = types.StringValue(key.PrivateKeyData)
 	plan.ValidAfter = types.StringValue(key.ValidAfterTime)
 	plan.ValidBefore = types.StringValue(key.ValidBeforeTime)
+	plan.BindingReconciliationRevision = types.Int64Null()
 
 	tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Create] Service account key created: %s", key.Name))
 
@@ -765,15 +766,6 @@ func (r *ServiceAccountIntegration) Read(ctx context.Context, req resource.ReadR
 		return
 	}
 
-	// Get primary project roles from state
-	var primaryRoleNames []string
-	if !state.PrimaryProjectRoles.IsNull() {
-		if roleDiags := state.PrimaryProjectRoles.ElementsAs(ctx, &primaryRoleNames, false); roleDiags.HasError() {
-			resp.Diagnostics.Append(roleDiags...)
-			return
-		}
-	}
-
 	// Validate all roles still exist
 	for _, roleName := range roleNames {
 		_, err = gcpClients.IAMClient.Projects.Roles.Get(roleName).Context(ctx).Do()
@@ -799,94 +791,24 @@ func (r *ServiceAccountIntegration) Read(ctx context.Context, req resource.ReadR
 		}
 	}
 
-	member := fmt.Sprintf("serviceAccount:%s", sa.Email)
-	primaryProjectID := state.ProjectID.ValueString()
-
-	// Check IAM policy per project concurrently
-	type projectCheckResult struct {
-		projectID     string
-		projectNumber string
-		bound         bool
-	}
-	checkResults := make([]projectCheckResult, len(stateBoundProjects))
-	var readWg sync.WaitGroup
-	sem := cam.GCPServiceAccountSem
-	for p, projectID := range stateBoundProjects {
-		readWg.Add(1)
-		go func(idx int, projID string) {
-			defer readWg.Done()
-			sem <- struct{}{}        // acquire slot
-			defer func() { <-sem }() // release slot
-
-			tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Read] Checking service account principal bindings in project: %s (%d/%d)", projID, idx+1, len(stateBoundProjects)))
-			getReq := &cloudresourcemanager.GetIamPolicyRequest{}
-			policy, policyErr := gcpClients.CRMClient.Projects.GetIamPolicy(projID, getReq).Context(ctx).Do()
-			if policyErr != nil {
-				tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Read] Failed to get IAM policy for project %s: %s", projID, policyErr.Error()))
-				return
-			}
-
-			// Check if all roles are bound to this project
-			allRolesBound := true
-			for _, roleName := range roleNames {
-				actualRoleName := roleName
-
-				// Organization-level roles can be bound directly to any project
-				if strings.HasPrefix(roleName, "organizations/") {
-					tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Read] Checking organization-level custom role %s for project %s", roleName, projID))
-				} else if strings.HasPrefix(roleName, "projects/") {
-					parts := strings.Split(roleName, "/")
-					if len(parts) >= 4 {
-						sourceProjectID := parts[1]
-						roleID := parts[3]
-
-						if sourceProjectID != projID {
-							actualRoleName = fmt.Sprintf("projects/%s/roles/%s", projID, roleID)
-							tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Read] Checking replicated custom role %s for project %s", actualRoleName, projID))
-						}
-					}
-				}
-
-				if !HasRoleBinding(policy, actualRoleName, member) {
-					allRolesBound = false
-					tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Read] Drift detected: IAM binding for role %s missing in project %s", actualRoleName, projID))
-					break
-				}
-			}
-
-			// Check primary project roles for the primary project only
-			if allRolesBound && projID == primaryProjectID {
-				for _, primaryRoleName := range primaryRoleNames {
-					if !HasRoleBinding(policy, primaryRoleName, member) {
-						allRolesBound = false
-						tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Read] Drift detected: primary project IAM binding for role %s missing in project %s", primaryRoleName, projID))
-						break
-					}
-				}
-			}
-
-			var projNum string
-			if idx < len(stateBoundProjectNumbers) {
-				projNum = stateBoundProjectNumbers[idx]
-			}
-			checkResults[idx] = projectCheckResult{projectID: projID, projectNumber: projNum, bound: allRolesBound}
-		}(p, projectID)
-	}
-	readWg.Wait()
-
-	for _, result := range checkResults {
-		if !result.bound {
+	// bound_projects tracks the discovered scope, which ModifyPlan reconciles on every plan. A missing
+	// or unreadable binding must not shrink it here: downstream for_each would destroy that project's resources.
+	for idx, projID := range stateBoundProjects {
+		if IsSystemProjectID(projID) {
+			tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Read] Dropping system project from bound projects: %s", projID))
 			continue
 		}
-
-		if IsSystemProjectID(result.projectID) {
-			tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Read] Dropping system project from bound projects: %s", result.projectID))
-			continue
+		var projNum string
+		if idx < len(stateBoundProjectNumbers) {
+			projNum = stateBoundProjectNumbers[idx]
 		}
-		currentBoundProjects = append(currentBoundProjects, result.projectID)
-		currentBoundProjectNumbers = append(currentBoundProjectNumbers, result.projectNumber)
+		currentBoundProjects = append(currentBoundProjects, projID)
+		// Keep a slot even when the number is unknown, so the two lists stay positionally
+		// aligned; the gap is filled below.
+		currentBoundProjectNumbers = append(currentBoundProjectNumbers, projNum)
 	}
 
+	// Repair any project number the state could not supply.
 	if slices.Contains(currentBoundProjectNumbers, "") {
 		tflog.Info(ctx, "[Service Account Key][Read] Re-resolving project number(s) missing from state")
 		resolved, resolveErr := r.resolveProjectNumbers(ctx, gcpClients, currentBoundProjects)
@@ -930,6 +852,7 @@ func (r *ServiceAccountIntegration) Read(ctx context.Context, req resource.ReadR
 	// Verify the node scan role bindings still exist on the folder/organization node.
 	if !state.NodeScanBindingResource.IsNull() && !state.NodeScanBindingResource.IsUnknown() {
 		nodeResource := state.NodeScanBindingResource.ValueString()
+		member := fmt.Sprintf("serviceAccount:%s", sa.Email)
 		var nodeScanRoles []string
 		if !state.NodeScanRoles.IsNull() && !state.NodeScanRoles.IsUnknown() {
 			resp.Diagnostics.Append(state.NodeScanRoles.ElementsAs(ctx, &nodeScanRoles, false)...)
@@ -989,6 +912,367 @@ func nodeScanRoleDelta(desired, previous []string) (toAdd, toRemove []string) {
 		}
 	}
 	return toAdd, toRemove
+}
+
+// ModifyPlan rediscovers the target projects on every plan so bound_projects adds newly created
+// projects and drops deleted or excluded ones, with the change visible to downstream for_each.
+func (r *ServiceAccountIntegration) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var plan, state serviceAccountIntegrationResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if req.State.Raw.IsNull() {
+		return
+	}
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	revision := bindingReconciliationRevision(state.BindingReconciliationRevision, false)
+	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("binding_reconciliation_revision"), revision)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Update rediscovers once these are known.
+	if plan.CentralManagementProjectIDFolder.IsUnknown() || plan.CentralManagementProjectIDOrg.IsUnknown() ||
+		plan.ExcludeFreeTrialProjects.IsUnknown() || plan.ExcludeProjects.IsUnknown() {
+		return
+	}
+	for _, excluded := range plan.ExcludeProjects.Elements() {
+		if excluded.IsUnknown() {
+			return
+		}
+	}
+
+	gcpClients, diags := api.GetGCPClients(ctx, state.ProjectID.ValueString())
+	if diags.HasError() {
+		resp.Diagnostics.Append(diags...)
+		return
+	}
+
+	projects, numbers, err := r.reconcileBoundProjects(ctx, gcpClients, &plan, &state)
+	if err != nil {
+		resp.Diagnostics.AddError("[Service Account Key][ModifyPlan] Failed to discover target projects", err.Error())
+		return
+	}
+
+	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("bound_projects"), projects)...)
+	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("bound_project_numbers"), numbers)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if plan.Roles.IsNull() || plan.Roles.IsUnknown() || plan.PrimaryProjectRoles.IsUnknown() ||
+		state.ServiceAccountEmail.IsNull() || state.ServiceAccountEmail.IsUnknown() ||
+		state.ProjectID.IsNull() || state.ProjectID.IsUnknown() {
+		return
+	}
+	if hasUnknownString(plan.Roles) || hasUnknownString(plan.PrimaryProjectRoles) {
+		return
+	}
+	var roleNames, primaryRoleNames []string
+	resp.Diagnostics.Append(plan.Roles.ElementsAs(ctx, &roleNames, false)...)
+	if !plan.PrimaryProjectRoles.IsNull() {
+		resp.Diagnostics.Append(plan.PrimaryProjectRoles.ElementsAs(ctx, &primaryRoleNames, false)...)
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	member := fmt.Sprintf("serviceAccount:%s", state.ServiceAccountEmail.ValueString())
+	missingProjects, checkFailures, err := inspectProjectBindingDrift(
+		ctx, gcpClients, projects, roleNames, primaryRoleNames, state.ProjectID.ValueString(), member, cam.GCPServiceAccountSem,
+	)
+	if err != nil {
+		resp.Diagnostics.AddError("[Service Account Key][ModifyPlan] Failed to check IAM bindings", err.Error())
+		return
+	}
+	if len(missingProjects) > 0 {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("binding_reconciliation_revision"), bindingReconciliationRevision(revision, true))...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+	if len(checkFailures) > 0 {
+		const maxFailureDetails = 5
+		details := checkFailures
+		if len(details) > maxFailureDetails {
+			details = append(slices.Clone(details[:maxFailureDetails]), fmt.Sprintf("... and %d more", len(details)-maxFailureDetails))
+		}
+		resp.Diagnostics.AddWarning(
+			"[Service Account Key][ModifyPlan] Unable to verify IAM bindings",
+			fmt.Sprintf("Could not read IAM policies for %d project(s); those projects were not assumed to have missing bindings and will be checked again on a later plan. Read failures: %s",
+				len(checkFailures), strings.Join(details, "; ")),
+		)
+	}
+}
+
+func bindingReconciliationRevision(current types.Int64, bindingsMissing bool) types.Int64 {
+	if current.IsUnknown() {
+		current = types.Int64Null()
+	}
+	if !bindingsMissing {
+		return current
+	}
+	if current.IsNull() {
+		return types.Int64Value(1)
+	}
+	return types.Int64Value(current.ValueInt64() + 1)
+}
+
+func hasUnknownString(value types.List) bool {
+	if value.IsNull() || value.IsUnknown() {
+		return value.IsUnknown()
+	}
+	for _, element := range value.Elements() {
+		if element.IsUnknown() {
+			return true
+		}
+	}
+	return false
+}
+
+type projectBindingInspection struct {
+	projectID    string
+	missingRoles []string
+	err          error
+}
+
+func inspectProjectBindingDrift(
+	ctx context.Context,
+	gcpClients *api.GCPClients,
+	projects, roleNames, primaryRoleNames []string,
+	primaryProjectID, member string,
+	sem chan struct{},
+) (missingProjects, failures []string, err error) {
+	results := make(chan projectBindingInspection, len(projects))
+	var wg sync.WaitGroup
+	for _, projectID := range projects {
+		expectedRoles := expectedProjectBindingRoles(projectID, primaryProjectID, roleNames, primaryRoleNames)
+		if len(expectedRoles) == 0 {
+			continue
+		}
+		wg.Add(1)
+		go func(projectID string, expectedRoles []string) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				results <- projectBindingInspection{projectID: projectID, err: ctx.Err()}
+				return
+			}
+
+			policy, getErr := getIAMPolicyV3(ctx, gcpClients, projectID)
+			if getErr != nil {
+				results <- projectBindingInspection{projectID: projectID, err: getErr}
+				return
+			}
+			results <- projectBindingInspection{
+				projectID:    projectID,
+				missingRoles: missingUnconditionalRoleBindings(policy, expectedRoles, member),
+			}
+		}(projectID, expectedRoles)
+	}
+	wg.Wait()
+	close(results)
+
+	for result := range results {
+		if result.err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %s", result.projectID, result.err))
+			continue
+		}
+		if len(result.missingRoles) > 0 {
+			missingProjects = append(missingProjects, result.projectID)
+		}
+	}
+	slices.Sort(missingProjects)
+	slices.Sort(failures)
+	if ctx.Err() != nil {
+		return nil, nil, ctx.Err()
+	}
+	return missingProjects, failures, nil
+}
+
+func expectedProjectBindingRoles(projectID, primaryProjectID string, roleNames, primaryRoleNames []string) []string {
+	roles := make([]string, 0, len(roleNames)+len(primaryRoleNames)+1)
+	addRole := func(roleName string) {
+		if !slices.Contains(roles, roleName) {
+			roles = append(roles, roleName)
+		}
+	}
+	for _, roleName := range roleNames {
+		addRole(projectRoleNameForProject(roleName, projectID))
+	}
+	if projectID == primaryProjectID {
+		for _, roleName := range primaryRoleNames {
+			addRole(roleName)
+		}
+		addRole(config.GCP_SA_DISCOVERY_ROLE)
+	}
+	return roles
+}
+
+func projectRoleNameForProject(roleName, projectID string) string {
+	if !strings.HasPrefix(roleName, "projects/") {
+		return roleName
+	}
+	parts := strings.Split(roleName, "/")
+	if len(parts) >= 4 && parts[1] != projectID {
+		return fmt.Sprintf("projects/%s/roles/%s", projectID, parts[3])
+	}
+	return roleName
+}
+
+// reconcileBoundProjects returns the discovered target projects and their numbers, ordered by
+// mergeBoundProjects so an unchanged scope reproduces the prior lists exactly.
+func (r *ServiceAccountIntegration) reconcileBoundProjects(
+	ctx context.Context,
+	gcpClients *api.GCPClients,
+	plan, state *serviceAccountIntegrationResourceModel,
+) (projects, numbers []string, err error) {
+	discovered, err := r.discoverTargetProjects(ctx, gcpClients, plan, state.ProjectID.ValueString())
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var priorProjects, priorNumbers []string
+	if diags := state.BoundProjects.ElementsAs(ctx, &priorProjects, false); diags.HasError() {
+		return nil, nil, fmt.Errorf("failed to read bound_projects from state")
+	}
+	if !state.BoundProjectNumbers.IsNull() {
+		if diags := state.BoundProjectNumbers.ElementsAs(ctx, &priorNumbers, false); diags.HasError() {
+			return nil, nil, fmt.Errorf("failed to read bound_project_numbers from state")
+		}
+	}
+
+	projects, numbers = mergeBoundProjects(priorProjects, priorNumbers, discovered)
+
+	var unresolved []string
+	for i, projID := range projects {
+		if numbers[i] == "" {
+			unresolved = append(unresolved, projID)
+		}
+	}
+	if len(unresolved) > 0 {
+		resolved, resolveErr := r.resolveProjectNumbers(ctx, gcpClients, unresolved)
+		if resolveErr != nil {
+			return nil, nil, resolveErr
+		}
+		for i, projID := range projects {
+			if numbers[i] == "" {
+				numbers[i] = resolved[projID]
+			}
+		}
+	}
+	return projects, numbers, nil
+}
+
+// mergeBoundProjects keeps prior projects still in scope in their prior order (with their known
+// numbers), then appends newly discovered projects with an empty number for the caller to resolve.
+func mergeBoundProjects(priorProjects, priorNumbers, discovered []string) (projects, numbers []string) {
+	inScope := make(map[string]bool, len(discovered))
+	for _, projID := range discovered {
+		inScope[projID] = true
+	}
+
+	projects = make([]string, 0, len(discovered))
+	numbers = make([]string, 0, len(discovered))
+	seen := make(map[string]bool, len(discovered))
+	for i, projID := range priorProjects {
+		if !inScope[projID] || seen[projID] {
+			continue
+		}
+		seen[projID] = true
+		var projNum string
+		if i < len(priorNumbers) {
+			projNum = priorNumbers[i]
+		}
+		projects = append(projects, projID)
+		numbers = append(numbers, projNum)
+	}
+	for _, projID := range discovered {
+		if seen[projID] {
+			continue
+		}
+		seen[projID] = true
+		projects = append(projects, projID)
+		numbers = append(numbers, "")
+	}
+	return projects, numbers
+}
+
+// ensureProjectRoleBindings idempotently grants the service account its roles on one project,
+// replicating (or restoring) project-scoped custom roles first. It returns one entry per failure.
+func ensureProjectRoleBindings(
+	ctx context.Context,
+	gcpClients *api.GCPClients,
+	projID, member string,
+	roleNames, primaryRoleNames []string,
+	primaryProjectID string,
+	sourceRoles map[string]*iam.Role,
+) []string {
+	var failures []string
+	for _, roleName := range roleNames {
+		actualRoleName := projectRoleNameForProject(roleName, projID)
+		if actualRoleName != roleName {
+			parts := strings.Split(roleName, "/")
+			if err := ensureReplicatedCustomRole(ctx, gcpClients, sourceRoles[roleName], projID, parts[3]); err != nil {
+				failures = append(failures, fmt.Sprintf("%s: %s", actualRoleName, err))
+				continue
+			}
+		}
+		if err := AddIAMBinding(ctx, gcpClients, projID, member, actualRoleName); err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %s", actualRoleName, err))
+		}
+	}
+
+	if projID != primaryProjectID {
+		return failures
+	}
+	for _, roleName := range append(slices.Clone(primaryRoleNames), config.GCP_SA_DISCOVERY_ROLE) {
+		if err := AddIAMBinding(ctx, gcpClients, projID, member, roleName); err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %s", roleName, err))
+		}
+	}
+	return failures
+}
+
+// ensureReplicatedCustomRole makes sure the copy of sourceRole exists and is active in projID.
+func ensureReplicatedCustomRole(ctx context.Context, gcpClients *api.GCPClients, sourceRole *iam.Role, projID, roleID string) error {
+	targetRoleName := fmt.Sprintf("projects/%s/roles/%s", projID, roleID)
+	existing, err := gcpClients.IAMClient.Projects.Roles.Get(targetRoleName).Context(ctx).Do()
+	if err == nil {
+		if !existing.Deleted {
+			return nil
+		}
+		_, err = gcpClients.IAMClient.Projects.Roles.Undelete(targetRoleName, &iam.UndeleteRoleRequest{Etag: existing.Etag}).Context(ctx).Do()
+		return err
+	}
+	if !strings.Contains(err.Error(), "404") && !strings.Contains(err.Error(), "not found") {
+		return err
+	}
+	if sourceRole == nil {
+		return fmt.Errorf("source custom role is unavailable to replicate")
+	}
+	return createReplicatedCustomRole(ctx, gcpClients, sourceRole, projID, roleID)
+}
+
+func createReplicatedCustomRole(ctx context.Context, gcpClients *api.GCPClients, sourceRole *iam.Role, projID, roleID string) error {
+	_, err := gcpClients.IAMClient.Projects.Roles.Create(fmt.Sprintf("projects/%s", projID), &iam.CreateRoleRequest{
+		RoleId: roleID,
+		Role: &iam.Role{
+			Title:               sourceRole.Title,
+			Description:         fmt.Sprintf("%s (replicated for multi-project service account)", sourceRole.Description),
+			IncludedPermissions: sourceRole.IncludedPermissions,
+			Stage:               sourceRole.Stage,
+		},
+	}).Context(ctx).Do()
+	return err
 }
 
 func (r *ServiceAccountIntegration) reconcileNodeScanRoles(ctx context.Context, gcpClients *api.GCPClients, plan, state *serviceAccountIntegrationResourceModel) (types.String, error) {
@@ -1103,6 +1387,12 @@ func (r *ServiceAccountIntegration) Update(ctx context.Context, req resource.Upd
 		resp.Diagnostics.Append(diags...)
 		return
 	}
+	if plan.BindingReconciliationRevision.IsUnknown() {
+		plan.BindingReconciliationRevision = state.BindingReconciliationRevision
+	}
+	if plan.BindingReconciliationRevision.IsUnknown() {
+		plan.BindingReconciliationRevision = types.Int64Null()
+	}
 
 	gcpClients, diags := api.GetGCPClients(ctx, state.ProjectID.ValueString())
 	if diags.HasError() {
@@ -1143,120 +1433,104 @@ func (r *ServiceAccountIntegration) Update(ctx context.Context, req resource.Upd
 		tflog.Debug(ctx, "[Service Account Key][Update] Service account updated successfully")
 	}
 
-	if !plan.ExcludeProjects.Equal(state.ExcludeProjects) || !plan.ExcludeFreeTrialProjects.Equal(state.ExcludeFreeTrialProjects) {
-		tflog.Debug(ctx, "[Service Account Key][Update] Updating IAM bindings due to exclusion changes")
-
-		newTargetProjects, err := r.discoverTargetProjects(ctx, gcpClients, &plan, state.ProjectID.ValueString())
+	// ModifyPlan normally supplies the target projects; rediscover only if they were unknown at plan time.
+	var targetProjects, targetProjectNumbers []string
+	if plan.BoundProjects.IsUnknown() || plan.BoundProjectNumbers.IsUnknown() {
+		var err error
+		targetProjects, targetProjectNumbers, err = r.reconcileBoundProjects(ctx, gcpClients, &plan, &state)
 		if err != nil {
-			resp.Diagnostics.AddError(
-				"[Service Account Key][Update] Failed to discover target projects",
-				fmt.Sprintf("Error discovering projects: %s", err.Error()),
-			)
+			resp.Diagnostics.AddError("[Service Account Key][Update] Failed to discover target projects", err.Error())
 			return
 		}
-
-		var oldBoundProjects []string
-		if diags := state.BoundProjects.ElementsAs(ctx, &oldBoundProjects, false); diags.HasError() {
-			resp.Diagnostics.Append(diags...)
-			return
-		}
-
-		oldProjectsMap := make(map[string]bool)
-		for _, proj := range oldBoundProjects {
-			oldProjectsMap[proj] = true
-		}
-
-		newProjectsMap := make(map[string]bool)
-		for _, proj := range newTargetProjects {
-			newProjectsMap[proj] = true
-		}
-
-		member := fmt.Sprintf("serviceAccount:%s", state.ServiceAccountEmail.ValueString())
-
-		// Get roles from 'roles' field
-		var roleNames []string
-		if diags := state.Roles.ElementsAs(ctx, &roleNames, false); diags.HasError() {
-			resp.Diagnostics.Append(diags...)
-			return
-		}
-
-		// Remove all role bindings from projects that are no longer in scope (concurrent)
-		{
-			var updateRemoveWg sync.WaitGroup
-			sem := cam.GCPServiceAccountSem
-			for _, proj := range oldBoundProjects {
-				if !newProjectsMap[proj] {
-					updateRemoveWg.Add(1)
-					go func(projID string) {
-						defer updateRemoveWg.Done()
-						sem <- struct{}{}        // acquire slot
-						defer func() { <-sem }() // release slot
-
-						tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Update] Removing service account principal from project: %s", projID))
-						for _, roleName := range roleNames {
-							if bindErr := RemoveIAMBinding(ctx, gcpClients, projID, member, roleName); bindErr != nil {
-								tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Update] Failed to remove binding for role %s from project %s: %s", roleName, projID, bindErr.Error()))
-							}
-						}
-					}(proj)
-				}
-			}
-			updateRemoveWg.Wait()
-		}
-
-		// Add all role bindings to new projects (concurrent)
-		{
-			var updateAddWg sync.WaitGroup
-			sem := cam.GCPServiceAccountSem
-			for _, proj := range newTargetProjects {
-				if !oldProjectsMap[proj] {
-					updateAddWg.Add(1)
-					go func(projID string) {
-						defer updateAddWg.Done()
-						sem <- struct{}{}        // acquire slot
-						defer func() { <-sem }() // release slot
-
-						tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Update] Adding service account principal to project: %s", projID))
-						for _, roleName := range roleNames {
-							if bindErr := AddIAMBinding(ctx, gcpClients, projID, member, roleName); bindErr != nil {
-								tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Update] Failed to add binding for role %s to project %s: %s", roleName, projID, bindErr.Error()))
-							}
-						}
-					}(proj)
-				}
-			}
-			updateAddWg.Wait()
-		}
-
-		boundProjectsList, diags := types.ListValueFrom(ctx, types.StringType, newTargetProjects)
-		if diags.HasError() {
-			resp.Diagnostics.Append(diags...)
-			return
-		}
-		plan.BoundProjects = boundProjectsList
-
-		projectNumberMap, err := r.resolveProjectNumbers(ctx, gcpClients, newTargetProjects)
-		if err != nil {
-			resp.Diagnostics.AddError(
-				"[Service Account Key][Update] Failed to resolve bound project numbers",
-				err.Error(),
-			)
-			return
-		}
-		newProjectNumbers := make([]string, 0, len(newTargetProjects))
-		for _, pid := range newTargetProjects {
-			newProjectNumbers = append(newProjectNumbers, projectNumberMap[pid])
-		}
-		boundProjectNumbersList, diags := types.ListValueFrom(ctx, types.StringType, newProjectNumbers)
-		if diags.HasError() {
-			resp.Diagnostics.Append(diags...)
-			return
-		}
-		plan.BoundProjectNumbers = boundProjectNumbersList
 	} else {
-		plan.BoundProjects = state.BoundProjects
-		plan.BoundProjectNumbers = state.BoundProjectNumbers
+		resp.Diagnostics.Append(plan.BoundProjects.ElementsAs(ctx, &targetProjects, false)...)
+		resp.Diagnostics.Append(plan.BoundProjectNumbers.ElementsAs(ctx, &targetProjectNumbers, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
 	}
+
+	var oldBoundProjects, roleNames, primaryRoleNames []string
+	resp.Diagnostics.Append(state.BoundProjects.ElementsAs(ctx, &oldBoundProjects, false)...)
+	resp.Diagnostics.Append(state.Roles.ElementsAs(ctx, &roleNames, false)...)
+	if !state.PrimaryProjectRoles.IsNull() {
+		resp.Diagnostics.Append(state.PrimaryProjectRoles.ElementsAs(ctx, &primaryRoleNames, false)...)
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	member := fmt.Sprintf("serviceAccount:%s", state.ServiceAccountEmail.ValueString())
+	primaryProjectID := state.ProjectID.ValueString()
+
+	sourceRoles := make(map[string]*iam.Role)
+	for _, roleName := range roleNames {
+		if !strings.HasPrefix(roleName, "projects/") {
+			continue
+		}
+		sourceRole, getErr := gcpClients.IAMClient.Projects.Roles.Get(roleName).Context(ctx).Do()
+		if getErr != nil {
+			tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Update] Failed to get custom role %s: %s", roleName, getErr.Error()))
+			continue
+		}
+		sourceRoles[roleName] = sourceRole
+	}
+
+	{
+		var bindWg sync.WaitGroup
+		var bindMu sync.Mutex
+		bindFailures := map[string][]string{}
+		sem := cam.GCPServiceAccountSem
+		for _, proj := range oldBoundProjects {
+			if slices.Contains(targetProjects, proj) {
+				continue
+			}
+			bindWg.Add(1)
+			go func(projID string) {
+				defer bindWg.Done()
+				sem <- struct{}{}        // acquire slot
+				defer func() { <-sem }() // release slot
+				r.removeProjectRoleBindings(ctx, gcpClients, projID, member, roleNames, primaryRoleNames, primaryProjectID)
+			}(proj)
+		}
+		// Re-granting every target project also restores bindings removed outside Terraform.
+		for _, proj := range targetProjects {
+			bindWg.Add(1)
+			go func(projID string) {
+				defer bindWg.Done()
+				sem <- struct{}{}        // acquire slot
+				defer func() { <-sem }() // release slot
+				if failures := ensureProjectRoleBindings(ctx, gcpClients, projID, member, roleNames, primaryRoleNames, primaryProjectID, sourceRoles); len(failures) > 0 {
+					bindMu.Lock()
+					bindFailures[projID] = failures
+					bindMu.Unlock()
+				}
+			}(proj)
+		}
+		bindWg.Wait()
+
+		if len(bindFailures) > 0 {
+			failedProjects := slices.Sorted(maps.Keys(bindFailures))
+			details := make([]string, 0, len(failedProjects))
+			for _, projID := range failedProjects {
+				details = append(details, fmt.Sprintf("%s:\n    - %s", projID, strings.Join(bindFailures[projID], "\n    - ")))
+			}
+			resp.Diagnostics.AddWarning(
+				"[Service Account Key][Update] Some IAM bindings could not be granted",
+				fmt.Sprintf("These projects remain in bound_projects and will be retried on the next update:\n\n  %s", strings.Join(details, "\n  ")),
+			)
+		}
+	}
+
+	boundProjectsList, diags := types.ListValueFrom(ctx, types.StringType, targetProjects)
+	resp.Diagnostics.Append(diags...)
+	boundProjectNumbersList, diags := types.ListValueFrom(ctx, types.StringType, targetProjectNumbers)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	plan.BoundProjects = boundProjectsList
+	plan.BoundProjectNumbers = boundProjectNumbersList
 
 	if !plan.RotationTime.Equal(state.RotationTime) {
 		tflog.Debug(ctx, "[Service Account Key][Update] Rotation time changed, rotating key")
@@ -1317,13 +1591,9 @@ func (r *ServiceAccountIntegration) Update(ctx context.Context, req resource.Upd
 func (r *ServiceAccountIntegration) removeProjectRoleBindings(ctx context.Context, gcpClients *api.GCPClients, projID, member string, roleNames, primaryRoleNames []string, primaryProjectID string) {
 	tflog.Info(ctx, fmt.Sprintf("[Service Account Key][Delete] Removing service account principal from project: %s", projID))
 	for _, roleName := range roleNames {
-		actualRoleName := roleName
-		if strings.HasPrefix(roleName, "projects/") {
-			parts := strings.Split(roleName, "/")
-			if len(parts) >= 4 && projID != parts[1] {
-				actualRoleName = fmt.Sprintf("projects/%s/roles/%s", projID, parts[3])
-				tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Using replicated role name for removal: %s", actualRoleName))
-			}
+		actualRoleName := projectRoleNameForProject(roleName, projID)
+		if actualRoleName != roleName {
+			tflog.Debug(ctx, fmt.Sprintf("[Service Account Key][Delete] Using replicated role name for removal: %s", actualRoleName))
 		}
 		if removeErr := RemoveIAMBinding(ctx, gcpClients, projID, member, actualRoleName); removeErr != nil {
 			tflog.Warn(ctx, fmt.Sprintf("[Service Account Key][Delete] Failed to remove IAM binding for role %s from project %s: %s", actualRoleName, projID, removeErr.Error()))
@@ -1710,6 +1980,7 @@ func (r *ServiceAccountIntegration) discoverTargetProjects(
 	return targetProjects, nil
 }
 
+// resolveProjectNumbers maps each project ID to its GCP project number.
 func (r *ServiceAccountIntegration) resolveProjectNumbers(ctx context.Context, gcpClients *api.GCPClients, projectIDs []string) (map[string]string, error) {
 	result := make(map[string]string)
 	failures := make(map[string]error)

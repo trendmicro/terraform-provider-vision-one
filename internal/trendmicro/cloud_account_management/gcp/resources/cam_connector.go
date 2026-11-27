@@ -288,12 +288,11 @@ func (r *CAMConnectorResource) Schema(ctx context.Context, req resource.SchemaRe
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
+			// No UseStateForUnknown: CAM marks a connector outdated after an update until it is
+			// re-audited, so a planned prior value would fail as an inconsistent result.
 			"state": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "Current state of the connector",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
 			},
 			"updated_date_time": schema.StringAttribute{
 				Computed:            true,
@@ -706,6 +705,9 @@ func (r *CAMConnectorResource) Update(ctx context.Context, req resource.UpdateRe
 		return
 	}
 
+	// CAM clears a failed connector asynchronously after the patch re-validates
+	// the credentials, so reading straight back would record a "failed" the
+	// backend is about to drop. Only failed connectors pay the wait.
 	var res *api.ProjectResponse
 	if state.State.ValueString() == gcpProjectFailedState {
 		res, err = waitForGCPProjectConnected(ctx, r.client, projectNumber, gcpProjectConnectedWaitTimeout, gcpProjectConnectedWaitInterval)

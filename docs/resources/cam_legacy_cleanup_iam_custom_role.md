@@ -43,7 +43,7 @@ resource "visionone_cam_legacy_cleanup_iam_custom_role" "example" {
 
 ### Optional
 
-- `custom_role_id` (String) Optional full role name of the **new** provider-managed role (e.g. `projects/{proj}/roles/vision_one_cam_role_abc123`) to skip during cleanup. Any matching role with this name will not be deleted. Use this in migration scenarios where both the legacy and new roles share the same prefix.
+- `custom_role_id` (String) Optional full role name of the **new** provider-managed role (e.g. `projects/{proj}/roles/vision_one_cam_role_abc123`) to skip during cleanup. Roles with the same role ID are not deleted in any project, including copies replicated into other projects. Use this in migration scenarios where both the legacy and new roles share the same prefix.
 - `service_account_key` (String, Sensitive) Base64-encoded JSON service account key used to authenticate with GCP.
 
 ### Read-Only
